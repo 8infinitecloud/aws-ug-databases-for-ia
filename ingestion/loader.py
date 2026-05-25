@@ -17,7 +17,6 @@ import boto3
 from langchain_community.document_loaders import (
     DirectoryLoader,
     TextLoader,
-    UnstructuredMarkdownLoader,
 )
 from langchain_core.documents import Document
 from rich.console import Console
@@ -34,12 +33,13 @@ def load_from_directory(data_dir: str | Path) -> list[Document]:
     if not data_path.exists():
         raise FileNotFoundError(f"Directorio no encontrado: {data_path}")
 
-    # UnstructuredMarkdownLoader preserva estructura de headers como metadata,
-    # útil para mostrar en qué sección del documento está cada chunk.
+    # TextLoader lee el markdown como texto plano — suficiente para chunking y embedding.
+    # Evita la dependencia pesada 'unstructured' que trae conflictos de deps en pip.
     loader = DirectoryLoader(
         str(data_path),
         glob="**/*.md",
-        loader_cls=UnstructuredMarkdownLoader,
+        loader_cls=TextLoader,
+        loader_kwargs={"encoding": "utf-8"},
         show_progress=True,
         use_multithreading=True,
     )

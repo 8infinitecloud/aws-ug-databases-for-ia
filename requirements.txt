@@ -11,17 +11,12 @@ langchain-core==0.3.15
 # PostgreSQL + pgvector
 psycopg2-binary>=2.9.9
 pgvector>=0.3.2
-sqlalchemy>=2.0.36
-
 # Redis (session memory)
 redis>=5.1.1
 
 # Streamlit UI
 streamlit>=1.40.0
 plotly>=5.24.0
-
-# Document parsing (requerido por UnstructuredMarkdownLoader en loader.py)
-unstructured[md]>=0.15.0
 
 # Utilities
 python-dotenv>=1.0.1
