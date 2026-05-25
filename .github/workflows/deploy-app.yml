@@ -71,6 +71,44 @@ jobs:
           echo "instance_id=$(get_output AppServerInstanceId)"  >> $GITHUB_OUTPUT
           echo "streamlit_url=$(get_output StreamlitURL)"       >> $GITHUB_OUTPUT
 
+      - name: Wait for EC2 ready (SSM Online + UserData complete)
+        env:
+          INSTANCE_ID: ${{ steps.stack.outputs.instance_id }}
+          AWS_REGION_VAL: ${{ secrets.AWS_REGION || 'us-east-1' }}
+        run: |
+          echo "Esperando SSM Online..."
+          for i in $(seq 1 24); do
+            STATUS=$(aws ssm describe-instance-information \
+              --region "$AWS_REGION_VAL" \
+              --filters "Key=InstanceIds,Values=$INSTANCE_ID" \
+              --query "InstanceInformationList[0].PingStatus" \
+              --output text 2>/dev/null || echo "None")
+            echo "  Intento $i/24 — SSM: $STATUS"
+            [ "$STATUS" = "Online" ] && break
+            sleep 15
+          done
+          [ "$STATUS" != "Online" ] && { echo "❌ EC2 no registrado en SSM tras 6 min"; exit 1; }
+
+          echo "Esperando que UserData cree el .env..."
+          for i in $(seq 1 20); do
+            CMD_ID=$(aws ssm send-command \
+              --region "$AWS_REGION_VAL" \
+              --instance-ids "$INSTANCE_ID" \
+              --document-name "AWS-RunShellScript" \
+              --parameters 'commands=["test -f /opt/rag-lab/.env && echo READY || echo NOT_READY"]' \
+              --query "Command.CommandId" --output text)
+            sleep 8
+            RESULT=$(aws ssm get-command-invocation \
+              --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+              --region "$AWS_REGION_VAL" \
+              --query "StandardOutputContent" --output text 2>/dev/null || echo "")
+            echo "  Intento $i/20 — .env: $RESULT"
+            [[ "$RESULT" == *"READY"* ]] && break
+            sleep 20
+          done
+          [[ "$RESULT" != *"READY"* ]] && { echo "❌ UserData no completó (.env ausente tras 10 min)"; exit 1; }
+          echo "✓ EC2 listo para deploy"
+
       - name: Package app code
         run: |
           tar -czf /tmp/rag-lab-app.tar.gz \
