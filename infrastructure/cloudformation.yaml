@@ -158,7 +158,7 @@ Resources:
       Description: Credenciales de Aurora PostgreSQL para el lab RAG
       SecretString: !Sub |
         {
-          "username": "admin",
+          "username": "ragadmin",
           "password": "${DBPassword}",
           "host": "${AuroraCluster.Endpoint.Address}",
           "port": "5432",
@@ -183,7 +183,7 @@ Resources:
       Engine: aurora-postgresql
       EngineVersion: '16.4'
       DatabaseName: compliance_db
-      MasterUsername: admin
+      MasterUsername: ragadmin
       MasterUserPassword: !Ref DBPassword
       DBSubnetGroupName: !Ref AuroraSubnetGroup
       VpcSecurityGroupIds:
@@ -422,7 +422,7 @@ Resources:
             AURORA_HOST=${AuroraHost}
             AURORA_PORT=5432
             AURORA_DB=compliance_db
-            AURORA_USER=admin
+            AURORA_USER=ragadmin
             AURORA_SECRET_ARN=${AuroraSecretArn}
             REDIS_HOST=${RedisHost}
             REDIS_PORT=6379

@@ -39,7 +39,7 @@ class AuroraConfig:
     host: str = field(default_factory=lambda: os.getenv("AURORA_HOST", "localhost"))
     port: int = field(default_factory=lambda: int(os.getenv("AURORA_PORT", "5432")))
     database: str = field(default_factory=lambda: os.getenv("AURORA_DB", "compliance_db"))
-    user: str = field(default_factory=lambda: os.getenv("AURORA_USER", "admin"))
+    user: str = field(default_factory=lambda: os.getenv("AURORA_USER", "ragadmin"))
     # Contraseña nunca en env plain — se obtiene de Secrets Manager en runtime
     secret_arn: str = field(
         default_factory=lambda: os.getenv("AURORA_SECRET_ARN", "")
