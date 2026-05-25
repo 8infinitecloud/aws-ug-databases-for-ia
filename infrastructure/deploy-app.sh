@@ -168,7 +168,7 @@ echo "=== Reiniciando Streamlit ==="
 pkill -f "streamlit run" 2>/dev/null || true
 sleep 2
 
-nohup python3 -m streamlit run "$APP_DIR/app/app.py" \
+PYTHONPATH="$APP_DIR" nohup python3 -m streamlit run "$APP_DIR/app/app.py" \
   --server.port 8501 \
   --server.headless true \
   --server.address 0.0.0.0 \
