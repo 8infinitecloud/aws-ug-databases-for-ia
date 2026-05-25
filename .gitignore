@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+.env
+.venv
+env/
+venv/
+ENV/
+
+# AWS credentials — NEVER commit these
+.aws/
+*.pem
+*.key
+credentials
+aws_credentials.json
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Vector store local cache
+*.faiss
+*.pkl
+chroma_db/
+
+# Terraform / CDK
+.terraform/
+*.tfstate
+*.tfstate.backup
+cdk.out/
+node_modules/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Test artifacts
+.pytest_cache/
+htmlcov/
+.coverage

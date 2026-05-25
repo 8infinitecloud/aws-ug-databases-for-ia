@@ -1,0 +1,107 @@
+name: Cleanup — Eliminar recursos AWS
+
+# Solo manual — nunca automático.
+# Aurora + ElastiCache cuestan ~$15-25 USD/día si se dejan corriendo.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Escribe ELIMINAR para confirmar (irreversible)"
+        required: true
+      environment:
+        description: "Ambiente a eliminar"
+        type: choice
+        options: [lab, dev, prod]
+        default: lab
+
+jobs:
+  cleanup:
+    name: Eliminar stack AWS
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Validar confirmación
+        run: |
+          if [ "${{ inputs.confirm }}" != "ELIMINAR" ]; then
+            echo "❌ Confirmación incorrecta. Escribe exactamente: ELIMINAR"
+            exit 1
+          fi
+          echo "✓ Confirmación válida — iniciando cleanup"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          role-session-name: github-actions-cleanup-${{ github.run_id }}
+
+      - name: Vaciar bucket S3
+        env:
+          AWS_REGION_VAL: ${{ secrets.AWS_REGION || 'us-east-1' }}
+        run: |
+          S3_BUCKET=$(aws cloudformation describe-stacks \
+            --stack-name financial-compliance-rag-lab \
+            --region "$AWS_REGION_VAL" \
+            --query "Stacks[0].Outputs[?OutputKey=='S3BucketName'].OutputValue" \
+            --output text 2>/dev/null || echo "")
+
+          if [ -n "$S3_BUCKET" ] && [ "$S3_BUCKET" != "None" ]; then
+            aws s3 rm "s3://$S3_BUCKET" --recursive --region "$AWS_REGION_VAL" 2>/dev/null || true
+            echo "✓ Bucket vaciado: $S3_BUCKET"
+          else
+            echo "  (bucket no encontrado o stack ya no existe)"
+          fi
+
+      - name: Eliminar tabla DynamoDB
+        env:
+          AWS_REGION_VAL: ${{ secrets.AWS_REGION || 'us-east-1' }}
+        run: |
+          aws dynamodb delete-table \
+            --table-name rag_user_memory \
+            --region "$AWS_REGION_VAL" 2>/dev/null \
+            && echo "✓ Tabla DynamoDB eliminada" \
+            || echo "  (tabla no existía o ya eliminada)"
+
+      - name: Eliminar CloudFormation stack
+        env:
+          AWS_REGION_VAL: ${{ secrets.AWS_REGION || 'us-east-1' }}
+        run: |
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name financial-compliance-rag-lab \
+            --region "$AWS_REGION_VAL" \
+            --query "Stacks[0].StackStatus" \
+            --output text 2>/dev/null || echo "NOT_FOUND")
+
+          if [ "$STATUS" = "NOT_FOUND" ]; then
+            echo "  Stack no existe — nada que eliminar"
+            exit 0
+          fi
+
+          echo "Eliminando stack (status actual: $STATUS)..."
+          aws cloudformation delete-stack \
+            --stack-name financial-compliance-rag-lab \
+            --region "$AWS_REGION_VAL"
+
+          echo "Esperando eliminación completa (10-15 min)..."
+          aws cloudformation wait stack-delete-complete \
+            --stack-name financial-compliance-rag-lab \
+            --region "$AWS_REGION_VAL"
+
+          echo "✓ Stack eliminado"
+
+      - name: Cleanup summary
+        if: success()
+        run: |
+          echo "### ✅ Cleanup completado" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Recursos eliminados:**" >> $GITHUB_STEP_SUMMARY
+          echo "- CloudFormation stack (VPC, Aurora, ElastiCache, EC2)" >> $GITHUB_STEP_SUMMARY
+          echo "- Bucket S3 (vaciado)" >> $GITHUB_STEP_SUMMARY
+          echo "- Tabla DynamoDB" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "No se generarán más costos por estos recursos." >> $GITHUB_STEP_SUMMARY

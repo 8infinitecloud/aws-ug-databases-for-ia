@@ -1,0 +1,79 @@
+name: CI — Validate
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate-python:
+    name: Python syntax & lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check Python syntax (all modules)
+        run: |
+          find ingestion/ query/ app/ scripts/ -name "*.py" | while read f; do
+            python -c "import ast; ast.parse(open('$f').read())" && echo "✓ $f"
+          done
+
+      - name: Install linter
+        run: pip install ruff --quiet
+
+      - name: Lint with ruff
+        # E501 (line too long) ignorado — los comentarios inline del lab son deliberadamente descriptivos
+        run: ruff check ingestion/ query/ app/ scripts/ --ignore E501 --ignore F401
+
+  validate-shell:
+    name: Shell scripts (shellcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: Check bash scripts
+        run: |
+          shellcheck infrastructure/setup.sh
+          shellcheck infrastructure/deploy-app.sh
+          shellcheck infrastructure/cleanup.sh
+
+  validate-cloudformation:
+    name: CloudFormation template
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cfn-lint
+        run: pip install cfn-lint --quiet
+
+      - name: Lint CloudFormation template
+        run: cfn-lint infrastructure/cloudformation.yaml
+
+  validate-data:
+    name: Sample documents exist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify corpus files are present
+        run: |
+          required=(
+            "data/compliance/aml_policy.md"
+            "data/compliance/kyc_procedures.md"
+            "data/onboarding/client_onboarding.md"
+            "data/onboarding/employee_onboarding.md"
+            "data/policies/data_privacy.md"
+            "data/policies/risk_management.md"
+            "data/policies/acceptable_use.md"
+          )
+          for f in "${required[@]}"; do
+            [ -f "$f" ] && echo "✓ $f" || { echo "❌ Missing: $f"; exit 1; }
+          done

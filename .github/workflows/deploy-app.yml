@@ -1,0 +1,185 @@
+name: Deploy App
+
+# Se ejecuta automáticamente cuando hay cambios en el código de la app.
+# NO toca la infraestructura (CloudFormation); solo actualiza lo que corre en el EC2.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "ingestion/**"
+      - "query/**"
+      - "data/**"
+      - "scripts/**"
+      - "requirements.txt"
+
+  # También ejecutable manualmente desde la UI de GitHub Actions
+  workflow_dispatch:
+    inputs:
+      reingest:
+        description: "Re-ingestar documentos (borra tabla y vuelve a indexar)"
+        type: boolean
+        default: false
+
+jobs:
+  deploy:
+    name: Package & deploy to EC2 via SSM
+    runs-on: ubuntu-latest
+    environment: lab  # usa el environment "lab" definido en GitHub repo settings
+
+    permissions:
+      id-token: write   # requerido para OIDC — obtener token de GitHub para asumir el rol AWS
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # OIDC: GitHub obtiene un token firmado de AWS STS sin necesidad de guardar
+      # Access Keys como secrets. Es la forma recomendada por AWS para GitHub Actions.
+      # Prerequisito: crear el OIDC Provider y el IAM Role en AWS (ver docs/oidc-setup.md)
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          role-session-name: github-actions-deploy-${{ github.run_id }}
+
+      - name: Verify stack exists
+        run: |
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name financial-compliance-rag-lab \
+            --query "Stacks[0].StackStatus" \
+            --output text 2>/dev/null || echo "NOT_FOUND")
+
+          if [ "$STATUS" = "NOT_FOUND" ]; then
+            echo "❌ Stack 'financial-compliance-rag-lab' no existe."
+            echo "   Ejecuta primero: infrastructure/setup.sh (localmente o vía workflow deploy-infra)"
+            exit 1
+          fi
+          echo "✓ Stack status: $STATUS"
+
+      - name: Get stack outputs
+        id: stack
+        run: |
+          get_output() {
+            aws cloudformation describe-stacks \
+              --stack-name financial-compliance-rag-lab \
+              --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" \
+              --output text
+          }
+          echo "s3_bucket=$(get_output S3BucketName)"           >> $GITHUB_OUTPUT
+          echo "instance_id=$(get_output AppServerInstanceId)"  >> $GITHUB_OUTPUT
+          echo "streamlit_url=$(get_output StreamlitURL)"       >> $GITHUB_OUTPUT
+
+      - name: Package app code
+        run: |
+          tar -czf /tmp/rag-lab-app.tar.gz \
+            --exclude='.git' \
+            --exclude='.env' \
+            --exclude='*.pptx' \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            --exclude='.venv' \
+            --exclude='infrastructure' \
+            app/ ingestion/ query/ scripts/ data/ requirements.txt
+
+      - name: Upload code to S3
+        run: |
+          aws s3 cp /tmp/rag-lab-app.tar.gz \
+            "s3://${{ steps.stack.outputs.s3_bucket }}/app-code.tar.gz"
+
+          aws s3 sync data/ \
+            "s3://${{ steps.stack.outputs.s3_bucket }}/compliance-docs/" \
+            --exclude "*.DS_Store"
+
+      - name: Build remote deploy script
+        env:
+          S3_BUCKET: ${{ steps.stack.outputs.s3_bucket }}
+          AWS_REGION_VAL: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          REINGEST: ${{ inputs.reingest || 'false' }}
+        run: |
+          cat > /tmp/deploy-remote.sh << 'REMOTE_EOF'
+          #!/bin/bash
+          set -ex
+          exec > >(tee /var/log/deploy-app.log) 2>&1
+
+          APP_DIR="/opt/rag-lab"
+          S3_BUCKET="__S3_BUCKET__"
+          REGION="__REGION__"
+          REINGEST="__REINGEST__"
+
+          echo "=== Descargando código de S3 ==="
+          aws s3 cp "s3://$S3_BUCKET/app-code.tar.gz" "$APP_DIR/app-code.tar.gz" --region "$REGION"
+          cd "$APP_DIR" && tar -xzf app-code.tar.gz --overwrite && rm app-code.tar.gz
+
+          echo "=== Inicializando schema ==="
+          python3 "$APP_DIR/scripts/init_db.py"
+
+          echo "=== Ingestando documentos ==="
+          INGEST_ARGS="--source $APP_DIR/data/"
+          [ "$REINGEST" = "true" ] && INGEST_ARGS="$INGEST_ARGS --clear"
+          python3 "$APP_DIR/scripts/ingest_documents.py" $INGEST_ARGS
+
+          echo "=== Reiniciando Streamlit ==="
+          pkill -f "streamlit run" 2>/dev/null || true
+          sleep 2
+          nohup python3 -m streamlit run "$APP_DIR/app/app.py" \
+            --server.port 8501 --server.headless true --server.address 0.0.0.0 \
+            >> /var/log/streamlit.log 2>&1 &
+          sleep 3
+          pgrep -f "streamlit run" && echo "=== OK ===" || { cat /var/log/streamlit.log | tail -20; exit 1; }
+          REMOTE_EOF
+
+          sed -i "s|__S3_BUCKET__|$S3_BUCKET|g"   /tmp/deploy-remote.sh
+          sed -i "s|__REGION__|$AWS_REGION_VAL|g"  /tmp/deploy-remote.sh
+          sed -i "s|__REINGEST__|$REINGEST|g"       /tmp/deploy-remote.sh
+
+          aws s3 cp /tmp/deploy-remote.sh \
+            "s3://$S3_BUCKET/deploy-remote.sh" \
+            --region "$AWS_REGION_VAL"
+
+      - name: Run deploy via SSM
+        id: ssm
+        env:
+          INSTANCE_ID: ${{ steps.stack.outputs.instance_id }}
+          S3_BUCKET: ${{ steps.stack.outputs.s3_bucket }}
+          AWS_REGION_VAL: ${{ secrets.AWS_REGION || 'us-east-1' }}
+        run: |
+          COMMAND_ID=$(aws ssm send-command \
+            --region "$AWS_REGION_VAL" \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "commands=[\"aws s3 cp s3://$S3_BUCKET/deploy-remote.sh /tmp/deploy-remote.sh --region $AWS_REGION_VAL && chmod +x /tmp/deploy-remote.sh && /tmp/deploy-remote.sh\"]" \
+            --timeout-seconds 600 \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "command_id=$COMMAND_ID" >> $GITHUB_OUTPUT
+          echo "SSM Command ID: $COMMAND_ID"
+
+          # Polling manual porque `ssm wait` tiene timeout corto en el CLI
+          for i in $(seq 1 20); do
+            sleep 15
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --region "$AWS_REGION_VAL" \
+              --query "Status" --output text)
+            echo "  Intento $i/20 — Status: $STATUS"
+            [ "$STATUS" = "Success" ] && break
+            [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ] && {
+              echo "❌ Deploy fallido. Ver logs de SSM."; exit 1
+            }
+          done
+
+      - name: Deploy summary
+        if: success()
+        env:
+          STREAMLIT_URL: ${{ steps.stack.outputs.streamlit_url }}
+          COMMAND_ID: ${{ steps.ssm.outputs.command_id }}
+        run: |
+          echo "### ✅ Deploy exitoso" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Streamlit URL:** $STREAMLIT_URL" >> $GITHUB_STEP_SUMMARY
+          echo "**SSM Command ID:** $COMMAND_ID" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,495 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Financial Compliance RAG Lab — Infraestructura completa.
+  Crea: VPC, Aurora PostgreSQL Serverless v2 con pgvector, ElastiCache Redis,
+  DynamoDB, S3, Secrets Manager, Security Groups.
+  IMPORTANTE: Ejecutar ANTES del demo (15-20 min de provisioning).
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: rag-lab
+    Description: Prefijo para nombrar todos los recursos
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    Description: Password para Aurora (mínimo 8 caracteres)
+    Default: RagLab2024!
+
+  EnvironmentType:
+    Type: String
+    Default: lab
+    AllowedValues: [lab, dev, prod]
+    Description: Tipo de ambiente (afecta el tamaño de los recursos)
+
+Conditions:
+  IsProd: !Equals [!Ref EnvironmentType, prod]
+
+Resources:
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # VPC y Networking
+  # ──────────────────────────────────────────────────────────────────────────
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-vpc
+
+  # Dos subnets privadas en AZs distintas — requerimiento de Aurora Multi-AZ
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-private-1
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-private-2
+
+  # Subnet pública para el bastion host (acceso desde Internet al lab)
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-public
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Security Groups
+  # ──────────────────────────────────────────────────────────────────────────
+
+  # Security Group para la app Streamlit (puede estar en EC2 o local via SSH tunnel)
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group para la aplicación RAG
+      VpcId: !Ref VPC
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  # Aurora solo acepta conexiones desde la app — no exponer al público
+  AuroraSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group para Aurora PostgreSQL
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref AppSecurityGroup
+
+  # Redis solo acepta desde la app
+  RedisSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group para ElastiCache Redis
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6379
+          SourceSecurityGroupId: !Ref AppSecurityGroup
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Secrets Manager — contraseña de Aurora
+  # ──────────────────────────────────────────────────────────────────────────
+
+  AuroraSecret:
+    Type: AWS::SecretsManager::Secret
+    # DependsOn explícito porque el !Sub con AuroraCluster.Endpoint.Address crea
+    # dependencia implícita, pero la hacemos visible para evitar race conditions.
+    DependsOn: AuroraCluster
+    Properties:
+      # Sin Name: — Secrets Manager retiene secrets eliminados 7 días. Con Name fijo,
+      # un redeploy rápido después de cleanup falla con ResourceExistsException.
+      # Sin Name, CloudFormation genera un nombre único que nunca colisiona.
+      Description: Credenciales de Aurora PostgreSQL para el lab RAG
+      SecretString: !Sub |
+        {
+          "username": "admin",
+          "password": "${DBPassword}",
+          "host": "${AuroraCluster.Endpoint.Address}",
+          "port": "5432",
+          "dbname": "compliance_db"
+        }
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Aurora PostgreSQL Serverless v2 + pgvector
+  # ──────────────────────────────────────────────────────────────────────────
+
+  AuroraSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group para Aurora RAG Lab
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+
+  AuroraCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      Engine: aurora-postgresql
+      EngineVersion: '16.2'
+      DatabaseName: compliance_db
+      MasterUsername: admin
+      MasterUserPassword: !Ref DBPassword
+      DBSubnetGroupName: !Ref AuroraSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref AuroraSecurityGroup
+      StorageEncrypted: true
+      DeletionProtection: false  # false para facilitar el cleanup del lab
+      ServerlessV2ScalingConfiguration:
+        # MinCapacity=0.5 permite que Aurora escale casi a cero cuando está idle.
+        # Esto es importante para el lab donde la DB puede estar inactiva largos ratos.
+        MinCapacity: 0.5
+        MaxCapacity: !If [IsProd, 16, 4]
+      EnableCloudwatchLogsExports:
+        - postgresql
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref EnvironmentType
+
+  AuroraInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref AuroraCluster
+      DBInstanceClass: db.serverless
+      Engine: aurora-postgresql
+      PubliclyAccessible: false  # acceso solo desde la VPC
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # ElastiCache Redis (Memoria de Sesión — Capa 1)
+  # ──────────────────────────────────────────────────────────────────────────
+
+  RedisSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      Description: Subnet group para Redis RAG Lab
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+
+  RedisCluster:
+    Type: AWS::ElastiCache::CacheCluster
+    Properties:
+      CacheNodeType: cache.t3.micro  # mínimo suficiente para el lab
+      Engine: redis
+      NumCacheNodes: 1
+      CacheSubnetGroupName: !Ref RedisSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref RedisSecurityGroup
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # DynamoDB (Memoria Persistente — Capa 2)
+  # ──────────────────────────────────────────────────────────────────────────
+
+  UserMemoryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: rag_user_memory
+      BillingMode: PAY_PER_REQUEST  # on-demand: perfecto para carga variable del lab
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: false  # no necesario para el lab
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # S3 (Almacenamiento de Documentos)
+  # ──────────────────────────────────────────────────────────────────────────
+
+  DocumentsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${ProjectName}-documents-${AWS::AccountId}
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # IAM Role e Instance Profile para el App Server EC2
+  # ──────────────────────────────────────────────────────────────────────────
+
+  AppRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-app-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      # AmazonSSMManagedInstanceCore es obligatorio para SSM Session Manager y
+      # SSM Run Command — sin esta policy el EC2 no aparece en Fleet Manager
+      # y no puede ser manejado sin SSH keys.
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policies/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: RAGLabPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                Resource: !GetAtt UserMemoryTable.Arn
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt DocumentsBucket.Arn
+                  - !Sub ${DocumentsBucket.Arn}/*
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref AuroraSecret
+
+  # Instance Profile — wrapper requerido por EC2 para asumir un IAM Role
+  AppInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref AppRole
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Security Group para Streamlit (puerto 8501)
+  # ──────────────────────────────────────────────────────────────────────────
+
+  StreamlitSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Permite acceso a la UI de Streamlit desde el navegador
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8501
+          ToPort: 8501
+          CidrIp: 0.0.0.0/0  # Para el lab; en producción restringir a tu IP
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # App Server EC2 — corre Streamlit en subnet pública con acceso a Aurora/Redis
+  # ──────────────────────────────────────────────────────────────────────────
+
+  AppServer:
+    Type: AWS::EC2::Instance
+    # Esperar a que Aurora y Redis estén listos antes de crear el EC2.
+    # El UserData necesita sus endpoints para escribir el .env.
+    DependsOn:
+      - AuroraInstance
+      - RedisCluster
+      - AuroraSecret
+    Properties:
+      InstanceType: t3.medium  # 2 vCPU, 4 GB RAM — suficiente para Streamlit + Python
+      # SSM Parameter resuelve el AMI más reciente de Amazon Linux 2023 en la región
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref AppSecurityGroup      # permite salida y acceso a Aurora/Redis (SGs internos)
+        - !Ref StreamlitSecurityGroup  # abre puerto 8501 al mundo
+      IamInstanceProfile: !Ref AppInstanceProfile
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-app-server
+        - Key: Project
+          Value: !Ref ProjectName
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash -xe
+            exec > >(tee /var/log/user-data.log | logger -t user-data) 2>&1
+
+            echo "=== Instalando dependencias del sistema ==="
+            yum update -y
+            yum install -y python3.11 python3.11-pip git tar
+
+            # Alias para que los scripts de setup.sh puedan usar 'python3' y 'pip3'
+            ln -sf /usr/bin/python3.11 /usr/local/bin/python3
+            ln -sf /usr/bin/pip3.11 /usr/local/bin/pip3
+
+            echo "=== Instalando paquetes Python ==="
+            python3 -m pip install --upgrade pip --quiet
+            python3 -m pip install --quiet \
+              boto3>=1.35.0 \
+              "langchain==0.3.7" \
+              "langchain-aws==0.2.6" \
+              "langchain-community==0.3.7" \
+              "langchain-core==0.3.15" \
+              psycopg2-binary>=2.9.9 \
+              pgvector>=0.3.2 \
+              "sqlalchemy>=2.0.36" \
+              "redis>=5.1.1" \
+              "streamlit>=1.40.0" \
+              "plotly>=5.24.0" \
+              "python-dotenv>=1.0.1" \
+              "tenacity>=9.0.0" \
+              "rich>=13.9.0"
+
+            echo "=== Creando directorio de la app ==="
+            mkdir -p /opt/rag-lab
+            chown ec2-user:ec2-user /opt/rag-lab
+
+            echo "=== Escribiendo archivo .env ==="
+            cat > /opt/rag-lab/.env << 'ENVEOF'
+            AWS_REGION=${Region}
+            BEDROCK_EMBEDDING_MODEL=amazon.titan-embed-text-v2:0
+            BEDROCK_LLM_MODEL=anthropic.claude-3-5-sonnet-20241022-v2:0
+            EMBEDDING_DIMENSIONS=1024
+            AURORA_HOST=${AuroraHost}
+            AURORA_PORT=5432
+            AURORA_DB=compliance_db
+            AURORA_USER=admin
+            AURORA_SECRET_ARN=${AuroraSecretArn}
+            REDIS_HOST=${RedisHost}
+            REDIS_PORT=6379
+            REDIS_SESSION_TTL=7200
+            MAX_SESSION_MESSAGES=10
+            DYNAMODB_TABLE=rag_user_memory
+            DYNAMODB_REGION=${Region}
+            S3_BUCKET=${BucketName}
+            S3_PREFIX=compliance-docs/
+            RETRIEVAL_TOP_K=5
+            RETRIEVAL_MIN_SCORE=0.70
+            CHUNK_SIZE=1000
+            CHUNK_OVERLAP=200
+            DEMO_USER_ID=demo-user-001
+            VERBOSE_LOGGING=true
+            ENVEOF
+
+            echo "=== UserData completado. El código de la app se cargará via setup.sh ==="
+            touch /tmp/userdata-complete
+          - Region: !Ref AWS::Region
+            AuroraHost: !GetAtt AuroraCluster.Endpoint.Address
+            AuroraSecretArn: !Ref AuroraSecret
+            RedisHost: !GetAtt RedisCluster.RedisEndpoint.Address
+            BucketName: !Sub ${ProjectName}-documents-${AWS::AccountId}
+
+# ──────────────────────────────────────────────────────────────────────────
+# Outputs — valores necesarios para el .env
+# ──────────────────────────────────────────────────────────────────────────
+
+Outputs:
+  AuroraEndpoint:
+    Description: Aurora PostgreSQL endpoint
+    Value: !GetAtt AuroraCluster.Endpoint.Address
+    Export:
+      Name: !Sub ${ProjectName}-aurora-endpoint
+
+  AuroraSecretArn:
+    Description: ARN del secret de Aurora en Secrets Manager
+    Value: !Ref AuroraSecret
+    Export:
+      Name: !Sub ${ProjectName}-aurora-secret-arn
+
+  RedisEndpoint:
+    Description: ElastiCache Redis endpoint
+    Value: !GetAtt RedisCluster.RedisEndpoint.Address
+    Export:
+      Name: !Sub ${ProjectName}-redis-endpoint
+
+  DynamoDBTableName:
+    Description: Nombre de la tabla DynamoDB
+    Value: !Ref UserMemoryTable
+
+  S3BucketName:
+    Description: Nombre del bucket S3 para documentos
+    Value: !Ref DocumentsBucket
+
+  AppServerInstanceId:
+    Description: Instance ID del App Server EC2 (para SSM Run Command)
+    Value: !Ref AppServer
+    Export:
+      Name: !Sub ${ProjectName}-app-server-id
+
+  AppServerPublicIP:
+    Description: IP pública del App Server
+    Value: !GetAtt AppServer.PublicIp
+
+  StreamlitURL:
+    Description: URL de la interfaz Streamlit (disponible ~5 min después del deploy)
+    Value: !Sub http://${AppServer.PublicIp}:8501

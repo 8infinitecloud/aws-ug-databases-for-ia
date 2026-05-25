@@ -1,0 +1,99 @@
+name: Deploy Infrastructure
+
+# Solo se ejecuta manualmente — provisionar infra es una operación deliberada,
+# no algo que deba ocurrir en cada push.
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Ambiente a desplegar"
+        type: choice
+        options: [lab, dev, prod]
+        default: lab
+      db_password:
+        description: "Password de Aurora (mínimo 8 caracteres)"
+        required: true
+        default: "RagLab2024!"
+
+jobs:
+  deploy-infra:
+    name: CloudFormation deploy
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          role-session-name: github-actions-infra-${{ github.run_id }}
+
+      - name: Validate CloudFormation template
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://infrastructure/cloudformation.yaml \
+            --region ${{ secrets.AWS_REGION || 'us-east-1' }}
+          echo "✓ Template válido"
+
+      - name: Deploy CloudFormation stack
+        run: |
+          aws cloudformation deploy \
+            --stack-name financial-compliance-rag-lab \
+            --template-file infrastructure/cloudformation.yaml \
+            --parameter-overrides \
+              ProjectName=rag-lab \
+              DBPassword="${{ inputs.db_password }}" \
+              EnvironmentType=${{ inputs.environment }} \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --region ${{ secrets.AWS_REGION || 'us-east-1' }} \
+            --no-fail-on-empty-changeset
+
+      - name: Show stack outputs
+        id: outputs
+        run: |
+          aws cloudformation describe-stacks \
+            --stack-name financial-compliance-rag-lab \
+            --region ${{ secrets.AWS_REGION || 'us-east-1' }} \
+            --query "Stacks[0].Outputs" \
+            --output table
+
+          STREAMLIT=$(aws cloudformation describe-stacks \
+            --stack-name financial-compliance-rag-lab \
+            --query "Stacks[0].Outputs[?OutputKey=='StreamlitURL'].OutputValue" \
+            --output text)
+          echo "streamlit_url=$STREAMLIT" >> $GITHUB_OUTPUT
+
+      - name: Infra summary
+        run: |
+          echo "### ✅ Infraestructura desplegada" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Streamlit URL:** ${{ steps.outputs.outputs.streamlit_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Próximo paso:** ejecutar el workflow _Deploy App_" >> $GITHUB_STEP_SUMMARY
+
+  # Trigger automático del deploy de app al terminar el de infra
+  trigger-app-deploy:
+    name: Trigger app deploy
+    needs: deploy-infra
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch deploy-app workflow
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'deploy-app.yml',
+              ref: context.ref,
+              inputs: { reingest: 'true' }
+            })
+            console.log('✓ Deploy App workflow disparado')
