@@ -151,6 +151,9 @@ if [ ! -f "$APP_DIR/.env" ]; then
   exit 1
 fi
 
+echo "=== Instalando dependencias Python ==="
+python3 -m pip install --quiet -r "$APP_DIR/requirements.txt"
+
 echo "=== Inicializando schema de pgvector ==="
 python3 "$APP_DIR/scripts/init_db.py"
 
