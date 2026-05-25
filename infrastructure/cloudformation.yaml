@@ -181,7 +181,7 @@ Resources:
     Type: AWS::RDS::DBCluster
     Properties:
       Engine: aurora-postgresql
-      EngineVersion: '16.2'
+      EngineVersion: '16.4'
       DatabaseName: compliance_db
       MasterUsername: admin
       MasterUserPassword: !Ref DBPassword
