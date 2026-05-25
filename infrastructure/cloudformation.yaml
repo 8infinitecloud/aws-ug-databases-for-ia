@@ -265,8 +265,6 @@ Resources:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub ${ProjectName}-documents-${AWS::AccountId}
-      VersioningConfiguration:
-        Status: Enabled
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
@@ -386,29 +384,30 @@ Resources:
 
             echo "=== Instalando dependencias del sistema ==="
             yum update -y
-            yum install -y python3.11 python3.11-pip git tar
+            yum install -y python3.11 git tar
 
-            # Alias para que los scripts de setup.sh puedan usar 'python3' y 'pip3'
+            # ensurepip bootstraps pip para python3.11 en AL2023 (python3.11-pip no existe como paquete)
+            python3.11 -m ensurepip --upgrade
             ln -sf /usr/bin/python3.11 /usr/local/bin/python3
-            ln -sf /usr/bin/pip3.11 /usr/local/bin/pip3
 
             echo "=== Instalando paquetes Python ==="
             python3 -m pip install --upgrade pip --quiet
             python3 -m pip install --quiet \
-              boto3>=1.35.0 \
+              "boto3>=1.35.0" \
               "langchain==0.3.7" \
               "langchain-aws==0.2.6" \
               "langchain-community==0.3.7" \
               "langchain-core==0.3.15" \
-              psycopg2-binary>=2.9.9 \
-              pgvector>=0.3.2 \
+              "psycopg2-binary>=2.9.9" \
+              "pgvector>=0.3.2" \
               "sqlalchemy>=2.0.36" \
               "redis>=5.1.1" \
               "streamlit>=1.40.0" \
               "plotly>=5.24.0" \
               "python-dotenv>=1.0.1" \
               "tenacity>=9.0.0" \
-              "rich>=13.9.0"
+              "rich>=13.9.0" \
+              "unstructured[md]>=0.15.0"
 
             echo "=== Creando directorio de la app ==="
             mkdir -p /opt/rag-lab

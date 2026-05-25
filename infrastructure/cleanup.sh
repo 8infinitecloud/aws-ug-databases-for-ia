@@ -34,10 +34,8 @@ S3_BUCKET=$(aws cloudformation describe-stacks \
   --output text 2>/dev/null || echo "")
 
 if [ -n "$S3_BUCKET" ]; then
-  # Eliminar todas las versiones (bucket tiene versionado habilitado)
   aws s3 rm "s3://$S3_BUCKET" --recursive --region "$REGION" 2>/dev/null || true
-  aws s3api delete-bucket --bucket "$S3_BUCKET" --region "$REGION" 2>/dev/null || true
-  echo "  ✓ Bucket S3 eliminado: $S3_BUCKET"
+  echo "  ✓ Bucket vaciado: $S3_BUCKET"
 fi
 
 echo ""
