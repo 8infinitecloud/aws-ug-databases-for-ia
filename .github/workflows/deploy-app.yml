@@ -203,20 +203,28 @@ jobs:
           echo "command_id=$COMMAND_ID" >> $GITHUB_OUTPUT
           echo "SSM Command ID: $COMMAND_ID"
 
-          # Polling manual porque `ssm wait` tiene timeout corto en el CLI
-          for i in $(seq 1 20); do
+          # Polling manual — GitHub Actions usa bash -eo pipefail, así que usamos
+          # if/elif para evitar que (false || false) && {...} dispare set -e.
+          for i in $(seq 1 40); do
             sleep 15
             STATUS=$(aws ssm get-command-invocation \
               --command-id "$COMMAND_ID" \
               --instance-id "$INSTANCE_ID" \
               --region "$AWS_REGION_VAL" \
               --query "Status" --output text)
-            echo "  Intento $i/20 — Status: $STATUS"
-            [ "$STATUS" = "Success" ] && break
-            [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ] && {
-              echo "❌ Deploy fallido. Ver logs de SSM."; exit 1
-            }
+            echo "  Intento $i/40 — Status: $STATUS"
+            if [ "$STATUS" = "Success" ]; then
+              break
+            elif [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ] || [ "$STATUS" = "TimedOut" ]; then
+              echo "❌ Deploy fallido (status: $STATUS). Ver logs de SSM."
+              exit 1
+            fi
           done
+
+          if [ "$STATUS" != "Success" ]; then
+            echo "❌ Timeout: el deploy no completó en 10 min. Último status: $STATUS"
+            exit 1
+          fi
 
       - name: Deploy summary
         if: success()
