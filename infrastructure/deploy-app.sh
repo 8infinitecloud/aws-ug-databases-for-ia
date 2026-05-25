@@ -182,9 +182,10 @@ fi
 REMOTE_EOF
 
 # Sustituir los placeholders con valores reales
-sed -i "s|__S3_BUCKET__|$S3_BUCKET|g" /tmp/deploy-app-remote.sh
-sed -i "s|__REGION__|$REGION|g"       /tmp/deploy-app-remote.sh
-sed -i "s|__REINGEST__|$REINGEST|g"   /tmp/deploy-app-remote.sh
+# sed -i '' funciona en macOS (BSD sed) y Linux (GNU sed)
+sed -i '' "s|__S3_BUCKET__|$S3_BUCKET|g" /tmp/deploy-app-remote.sh
+sed -i '' "s|__REGION__|$REGION|g"       /tmp/deploy-app-remote.sh
+sed -i '' "s|__REINGEST__|$REINGEST|g"   /tmp/deploy-app-remote.sh
 
 # Subir el script al S3 del lab y ejecutarlo via SSM con un único comando simple.
 # No se pasa el script inline porque SSM Run Command no soporta bien multi-línea en --parameters.
