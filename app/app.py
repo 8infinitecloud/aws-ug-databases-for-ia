@@ -22,6 +22,64 @@ from query.memory import (
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Personas de demo — nombre, rol y área ya vinculados
+# ─────────────────────────────────────────────────────────────────────────────
+
+DEMO_PERSONAS = [
+    {
+        "label": "Ana García · Asesora de Cuenta · Banca Personal",
+        "user_id": "demo-ana-001",
+        "name": "Ana García",
+        "role": "Asesor de Cuenta",
+        "department": "Banca Personal",
+    },
+    {
+        "label": "Carlos Mendoza · Analista de Compliance · Compliance y Riesgo",
+        "user_id": "demo-carlos-002",
+        "name": "Carlos Mendoza",
+        "role": "Analista de Compliance",
+        "department": "Compliance y Riesgo",
+    },
+    {
+        "label": "María Torres · Oficial AML · Compliance y Riesgo",
+        "user_id": "demo-maria-003",
+        "name": "María Torres",
+        "role": "Oficial AML",
+        "department": "Compliance y Riesgo",
+    },
+    {
+        "label": "Roberto Silva · Gerente de Agencia · Banca Empresarial",
+        "user_id": "demo-roberto-004",
+        "name": "Roberto Silva",
+        "role": "Gerente de Agencia",
+        "department": "Banca Empresarial",
+    },
+]
+
+EXAMPLE_QUESTIONS = {
+    "Asesor de Cuenta": [
+        "¿Qué documentos necesito para abrir una cuenta a un cliente nuevo?",
+        "¿Cómo identifico si un cliente es de alto riesgo en el onboarding?",
+        "¿Cuáles son los pasos para verificar la identidad de un cliente?",
+    ],
+    "Analista de Compliance": [
+        "¿Cuáles son los pasos del proceso KYC para clientes corporativos?",
+        "¿Cuál es el plazo de retención de documentos KYC?",
+        "¿Qué son los beneficiarios finales (UBO) y cómo se identifican?",
+    ],
+    "Oficial AML": [
+        "¿Cuándo es obligatorio hacer un Reporte de Actividad Sospechosa?",
+        "¿Qué patrones de transacción indican posible lavado de dinero?",
+        "¿Cuáles son los pasos de la debida diligencia reforzada (EDD)?",
+    ],
+    "Gerente de Agencia": [
+        "¿Qué capacitaciones AML debe completar un empleado nuevo?",
+        "¿Cuáles son mis responsabilidades en la política de privacidad de datos?",
+        "¿Qué hacer si detecto una posible actividad sospechosa en mi agencia?",
+    ],
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Page config
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -65,11 +123,13 @@ st.markdown("""
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())[:8]
 if "user_id" not in st.session_state:
-    st.session_state.user_id = "demo-user-001"
+    st.session_state.user_id = DEMO_PERSONAS[0]["user_id"]
 if "messages" not in st.session_state:
     st.session_state.messages = []   # [{role, content, rag_data?}]
 if "total_queries" not in st.session_state:
     st.session_state.total_queries = 0
+if "current_persona_label" not in st.session_state:
+    st.session_state.current_persona_label = DEMO_PERSONAS[0]["label"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -86,6 +146,31 @@ with st.sidebar:
 
     st.divider()
 
+    # ── Selector de persona demo ──────────────────────────────────────────────
+    persona_labels = [p["label"] for p in DEMO_PERSONAS]
+    selected_label = st.selectbox(
+        "👤 Usuario",
+        persona_labels,
+        key="persona_selector",
+    )
+    selected_persona = next(p for p in DEMO_PERSONAS if p["label"] == selected_label)
+
+    # Al cambiar de persona: reset sesión y auto-guardar perfil en DynamoDB
+    if st.session_state.current_persona_label != selected_label:
+        clear_session(st.session_state.session_id)
+        st.session_state.session_id = str(uuid.uuid4())[:8]
+        st.session_state.messages = []
+        st.session_state.total_queries = 0
+        st.session_state.current_persona_label = selected_label
+        st.session_state.user_id = selected_persona["user_id"]
+        update_user_profile(UserProfile(
+            user_id=selected_persona["user_id"],
+            name=selected_persona["name"],
+            role=selected_persona["role"],
+            department=selected_persona["department"],
+        ))
+        st.rerun()
+
     # Stats compactas
     profile = get_user_profile(st.session_state.user_id)
     c1, c2 = st.columns(2)
@@ -93,26 +178,6 @@ with st.sidebar:
     c2.metric("Sesiones", profile.session_count)
 
     st.divider()
-
-    # Perfil usuario
-    with st.expander("👤 Perfil de Usuario (DynamoDB)", expanded=False):
-        user_name = st.text_input("Nombre", value="Ana García", key="user_name_input")
-        user_role = st.selectbox(
-            "Rol",
-            ["Asesor de Cuenta", "Analista de Compliance", "Oficial AML", "Gerente de Agencia"],
-        )
-        user_dept = st.selectbox(
-            "Área",
-            ["Banca Personal", "Banca Empresarial", "Compliance y Riesgo", "Operaciones"],
-        )
-        if st.button("💾 Guardar en DynamoDB", use_container_width=True):
-            update_user_profile(UserProfile(
-                user_id=st.session_state.user_id,
-                name=user_name,
-                role=user_role,
-                department=user_dept,
-            ))
-            st.success("✓ Guardado")
 
     # Filtros retrieval
     with st.expander("🔍 Filtros de Retrieval", expanded=False):
@@ -150,18 +215,13 @@ with st.sidebar:
 
     st.divider()
 
-    # Preguntas de ejemplo
-    st.caption("**💡 Preguntas de ejemplo**")
-    example_questions = [
-        "¿Cuáles son los pasos del proceso KYC para clientes corporativos?",
-        "¿Qué documentos necesito para onboarding de cliente de alto riesgo?",
-        "¿Cuándo es obligatorio hacer un Reporte de Actividad Sospechosa?",
-        "¿Cuál es el plazo de retención de documentos KYC?",
-        "¿Qué capacitaciones AML debe completar un empleado nuevo?",
-        "¿Qué son los beneficiarios finales (UBO) y cómo se identifican?",
-    ]
-    for q in example_questions:
-        if st.button(q[:50] + "…", key=f"ex_{hash(q)}", use_container_width=True):
+    # Preguntas de ejemplo filtradas por rol del usuario activo
+    current_role = selected_persona["role"]
+    role_questions = EXAMPLE_QUESTIONS.get(current_role, [])
+    st.caption(f"**💡 Preguntas para {current_role}**")
+    for q in role_questions:
+        label = q if len(q) <= 52 else q[:50] + "…"
+        if st.button(label, key=f"ex_{hash(q)}", use_container_width=True):
             st.session_state.pending_query = q
 
 
