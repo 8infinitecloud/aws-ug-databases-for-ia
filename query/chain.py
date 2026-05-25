@@ -46,10 +46,8 @@ class RAGResponse:
 
 def get_llm() -> ChatBedrock:
     """
-    Retorna el cliente de Claude vía Bedrock.
+    Retorna el cliente LLM vía Bedrock (Converse API).
 
-    max_tokens=2048 es suficiente para respuestas de compliance detalladas
-    sin exceder el límite de tokens de salida de Claude Sonnet.
     temperature=0 para respuestas deterministas — en compliance la reproducibilidad
     importa más que la creatividad.
     """
