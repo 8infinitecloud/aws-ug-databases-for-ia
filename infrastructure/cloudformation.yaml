@@ -112,7 +112,7 @@ Resources:
   AppSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Security group para la aplicación RAG
+      GroupDescription: Security group para la aplicacion RAG
       VpcId: !Ref VPC
       SecurityGroupEgress:
         - IpProtocol: -1

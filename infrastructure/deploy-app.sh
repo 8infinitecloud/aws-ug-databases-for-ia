@@ -28,9 +28,10 @@ fi
 echo "============================================================"
 echo "  FinCorp RAG Lab — Deploy de Aplicación"
 echo "============================================================"
-echo "  Stack:   $STACK_NAME"
-echo "  Región:  $REGION"
+echo "  Stack:    $STACK_NAME"
+echo "  Región:   $REGION"
 echo "  Reingest: $REINGEST"
+[ -n "${AWS_PROFILE:-}" ] && echo "  Perfil:   $AWS_PROFILE"
 echo "============================================================"
 
 # ─────────────────────────────────────────────────────────────────────────────
