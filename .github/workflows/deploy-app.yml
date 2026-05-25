@@ -84,10 +84,12 @@ jobs:
               --query "InstanceInformationList[0].PingStatus" \
               --output text 2>/dev/null || echo "None")
             echo "  Intento $i/24 — SSM: $STATUS"
-            [ "$STATUS" = "Online" ] && break
+            if [ "$STATUS" = "Online" ]; then break; fi
             sleep 15
           done
-          [ "$STATUS" != "Online" ] && { echo "❌ EC2 no registrado en SSM tras 6 min"; exit 1; }
+          if [ "$STATUS" != "Online" ]; then
+            echo "❌ EC2 no registrado en SSM tras 6 min"; exit 1
+          fi
 
           echo "Esperando que UserData cree el .env..."
           for i in $(seq 1 20); do
@@ -103,10 +105,12 @@ jobs:
               --region "$AWS_REGION_VAL" \
               --query "StandardOutputContent" --output text 2>/dev/null || echo "")
             echo "  Intento $i/20 — .env: $RESULT"
-            [[ "$RESULT" == *"READY"* ]] && break
+            if [[ "$RESULT" == *"READY"* ]]; then break; fi
             sleep 20
           done
-          [[ "$RESULT" != *"READY"* ]] && { echo "❌ UserData no completó (.env ausente tras 10 min)"; exit 1; }
+          if [[ "$RESULT" != *"READY"* ]]; then
+            echo "❌ UserData no completó (.env ausente tras 10 min)"; exit 1
+          fi
           echo "✓ EC2 listo para deploy"
 
       - name: Package app code
@@ -163,7 +167,9 @@ jobs:
 
           echo "=== Ingestando documentos ==="
           INGEST_ARGS="--source $APP_DIR/data/"
-          [ "$REINGEST" = "true" ] && INGEST_ARGS="$INGEST_ARGS --clear"
+          if [ "$REINGEST" = "true" ]; then
+            INGEST_ARGS="$INGEST_ARGS --clear"
+          fi
           python3 "$APP_DIR/scripts/ingest_documents.py" $INGEST_ARGS
 
           echo "=== Reiniciando Streamlit ==="

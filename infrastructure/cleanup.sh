@@ -13,9 +13,8 @@ echo "  ⚠️  CLEANUP — Eliminando recursos del lab RAG"
 echo "============================================================"
 echo ""
 echo "  Esto eliminará PERMANENTEMENTE:"
-echo "  - Stack CloudFormation (VPC, Aurora, ElastiCache, EC2 App Server)"
-echo "  - Bucket S3 (vaciado y eliminado)"
-echo "  - Tabla DynamoDB"
+echo "  - Stack CloudFormation (VPC, Aurora, ElastiCache, EC2, DynamoDB, S3)"
+echo "  - Bucket S3 (vaciado antes de eliminar el stack)"
 echo "  - Secrets Manager secrets"
 echo ""
 read -r -p "  ¿Continuar? (escribe 'si' para confirmar): " CONFIRM
@@ -39,14 +38,7 @@ if [ -n "$S3_BUCKET" ]; then
 fi
 
 echo ""
-echo "[2/3] Eliminando tabla DynamoDB..."
-aws dynamodb delete-table \
-  --table-name rag_user_memory \
-  --region "$REGION" 2>/dev/null || echo "  (tabla no existía o ya eliminada)"
-echo "  ✓ Tabla DynamoDB eliminada"
-
-echo ""
-echo "[3/3] Eliminando CloudFormation stack (10-15 min)..."
+echo "[2/3] Eliminando CloudFormation stack (incluye Aurora, Redis, DynamoDB, EC2)..."
 aws cloudformation delete-stack \
   --stack-name "$STACK_NAME" \
   --region "$REGION"
