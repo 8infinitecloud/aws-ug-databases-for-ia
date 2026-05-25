@@ -155,8 +155,17 @@ with st.sidebar:
     )
     selected_persona = next(p for p in DEMO_PERSONAS if p["label"] == selected_label)
 
-    # Al cambiar de persona: reset sesión (Redis) pero preservar historial en DynamoDB
+    # Al cambiar de persona: auto-guardar sesión actual en memoria, luego resetear
     if st.session_state.current_persona_label != selected_label:
+        if st.session_state.total_queries >= 2:
+            session_msgs = get_session_messages(st.session_state.session_id)
+            if session_msgs:
+                with st.spinner("Guardando memoria de sesión…"):
+                    summarize_and_store_session(
+                        session_id=st.session_state.session_id,
+                        user_id=st.session_state.user_id,
+                        session_messages=session_msgs,
+                    )
         clear_session(st.session_state.session_id)
         st.session_state.session_id = str(uuid.uuid4())[:8]
         st.session_state.messages = []
@@ -199,24 +208,20 @@ with st.sidebar:
     # Control de sesión
     st.caption(f"Session: `{st.session_state.session_id}`")
     if st.button("🗑️ Nueva sesión", use_container_width=True):
-        clear_session(st.session_state.session_id)
-        st.session_state.session_id = str(uuid.uuid4())[:8]
-        st.session_state.messages = []
-        st.session_state.total_queries = 0
-        st.rerun()
-
-    if st.session_state.total_queries >= 4:
-        if st.button("💾 Guardar sesión como memoria semántica", use_container_width=True,
-                     help="Embeds el resumen de la sesión en pgvector para consultas futuras"):
+        if st.session_state.total_queries >= 2:
             session_msgs = get_session_messages(st.session_state.session_id)
             if session_msgs:
-                with st.spinner("Guardando en pgvector..."):
+                with st.spinner("Guardando memoria de sesión…"):
                     summarize_and_store_session(
                         session_id=st.session_state.session_id,
                         user_id=st.session_state.user_id,
                         session_messages=session_msgs,
                     )
-                st.success("✓ Memoria semántica guardada")
+        clear_session(st.session_state.session_id)
+        st.session_state.session_id = str(uuid.uuid4())[:8]
+        st.session_state.messages = []
+        st.session_state.total_queries = 0
+        st.rerun()
 
     st.divider()
 
