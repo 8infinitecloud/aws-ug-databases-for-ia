@@ -55,7 +55,7 @@ jobs:
         run: pip install cfn-lint --quiet
 
       - name: Lint CloudFormation template
-        run: cfn-lint infrastructure/cloudformation.yaml
+        run: cfn-lint infrastructure/cloudformation.yaml --non-zero-exit-code error
 
   validate-data:
     name: Sample documents exist

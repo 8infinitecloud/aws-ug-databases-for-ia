@@ -18,7 +18,7 @@ echo "  - Bucket S3 (vaciado y eliminado)"
 echo "  - Tabla DynamoDB"
 echo "  - Secrets Manager secrets"
 echo ""
-read -p "  ¿Continuar? (escribe 'si' para confirmar): " CONFIRM
+read -r -p "  ¿Continuar? (escribe 'si' para confirmar): " CONFIRM
 
 if [ "$CONFIRM" != "si" ]; then
   echo "Cleanup cancelado."
