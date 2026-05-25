@@ -85,6 +85,9 @@ jobs:
     name: Trigger app deploy
     needs: deploy-infra
     runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
     steps:
       - name: Dispatch deploy-app workflow
         uses: actions/github-script@v7
