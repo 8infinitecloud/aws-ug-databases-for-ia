@@ -112,6 +112,14 @@ jobs:
           aws s3 cp "s3://$S3_BUCKET/app-code.tar.gz" "$APP_DIR/app-code.tar.gz" --region "$REGION"
           cd "$APP_DIR" && tar -xzf app-code.tar.gz --overwrite && rm app-code.tar.gz
 
+          if [ ! -f "$APP_DIR/.env" ]; then
+            echo "ERROR: .env no encontrado. El UserData del EC2 no completó correctamente."
+            exit 1
+          fi
+
+          echo "=== Instalando dependencias Python ==="
+          python3 -m pip install --quiet -r "$APP_DIR/requirements.txt"
+
           echo "=== Inicializando schema ==="
           python3 "$APP_DIR/scripts/init_db.py"
 
@@ -123,7 +131,7 @@ jobs:
           echo "=== Reiniciando Streamlit ==="
           pkill -f "streamlit run" 2>/dev/null || true
           sleep 2
-          nohup python3 -m streamlit run "$APP_DIR/app/app.py" \
+          PYTHONPATH="$APP_DIR" nohup python3 -m streamlit run "$APP_DIR/app/app.py" \
             --server.port 8501 --server.headless true --server.address 0.0.0.0 \
             >> /var/log/streamlit.log 2>&1 &
           sleep 3
