@@ -40,7 +40,7 @@ def load_from_directory(data_dir: str | Path) -> list[Document]:
         glob="**/*.md",
         loader_cls=TextLoader,
         loader_kwargs={"encoding": "utf-8"},
-        show_progress=True,
+        show_progress=False,
         use_multithreading=True,
     )
 
