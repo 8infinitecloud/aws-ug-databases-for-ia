@@ -297,7 +297,7 @@ Resources:
       # SSM Run Command — sin esta policy el EC2 no aparece en Fleet Manager
       # y no puede ser manejado sin SSH keys.
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policies/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
       Policies:
         - PolicyName: RAGLabPolicy
           PolicyDocument:

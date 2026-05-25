@@ -70,28 +70,28 @@ aws iam create-role \
 # Adjuntar permisos necesarios para el lab
 aws iam attach-role-policy \
   --role-name rag-lab-github-actions-role \
-  --policy-arn arn:aws:iam::aws:policies/AmazonBedrockFullAccess
+  --policy-arn arn:aws:iam::aws:policy/AmazonBedrockFullAccess
 
 aws iam attach-role-policy \
   --role-name rag-lab-github-actions-role \
-  --policy-arn arn:aws:iam::aws:policies/AmazonDynamoDBFullAccess
+  --policy-arn arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
 
 aws iam attach-role-policy \
   --role-name rag-lab-github-actions-role \
-  --policy-arn arn:aws:iam::aws:policies/AmazonS3FullAccess
+  --policy-arn arn:aws:iam::aws:policy/AmazonS3FullAccess
 
 aws iam attach-role-policy \
   --role-name rag-lab-github-actions-role \
-  --policy-arn arn:aws:iam::aws:policies/AmazonSSMFullAccess
+  --policy-arn arn:aws:iam::aws:policy/AmazonSSMFullAccess
 
 aws iam attach-role-policy \
   --role-name rag-lab-github-actions-role \
-  --policy-arn arn:aws:iam::aws:policies/AWSCloudFormationFullAccess
+  --policy-arn arn:aws:iam::aws:policy/AWSCloudFormationFullAccess
 
 # Permisos para crear VPC, RDS, ElastiCache, IAM
 aws iam attach-role-policy \
   --role-name rag-lab-github-actions-role \
-  --policy-arn arn:aws:iam::aws:policies/PowerUserAccess
+  --policy-arn arn:aws:iam::aws:policy/PowerUserAccess
 
 echo "ARN del rol:"
 aws iam get-role \
