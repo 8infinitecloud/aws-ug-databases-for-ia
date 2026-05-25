@@ -390,22 +390,8 @@ Resources:
             python3.11 -m ensurepip --upgrade
             ln -sf /usr/bin/python3.11 /usr/local/bin/python3
 
-            echo "=== Instalando paquetes Python ==="
+            echo "=== Actualizando pip ==="
             python3 -m pip install --upgrade pip --quiet
-            python3 -m pip install --quiet \
-              "boto3>=1.35.0" \
-              "langchain==0.3.7" \
-              "langchain-aws==0.2.6" \
-              "langchain-community==0.3.7" \
-              "langchain-core==0.3.15" \
-              "psycopg2-binary>=2.9.9" \
-              "pgvector>=0.3.2" \
-              "redis>=5.1.1" \
-              "streamlit>=1.40.0" \
-              "plotly>=5.24.0" \
-              "python-dotenv>=1.0.1" \
-              "tenacity>=9.0.0" \
-              "rich>=13.9.0"
 
             echo "=== Creando directorio de la app ==="
             mkdir -p /opt/rag-lab
