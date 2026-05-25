@@ -155,7 +155,7 @@ with st.sidebar:
     )
     selected_persona = next(p for p in DEMO_PERSONAS if p["label"] == selected_label)
 
-    # Al cambiar de persona: reset sesión y auto-guardar perfil en DynamoDB
+    # Al cambiar de persona: reset sesión (Redis) pero preservar historial en DynamoDB
     if st.session_state.current_persona_label != selected_label:
         clear_session(st.session_state.session_id)
         st.session_state.session_id = str(uuid.uuid4())[:8]
@@ -163,11 +163,16 @@ with st.sidebar:
         st.session_state.total_queries = 0
         st.session_state.current_persona_label = selected_label
         st.session_state.user_id = selected_persona["user_id"]
+        # Preservar session_count y summary previos — solo actualizar nombre/rol/área
+        existing = get_user_profile(selected_persona["user_id"])
         update_user_profile(UserProfile(
             user_id=selected_persona["user_id"],
             name=selected_persona["name"],
             role=selected_persona["role"],
             department=selected_persona["department"],
+            session_count=existing.session_count,
+            summary=existing.summary,
+            custom_prefs=existing.custom_prefs,
         ))
         st.rerun()
 
