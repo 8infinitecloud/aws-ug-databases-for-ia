@@ -415,7 +415,7 @@ Resources:
             cat > /opt/rag-lab/.env << 'ENVEOF'
             AWS_REGION=${Region}
             BEDROCK_EMBEDDING_MODEL=amazon.titan-embed-text-v2:0
-            BEDROCK_LLM_MODEL=anthropic.claude-3-5-sonnet-20241022-v2:0
+            BEDROCK_LLM_MODEL=anthropic.claude-sonnet-4-5-20250929-v1:0
             EMBEDDING_DIMENSIONS=1024
             AURORA_HOST=${AuroraHost}
             AURORA_PORT=5432

@@ -24,7 +24,7 @@ class BedrockConfig:
     )
     llm_model: str = field(
         default_factory=lambda: os.getenv(
-            "BEDROCK_LLM_MODEL", "anthropic.claude-3-5-sonnet-20241022-v2:0"
+            "BEDROCK_LLM_MODEL", "anthropic.claude-sonnet-4-5-20250929-v1:0"
         )
     )
     # Titan V2 soporta 256, 512 o 1024. En el lab usamos 1024 para máxima precisión;
