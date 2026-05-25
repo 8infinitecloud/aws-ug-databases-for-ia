@@ -63,8 +63,7 @@ def get_llm() -> ChatBedrock:
         model_id=bedrock_cfg.llm_model,
         model_kwargs={
             "max_tokens": 2048,
-            "temperature": 0,      # determinista para compliance
-            "top_p": 1,
+            "temperature": 0,
         },
     )
 
