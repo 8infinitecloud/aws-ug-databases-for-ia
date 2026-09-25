@@ -142,7 +142,8 @@ with st.sidebar:
         width=110,
     )
     st.markdown("### FinCorp RAG Lab")
-    st.caption("AWS Community Day · Databases for AI")
+    st.caption("AWS Community Day Perú 2026 · De los Datos a la IA")
+    st.caption("Lab 3 — la IA consumiendo la plataforma de datos")
 
     st.divider()
 
