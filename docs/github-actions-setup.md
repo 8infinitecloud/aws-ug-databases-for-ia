@@ -84,9 +84,15 @@ aws iam attach-role-policy \
   --role-name rag-lab-github-actions-role \
   --policy-arn arn:aws:iam::aws:policy/AmazonSSMFullAccess
 
+# Terraform guarda el state en S3 y los locks en DynamoDB: el rol necesita
+# acceso a ambos ademas de a los recursos que crea.
 aws iam attach-role-policy \
   --role-name rag-lab-github-actions-role \
-  --policy-arn arn:aws:iam::aws:policy/AWSCloudFormationFullAccess
+  --policy-arn arn:aws:iam::aws:policy/AmazonS3FullAccess
+
+aws iam attach-role-policy \
+  --role-name rag-lab-github-actions-role \
+  --policy-arn arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
 
 # Permisos para crear VPC, RDS, ElastiCache, IAM
 aws iam attach-role-policy \
@@ -126,10 +132,10 @@ Haz un push pequeño a `main` (edita un comentario en `app/app.py`) y verifica q
 ```
 PR abierto
     └─► CI — Validate (automático)
-            ├─ Python syntax
+            ├─ Python syntax + ruff
             ├─ Shell (shellcheck)
-            ├─ CloudFormation (cfn-lint)
-            └─ Corpus documents
+            ├─ Terraform (fmt + validate, los 4 modulos)
+            └─ Datasets y corpus
 
 Push a main (cambios en app/ o data/)
     └─► Deploy App (automático)
@@ -137,9 +143,14 @@ Push a main (cambios en app/ o data/)
             ├─ SSM Run Command en EC2
             └─ Streamlit reinicia
 
+Una vez por cuenta AWS (en local, no en CI)
+    └─► cd infra/bootstrap && terraform apply
+            └─ crea el bucket del state y la tabla de locks
+
 Manual (primera vez o cambio de infra)
     └─► Deploy Infrastructure
-            ├─ cfn validate
-            ├─ CloudFormation deploy
+            ├─ reconstruye infra/backend.hcl desde el account id
+            ├─ terraform init -backend-config=../backend.hcl
+            ├─ terraform apply (lab1 → lab2, lab3 en paralelo)
             └─► dispara Deploy App automáticamente
 ```

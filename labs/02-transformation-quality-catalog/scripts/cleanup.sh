@@ -28,15 +28,17 @@ error()   { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
 PROJECT_NAME="${PROJECT_NAME:-fincorp-datalake}"
 ENVIRONMENT="${ENVIRONMENT:-lab}"
 REGION="${AWS_REGION:-us-east-1}"
-LAB1_STACK="${PROJECT_NAME}-${ENVIRONMENT}-lab1"
-LAB2_STACK="${PROJECT_NAME}-${ENVIRONMENT}-lab2"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+# shellcheck source=../../../scripts/lib/tf.sh
+source "${REPO_ROOT}/scripts/lib/tf.sh"
 
 echo "============================================================"
 echo -e "${RED}  ⚠️  CLEANUP — Lab 2: Eliminar recursos Glue${NC}"
 echo "============================================================"
 echo ""
 echo "  Esto eliminará:"
-echo "  - Stack CloudFormation: ${LAB2_STACK}"
+echo "  - Todo el modulo Terraform infra/lab2"
 echo "  - Glue Job, Crawler, Database, DQ Ruleset"
 echo "  - IAM Role Glue"
 echo "  - S3: curated/, rejected/, quality-reports/ (datos procesados)"
@@ -54,12 +56,11 @@ fi
 
 echo ""
 
-# Obtener S3 bucket del Lab 1 (si existe)
-S3_BUCKET=$(aws cloudformation describe-stacks \
-  --stack-name "${LAB1_STACK}" \
-  --region     "${REGION}" \
-  --query      "Stacks[0].Outputs[?OutputKey=='S3BucketName'].OutputValue" \
-  --output     text 2>/dev/null || echo "")
+# Obtener S3 bucket del Lab 1 (si sigue desplegado)
+tf_require || error "Terraform no esta listo. Ver infra/README.md."
+tf_init lab1 >/dev/null 2>&1 || true
+tf_init lab2 >/dev/null 2>&1 || true
+S3_BUCKET=$(tf_output lab1 s3_bucket_name)
 
 # ── [1] Eliminar tablas del Glue Catalog ─────────────────────────────────────
 echo ""
@@ -107,30 +108,22 @@ else
   warn "No se encontró el S3 bucket del Lab 1. Limpia manualmente si es necesario."
 fi
 
-# ── [3] Eliminar CloudFormation stack ────────────────────────────────────────
+# ── [3] Destruir la infraestructura del Lab 2 ────────────────────────────────
 echo ""
-info "[3/3] Eliminando CloudFormation stack Lab 2..."
+info "[3/3] Ejecutando terraform destroy del Lab 2 (~2 min)..."
 
-STACK_STATUS=$(aws cloudformation describe-stacks \
-  --stack-name "${LAB2_STACK}" \
-  --region     "${REGION}" \
-  --query      "Stacks[0].StackStatus" \
-  --output     text 2>/dev/null || echo "NOT_FOUND")
-
-if [ "${STACK_STATUS}" = "NOT_FOUND" ]; then
-  warn "Stack ${LAB2_STACK} no existe. Nada que eliminar."
+if ! tf_deployed lab2; then
+  warn "El modulo infra/lab2 no tiene recursos. Nada que eliminar."
 else
-  aws cloudformation delete-stack \
-    --stack-name "${LAB2_STACK}" \
-    --region     "${REGION}"
+  TF_STATE_BUCKET=$(grep -E '^\s*bucket\s*=' "${TF_BACKEND_CONFIG}" | head -1 | sed 's/.*= *"\(.*\)"/\1/')
+  export TF_VAR_state_bucket="${TF_STATE_BUCKET}"
+  export TF_VAR_project_name="${PROJECT_NAME}"
+  export TF_VAR_environment="${ENVIRONMENT}"
+  export TF_VAR_aws_region="${REGION}"
 
-  info "     Esperando eliminación (~2 min)..."
-  aws cloudformation wait stack-delete-complete \
-    --stack-name "${LAB2_STACK}" \
-    --region     "${REGION}" \
-    || warn "Wait timeout — verifica en la consola de CloudFormation"
+  tf_destroy lab2 || warn "terraform destroy devolvio error — revisa la consola AWS"
 
-  success "Stack ${LAB2_STACK} eliminado"
+  success "Infraestructura del Lab 2 destruida"
 fi
 
 echo ""

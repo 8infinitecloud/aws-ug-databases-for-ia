@@ -30,14 +30,18 @@ error()   { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
 PROJECT_NAME="${PROJECT_NAME:-fincorp-datalake}"
 ENVIRONMENT="${ENVIRONMENT:-lab}"
 REGION="${AWS_REGION:-us-east-1}"
-STACK_NAME="${PROJECT_NAME}-${ENVIRONMENT}-lab1"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+# shellcheck source=../../../scripts/lib/tf.sh
+source "${REPO_ROOT}/scripts/lib/tf.sh"
 
 echo "============================================================"
 echo -e "${RED}  ⚠️  CLEANUP — Lab 1: Eliminar recursos AWS${NC}"
 echo "============================================================"
 echo ""
 echo "  Esto eliminará PERMANENTEMENTE:"
-echo "  - Stack CloudFormation: ${STACK_NAME}"
+echo "  - Todo el modulo Terraform infra/lab1"
 echo "  - VPC + Subnets + Security Groups"
 echo "  - RDS MySQL (${PROJECT_NAME}-${ENVIRONMENT}-mysql)"
 echo "  - DMS Replication Instance + Endpoints + Task"
@@ -54,29 +58,17 @@ fi
 
 echo ""
 
-# ── Helper ────────────────────────────────────────────────────────────────────
-get_output() {
-  aws cloudformation describe-stacks \
-    --stack-name "${STACK_NAME}" \
-    --region     "${REGION}" \
-    --query      "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" \
-    --output     text 2>/dev/null || echo ""
-}
+# ── Verificar que hay algo que eliminar ───────────────────────────────────────
+tf_require || error "Terraform no esta listo. Ver infra/README.md."
+tf_init lab1 >/dev/null 2>&1 || true
 
-# ── Verificar que el stack existe ─────────────────────────────────────────────
-STACK_STATUS=$(aws cloudformation describe-stacks \
-  --stack-name "${STACK_NAME}" \
-  --region     "${REGION}" \
-  --query      "Stacks[0].StackStatus" \
-  --output     text 2>/dev/null || echo "NOT_FOUND")
-
-if [ "${STACK_STATUS}" = "NOT_FOUND" ]; then
-  warn "Stack ${STACK_NAME} no existe. Nada que eliminar."
+if ! tf_deployed lab1; then
+  warn "El modulo infra/lab1 no tiene recursos. Nada que eliminar."
   exit 0
 fi
 
-DMS_TASK_ARN=$(get_output "DMSTaskArn")
-S3_BUCKET=$(get_output "S3BucketName")
+DMS_TASK_ARN=$(tf_output lab1 dms_task_arn)
+S3_BUCKET=$(tf_output lab1 s3_bucket_name)
 
 # ── [1/4] Detener DMS Task ────────────────────────────────────────────────────
 echo ""
@@ -95,7 +87,7 @@ if [ -n "${DMS_TASK_ARN}" ] && [ "${DMS_TASK_ARN}" != "None" ]; then
       --region "${REGION}" > /dev/null 2>&1 || true
 
     info "     Esperando que la tarea se detenga..."
-    for i in {1..12}; do
+    for _ in {1..12}; do
       sleep 5
       STATUS=$(aws dms describe-replication-tasks \
         --filters "Name=replication-task-arn,Values=${DMS_TASK_ARN}" \
@@ -113,7 +105,7 @@ if [ -n "${DMS_TASK_ARN}" ] && [ "${DMS_TASK_ARN}" != "None" ]; then
     success "Tarea DMS no estaba en ejecución (status: ${TASK_STATUS})"
   fi
 else
-  warn "ARN de tarea DMS no encontrado en los outputs del stack"
+  warn "ARN de tarea DMS no encontrado en los outputs de Terraform"
 fi
 
 # ── [2/4] Vaciar bucket S3 (incluyendo versiones) ────────────────────────────
@@ -148,41 +140,34 @@ if objects:
 
   success "Bucket vaciado: ${S3_BUCKET}"
 else
-  warn "Nombre del bucket no encontrado en outputs del stack"
+  warn "Nombre del bucket no encontrado en outputs de Terraform"
 fi
 
-# ── [3/4] Eliminar CloudFormation stack ──────────────────────────────────────
+# ── [3/4] Destruir la infraestructura ─────────────────────────────────────────
 echo ""
-info "[3/4] Eliminando CloudFormation stack (VPC, RDS, DMS, S3, IAM)..."
+info "[3/4] Ejecutando terraform destroy (VPC, RDS, DMS, S3, IAM)..."
 info "      Tiempo estimado: ~5-10 minutos"
 
-aws cloudformation delete-stack \
-  --stack-name "${STACK_NAME}" \
-  --region     "${REGION}"
+# terraform destroy necesita las variables sin default para poder planificar,
+# aunque el valor no se use para borrar nada.
+export TF_VAR_db_password="${DB_PASSWORD:-placeholder-no-usado-en-destroy}"
+export TF_VAR_project_name="${PROJECT_NAME}"
+export TF_VAR_environment="${ENVIRONMENT}"
+export TF_VAR_aws_region="${REGION}"
 
-info "      Esperando eliminación completa..."
-aws cloudformation wait stack-delete-complete \
-  --stack-name "${STACK_NAME}" \
-  --region     "${REGION}" \
-  || warn "El wait timeout expiró — verifica manualmente en la consola de CloudFormation"
+tf_destroy lab1 || warn "terraform destroy devolvio error — revisa la consola AWS"
 
-success "Stack ${STACK_NAME} eliminado"
+success "Infraestructura del Lab 1 destruida"
 
 # ── [4/4] Verificación final ──────────────────────────────────────────────────
 echo ""
 info "[4/4] Verificación final..."
 
-# Verificar que el stack no existe
-FINAL_STATUS=$(aws cloudformation describe-stacks \
-  --stack-name "${STACK_NAME}" \
-  --region     "${REGION}" \
-  --query      "Stacks[0].StackStatus" \
-  --output     text 2>/dev/null || echo "NOT_FOUND")
-
-if [ "${FINAL_STATUS}" = "NOT_FOUND" ] || [ "${FINAL_STATUS}" = "DELETE_COMPLETE" ]; then
-  success "Stack eliminado correctamente"
+if tf_deployed lab1; then
+  warn "Quedan recursos en el state de infra/lab1:"
+  terraform -chdir="${REPO_ROOT}/infra/lab1" state list 2>/dev/null | sed 's/^/      /'
 else
-  warn "Stack en estado: ${FINAL_STATUS}. Puede estar aún eliminándose."
+  success "El state de infra/lab1 quedo vacio"
 fi
 
 # ── Resumen ────────────────────────────────────────────────────────────────────
@@ -192,7 +177,7 @@ echo -e "${GREEN}  ✅ Cleanup Lab 1 completado${NC}"
 echo "============================================================"
 echo ""
 echo "  Recursos eliminados:"
-echo "  ✓ CloudFormation stack: ${STACK_NAME}"
+echo "  ✓ Modulo Terraform infra/lab1"
 echo "  ✓ VPC + Networking"
 echo "  ✓ RDS MySQL"
 echo "  ✓ DMS Replication Instance + Task"
@@ -204,5 +189,4 @@ echo "  Verifica en la consola AWS que no queden recursos:"
 echo "  - https://console.aws.amazon.com/rds"
 echo "  - https://console.aws.amazon.com/dms"
 echo "  - https://console.aws.amazon.com/s3"
-echo "  - https://console.aws.amazon.com/cloudformation"
 echo ""

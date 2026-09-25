@@ -9,18 +9,20 @@
 
 set -euo pipefail
 
-STACK_NAME="financial-compliance-rag-lab"
 REGION="${AWS_REGION:-us-east-1}"
 PROJECT_NAME="rag-lab"
 DB_PASSWORD="${DB_PASSWORD:-RagLab2024!}"
 ENVIRONMENT="${ENVIRONMENT:-lab}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+# shellcheck source=../../../scripts/lib/tf.sh
+source "${REPO_ROOT}/scripts/lib/tf.sh"
 
 echo "============================================================"
 echo "  FinCorp RAG Lab — Provisioning de Infraestructura"
 echo "============================================================"
-echo "  Stack:  $STACK_NAME"
+echo "  Modulo: infra/lab3"
 echo "  Región: $REGION"
 echo "  Env:    $ENVIRONMENT"
 [ -n "${AWS_PROFILE:-}" ] && echo "  Perfil: $AWS_PROFILE"
@@ -34,6 +36,7 @@ echo ""
 echo "[1/3] Verificando prerequisitos..."
 
 command -v aws >/dev/null 2>&1 || { echo "❌ AWS CLI no encontrado."; exit 1; }
+tf_require || { echo "❌ Terraform no esta listo. Ver infra/README.md."; exit 1; }
 
 AWS_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 echo "  ✓ AWS Account: $AWS_ACCOUNT | Región: $REGION"
@@ -51,42 +54,34 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 
 echo ""
-echo "[2/3] Desplegando CloudFormation stack (~15-20 min)..."
+echo "[2/3] Aplicando infraestructura con Terraform (~15-20 min)..."
 echo "  ⏱  Aurora Serverless v2 es el recurso más lento. Toma un café ☕"
 
-aws cloudformation deploy \
-  --stack-name "$STACK_NAME" \
-  --template-file "$SCRIPT_DIR/cloudformation.yaml" \
-  --parameter-overrides \
-    ProjectName="$PROJECT_NAME" \
-    DBPassword="$DB_PASSWORD" \
-    EnvironmentType="$ENVIRONMENT" \
-  --capabilities CAPABILITY_NAMED_IAM \
-  --region "$REGION" \
-  --no-fail-on-empty-changeset
+tf_init lab3 || { echo "❌ terraform init fallo."; exit 1; }
 
-echo "  ✓ Stack desplegado"
+# La contraseña viaja por TF_VAR_, no como argumento: -var la dejaria en el
+# historial del shell y en la lista de procesos.
+export TF_VAR_db_password="$DB_PASSWORD"
+export TF_VAR_project_name="$PROJECT_NAME"
+export TF_VAR_environment_type="$ENVIRONMENT"
+export TF_VAR_aws_region="$REGION"
+
+tf_apply lab3 || { echo "❌ terraform apply fallo."; exit 1; }
+
+echo "  ✓ Infraestructura aplicada"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # [3/3] Mostrar outputs
 # ─────────────────────────────────────────────────────────────────────────────
 
 echo ""
-echo "[3/3] Outputs del stack..."
+echo "[3/3] Outputs de Terraform..."
 
-get_output() {
-  aws cloudformation describe-stacks \
-    --stack-name "$STACK_NAME" \
-    --region "$REGION" \
-    --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" \
-    --output text
-}
-
-echo "  Aurora:      $(get_output AuroraEndpoint)"
-echo "  Redis:       $(get_output RedisEndpoint)"
-echo "  S3:          $(get_output S3BucketName)"
-echo "  EC2 ID:      $(get_output AppServerInstanceId)"
-echo "  Streamlit:   $(get_output StreamlitURL)"
+echo "  Aurora:      $(tf_output lab3 aurora_endpoint)"
+echo "  Redis:       $(tf_output lab3 redis_endpoint)"
+echo "  S3:          $(tf_output lab3 s3_bucket_name)"
+echo "  EC2 ID:      $(tf_output lab3 app_server_instance_id)"
+echo "  Streamlit:   $(tf_output lab3 streamlit_url)"
 
 echo ""
 echo "============================================================"

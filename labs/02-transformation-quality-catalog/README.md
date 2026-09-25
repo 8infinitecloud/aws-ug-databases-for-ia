@@ -39,7 +39,7 @@ DESPUÉS (datos curados del Lab 2):
 
 Para ~1000 filas, PySpark sería overkill. Python Shell inicia en ~20 segundos vs 3 minutos de Spark, y el código es pandas — la librería que todos conocen.
 
-En producción con millones de filas, migrar a PySpark Glue Job cambia solo el `Command.Name: glueetl` en el CloudFormation y los DataFrames de pandas a Spark. La lógica de negocio queda igual.
+En producción con millones de filas, migrar a PySpark Glue Job cambia solo el `command.name = "glueetl"` en `infra/lab2/glue.tf` y los DataFrames de pandas a Spark. La lógica de negocio queda igual.
 
 ### ¿Por qué Glue Data Quality con DQDL?
 
@@ -137,7 +137,8 @@ El job agrega metadata al Glue Catalog que va más allá del schema técnico:
 - Lab 1 debe estar deployed con datos en S3 (`./validate.sh` del Lab 1 pasa)
 - AWS CLI v2
 - `jq` (para mostrar el quality report en color)
-- Permisos IAM: Glue, S3, IAM, CloudFormation, CloudWatch Logs
+- Terraform >= 1.6 y el backend remoto bootstrapeado (ver `infra/README.md`)
+- Permisos IAM: Glue, S3, IAM, CloudWatch Logs
 
 ---
 
@@ -153,7 +154,7 @@ cd labs/02-transformation-quality-catalog/scripts
 El script:
 1. Verifica que el Lab 1 existe
 2. Sube `glue_job.py` al bucket S3 del Lab 1
-3. Despliega el stack CloudFormation (Glue Job + Crawler + Catalog + DQ Ruleset)
+3. Aplica el módulo Terraform `infra/lab2` (Glue Job + Crawler + Catalog + DQ Ruleset)
 
 ### Paso 2: Ejecutar el pipeline ETL (~3 min)
 
@@ -209,7 +210,7 @@ El score del dataset curated (solo registros válidos) será más alto: reglas d
 ./cleanup.sh
 ```
 
-Elimina: Glue Job/Crawler/Database/Ruleset, IAM Role, datos de `curated/`, `rejected/` y `quality-reports/` en S3, CloudFormation stack Lab 2.
+Elimina: Glue Job/Crawler/Database/Ruleset, IAM Role, datos de `curated/`, `rejected/` y `quality-reports/` en S3 — todo el módulo `infra/lab2`.
 
 **No elimina** el bucket S3 ni los datos `raw/` — esos pertenecen al Lab 1.
 

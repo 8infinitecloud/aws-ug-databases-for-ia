@@ -9,7 +9,7 @@
 #   2. Obtiene el S3 bucket del Lab 1
 #   3. Sube glue_job.py al bucket S3
 #   4. Valida y despliega lab2-cfn.yaml
-#   5. Muestra los outputs (GlueJobName, CrawlerName)
+#   5. Muestra los outputs (glue_job_name, crawler_name)
 #   NO ejecuta el job — eso lo hace run_job.sh
 #
 # Uso:
@@ -34,19 +34,18 @@ error()   { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
 PROJECT_NAME="${PROJECT_NAME:-fincorp-datalake}"
 ENVIRONMENT="${ENVIRONMENT:-lab}"
 REGION="${AWS_REGION:-us-east-1}"
-LAB1_STACK="${PROJECT_NAME}-${ENVIRONMENT}-lab1"
-LAB2_STACK="${PROJECT_NAME}-${ENVIRONMENT}-lab2"
 GLUE_SCRIPT_KEY="scripts/glue_job.py"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LAB_DIR="$(dirname "$SCRIPT_DIR")"
-INFRA_DIR="${LAB_DIR}/infrastructure"
+REPO_ROOT="$(cd "${LAB_DIR}/../.." && pwd)"
+# shellcheck source=../../../scripts/lib/tf.sh
+source "${REPO_ROOT}/scripts/lib/tf.sh"
 
 echo "============================================================"
 echo "  FinCorp Data Platform — Lab 2: Transformation + DQ + Catalog"
 echo "============================================================"
-echo "  Stack Lab 1: ${LAB1_STACK}"
-echo "  Stack Lab 2: ${LAB2_STACK}"
+echo "  Modulos:  infra/lab1 (lectura) e infra/lab2"
 echo "  Región:      ${REGION}"
 echo "============================================================"
 echo ""
@@ -56,36 +55,23 @@ info "[0/5] Verificando prerequisitos..."
 command -v aws >/dev/null 2>&1 || error "AWS CLI no encontrado."
 command -v jq  >/dev/null 2>&1 || error "jq no encontrado."
 aws sts get-caller-identity > /dev/null 2>&1 || error "No se pudo autenticar en AWS."
-success "AWS CLI y credenciales OK"
+tf_require || error "Terraform no esta listo. Ver infra/README.md."
+success "AWS CLI, credenciales y Terraform OK"
 
-# ── [1] Verificar Lab 1 stack ─────────────────────────────────────────────────
+# ── [1] Verificar Lab 1 ───────────────────────────────────────────────────────
 echo ""
-info "[1/5] Verificando que el stack de Lab 1 existe..."
+info "[1/5] Verificando que el Lab 1 esta desplegado..."
 
-LAB1_STATUS=$(aws cloudformation describe-stacks \
-  --stack-name "${LAB1_STACK}" \
-  --region     "${REGION}" \
-  --query      "Stacks[0].StackStatus" \
-  --output     text 2>/dev/null || echo "NOT_FOUND")
+tf_init lab1 >/dev/null 2>&1 || true
 
-if [ "${LAB1_STATUS}" = "NOT_FOUND" ]; then
-  error "Stack Lab 1 (${LAB1_STACK}) no existe. Ejecuta primero: cd ../01-ingestion-data-lake/scripts && ./setup.sh"
+if ! tf_deployed lab1; then
+  error "El modulo infra/lab1 no tiene recursos. Ejecuta primero: cd ../../01-ingestion-data-lake/scripts && ./setup.sh"
 fi
 
-if [ "${LAB1_STATUS}" != "CREATE_COMPLETE" ] && [ "${LAB1_STATUS}" != "UPDATE_COMPLETE" ]; then
-  error "Stack Lab 1 en estado inesperado: ${LAB1_STATUS}"
-fi
+success "Modulo infra/lab1 desplegado"
 
-success "Stack Lab 1: ${LAB1_STATUS}"
-
-# Obtener S3 bucket del Lab 1
-S3_BUCKET=$(aws cloudformation describe-stacks \
-  --stack-name "${LAB1_STACK}" \
-  --region     "${REGION}" \
-  --query      "Stacks[0].Outputs[?OutputKey=='S3BucketName'].OutputValue" \
-  --output     text)
-
-[ -n "${S3_BUCKET}" ] || error "No se pudo obtener S3BucketName del Lab 1"
+S3_BUCKET=$(tf_output lab1 s3_bucket_name)
+[ -n "${S3_BUCKET}" ] || error "No se pudo leer s3_bucket_name del Lab 1"
 success "S3 Bucket (Lab 1): ${S3_BUCKET}"
 
 # Verificar que hay datos en raw/
@@ -109,51 +95,42 @@ aws s3 cp "${LAB_DIR}/glue_job.py" \
 
 success "Script subido: s3://${S3_BUCKET}/${GLUE_SCRIPT_KEY}"
 
-# ── [3] Validar template CloudFormation ──────────────────────────────────────
+# ── [3] Inicializar Terraform ─────────────────────────────────────────────────
 echo ""
-info "[3/5] Validando template CloudFormation lab2-cfn.yaml..."
+info "[3/5] Inicializando Terraform (modulo infra/lab2)..."
 
-aws cloudformation validate-template \
-  --template-body "file://${INFRA_DIR}/lab2-cfn.yaml" \
-  --region        "${REGION}" \
-  --output        text > /dev/null \
-  || error "Template inválido. Revisa lab2-cfn.yaml."
+tf_init lab2 || error "terraform init fallo. Revisa infra/README.md."
 
-success "Template válido"
+success "Backend remoto conectado"
 
-# ── [4] Desplegar CloudFormation ──────────────────────────────────────────────
+# ── [4] Aplicar ───────────────────────────────────────────────────────────────
 echo ""
-info "[4/5] Desplegando stack Lab 2 (~2 min)..."
+info "[4/5] Aplicando infraestructura del Lab 2 (~2 min)..."
 
-aws cloudformation deploy \
-  --stack-name    "${LAB2_STACK}" \
-  --template-file "${INFRA_DIR}/lab2-cfn.yaml" \
-  --parameter-overrides \
-    ProjectName="${PROJECT_NAME}" \
-    Environment="${ENVIRONMENT}" \
-    S3BucketName="${S3_BUCKET}" \
-    GlueJobScriptS3Key="${GLUE_SCRIPT_KEY}" \
-  --capabilities CAPABILITY_NAMED_IAM \
-  --region        "${REGION}" \
-  --no-fail-on-empty-changeset
+# El bucket NO se pasa: el modulo lo lee del state del Lab 1 con
+# terraform_remote_state. Solo hace falta decirle donde vive ese state.
+TF_STATE_BUCKET=$(grep -E '^\s*bucket\s*=' "${TF_BACKEND_CONFIG}" | head -1 | sed 's/.*= *"\(.*\)"/\1/')
+[ -n "${TF_STATE_BUCKET}" ] || error "No se pudo leer el bucket del state de ${TF_BACKEND_CONFIG}"
 
-success "Stack desplegado: ${LAB2_STACK}"
+export TF_VAR_state_bucket="${TF_STATE_BUCKET}"
+export TF_VAR_project_name="${PROJECT_NAME}"
+export TF_VAR_environment="${ENVIRONMENT}"
+export TF_VAR_aws_region="${REGION}"
+export TF_VAR_glue_job_script_s3_key="${GLUE_SCRIPT_KEY}"
+
+tf_apply lab2 || error "terraform apply fallo."
+
+success "Infraestructura del Lab 2 aplicada"
 
 # ── [5] Mostrar outputs ───────────────────────────────────────────────────────
 echo ""
-info "[5/5] Outputs del stack..."
+info "[5/5] Outputs de Terraform..."
 
-get_output() {
-  aws cloudformation describe-stacks \
-    --stack-name "${LAB2_STACK}" \
-    --region     "${REGION}" \
-    --query      "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" \
-    --output     text
-}
+get_output() { tf_output lab2 "$1"; }
 
-GLUE_JOB=$(get_output "GlueJobName")
-CRAWLER=$(get_output "CrawlerName")
-DB_NAME=$(get_output "GlueDatabaseName")
+GLUE_JOB=$(get_output glue_job_name)
+CRAWLER=$(get_output crawler_name)
+DB_NAME=$(get_output glue_database_name)
 
 success "Glue Job    : ${GLUE_JOB}"
 success "Crawler     : ${CRAWLER}"

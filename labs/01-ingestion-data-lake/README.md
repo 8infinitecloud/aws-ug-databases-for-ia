@@ -133,7 +133,8 @@ Tabla de referencia limpia. Sin problemas deliberados. Campos: `customer_id`, `n
 
 - AWS CLI v2 configurado (`aws configure`)
 - `jq` instalado (`brew install jq` en macOS / `apt install jq` en Linux)
-- Permisos IAM: CloudFormation, RDS, DMS, S3, Secrets Manager, IAM, EC2
+- Terraform >= 1.6 y el backend remoto bootstrapeado (ver `infra/README.md`)
+- Permisos IAM: RDS, DMS, S3, Secrets Manager, IAM, EC2
 - `mysql` client (opcional — para ejecutar seed.sql directamente)
 - Región: `us-east-1` (u otra con DMS disponible)
 
@@ -146,7 +147,6 @@ Tabla de referencia limpia. Sin problemas deliberados. Campos: `customer_id`, `n
     {
       "Effect": "Allow",
       "Action": [
-        "cloudformation:*",
         "rds:*",
         "dms:*",
         "s3:*",
@@ -176,7 +176,7 @@ export AWS_REGION="us-east-1"
 ```
 
 El script hace:
-1. Valida el template CloudFormation
+1. Inicializa Terraform contra el backend remoto
 2. Despliega el stack (VPC + RDS + DMS + S3)
 3. Sube los CSV a `s3://bucket/staging/`
 4. Intenta ejecutar `seed.sql` en RDS (requiere conectividad a la subnet privada)
@@ -193,11 +193,8 @@ Desde la consola AWS: **Database Migration Service → Replication tasks → fin
 O desde CLI:
 
 ```bash
-# Obtener ARN de la tarea
-TASK_ARN=$(aws cloudformation describe-stacks \
-  --stack-name fincorp-datalake-lab-lab1 \
-  --query "Stacks[0].Outputs[?OutputKey=='DMSTaskArn'].OutputValue" \
-  --output text)
+# Obtener ARN de la tarea desde los outputs de Terraform
+TASK_ARN=$(terraform -chdir=../../../infra/lab1 output -raw dms_task_arn)
 
 aws dms start-replication-task \
   --replication-task-arn "$TASK_ARN" \
@@ -241,7 +238,7 @@ Salida esperada:
 ./cleanup.sh
 ```
 
-Elimina: DMS task + endpoints + instance, RDS, VPC, S3 (incluyendo objetos versionados), Secrets Manager, IAM Role, CloudFormation stack.
+Elimina: DMS task + endpoints + instance, RDS, VPC, S3 (incluyendo objetos versionados), Secrets Manager, IAM Role — todo el módulo `infra/lab1`.
 
 **Costo estimado si se olvida el cleanup:** ~$0.09/hr = ~$2.16/día
 - RDS MySQL db.t3.micro: ~$0.017/hr

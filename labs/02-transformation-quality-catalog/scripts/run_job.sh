@@ -29,25 +29,14 @@ header()  { echo -e "\n${CYAN}━━━ $* ━━━${NC}"; }
 PROJECT_NAME="${PROJECT_NAME:-fincorp-datalake}"
 ENVIRONMENT="${ENVIRONMENT:-lab}"
 REGION="${AWS_REGION:-us-east-1}"
-LAB1_STACK="${PROJECT_NAME}-${ENVIRONMENT}-lab1"
-LAB2_STACK="${PROJECT_NAME}-${ENVIRONMENT}-lab2"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+# shellcheck source=../../../scripts/lib/tf.sh
+source "${REPO_ROOT}/scripts/lib/tf.sh"
 POLL_INTERVAL=15  # segundos entre cada check del job status
 
-get_lab2_output() {
-  aws cloudformation describe-stacks \
-    --stack-name "${LAB2_STACK}" \
-    --region     "${REGION}" \
-    --query      "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" \
-    --output     text 2>/dev/null || echo ""
-}
-
-get_lab1_output() {
-  aws cloudformation describe-stacks \
-    --stack-name "${LAB1_STACK}" \
-    --region     "${REGION}" \
-    --query      "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" \
-    --output     text 2>/dev/null || echo ""
-}
+get_lab2_output() { tf_output lab2 "$1"; }
+get_lab1_output() { tf_output lab1 "$1"; }
 
 echo "============================================================"
 echo "  Lab 2 — Ejecutar ETL Pipeline"
@@ -55,14 +44,14 @@ echo "============================================================"
 echo ""
 
 # Obtener nombres de los recursos
-GLUE_JOB=$(get_lab2_output "GlueJobName")
-CRAWLER=$(get_lab2_output "CrawlerName")
-DB_NAME=$(get_lab2_output "GlueDatabaseName")
-S3_BUCKET=$(get_lab1_output "S3BucketName")
+GLUE_JOB=$(get_lab2_output glue_job_name)
+CRAWLER=$(get_lab2_output crawler_name)
+DB_NAME=$(get_lab2_output glue_database_name)
+S3_BUCKET=$(get_lab1_output s3_bucket_name)
 
-[ -n "${GLUE_JOB}" ]   || error "GlueJobName no encontrado. ¿Ejecutaste setup.sh primero?"
-[ -n "${CRAWLER}" ]    || error "CrawlerName no encontrado."
-[ -n "${S3_BUCKET}" ]  || error "S3BucketName no encontrado en el stack del Lab 1."
+[ -n "${GLUE_JOB}" ]   || error "glue_job_name no encontrado. ¿Ejecutaste setup.sh primero?"
+[ -n "${CRAWLER}" ]    || error "crawler_name no encontrado."
+[ -n "${S3_BUCKET}" ]  || error "s3_bucket_name no encontrado en el modulo del Lab 1."
 
 info "Glue Job : ${GLUE_JOB}"
 info "Crawler  : ${CRAWLER}"

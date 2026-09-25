@@ -23,8 +23,11 @@ Código de salida:
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import subprocess
 import sys
+from pathlib import Path
 import urllib.error
 import urllib.request
 
@@ -39,9 +42,8 @@ PROJECT_NAME = os.getenv("PROJECT_NAME", "fincorp-datalake")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "lab")
 REGION = os.getenv("AWS_REGION", "us-east-1")
 
-LAB1_STACK = f"{PROJECT_NAME}-{ENVIRONMENT}-lab1"
-LAB2_STACK = f"{PROJECT_NAME}-{ENVIRONMENT}-lab2"
-LAB3_STACK = "financial-compliance-rag-lab"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+INFRA_DIR = REPO_ROOT / "infra"
 
 GLUE_DATABASE = "financial_platform"
 GLUE_TABLE = "transactions_curated"
@@ -78,33 +80,48 @@ def header(title: str) -> None:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-def stack_outputs(cfn, stack_name: str) -> dict[str, str] | None:
-    """Devuelve los outputs del stack, o None si no existe."""
+def tf_outputs(module: str) -> dict[str, str] | None:
+    """
+    Outputs de un modulo Terraform, o None si no se pudo leer.
+
+    Lee `terraform output -json` en vez de los outputs de un stack
+    CloudFormation: la infraestructura se migro a Terraform.
+    """
+    module_dir = INFRA_DIR / module
+    if not module_dir.is_dir():
+        return None
     try:
-        stacks = cfn.describe_stacks(StackName=stack_name)["Stacks"]
-    except ClientError:
+        proc = subprocess.run(
+            ["terraform", f"-chdir={module_dir}", "output", "-json"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
-    stack = stacks[0]
-    if not stack["StackStatus"].endswith(("_COMPLETE",)):
+    if proc.returncode != 0:
         return None
-    return {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs", [])}
+    try:
+        raw = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return None
+    # terraform output -json da {"nombre": {"value": ..., "sensitive": ...}}
+    return {k: str(v.get("value", "")) for k, v in raw.items()}
 
 
-def check_stack(cfn, stack_name: str, label: str) -> dict[str, str] | None:
-    try:
-        stack = cfn.describe_stacks(StackName=stack_name)["Stacks"][0]
-    except ClientError:
-        bad(f"Stack {label} no existe", stack_name)
+def check_module(module: str, label: str) -> dict[str, str] | None:
+    outputs = tf_outputs(module)
+    if outputs is None:
+        bad(
+            f"No se pudieron leer los outputs de {label}",
+            f"infra/{module} — ¿terraform init hecho? ¿terraform en el PATH?",
+        )
         return None
-    status = stack["StackStatus"]
-    if status in ("CREATE_COMPLETE", "UPDATE_COMPLETE"):
-        ok(f"Stack {label}", f"{stack_name} · {status}")
-    elif status.endswith("_IN_PROGRESS"):
-        warn(f"Stack {label} aún desplegando", status)
-    else:
-        bad(f"Stack {label} en estado inusable", status)
+    if not outputs:
+        bad(f"{label} sin desplegar", f"infra/{module} no tiene outputs")
         return None
-    return {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs", [])}
+    ok(f"Modulo {label}", f"infra/{module} · {len(outputs)} outputs")
+    return outputs
 
 
 def count_s3(s3, bucket: str, prefix: str) -> int:
@@ -150,7 +167,7 @@ def check_prerequisites(session) -> bool:
 # ── Checks: Lab 1 ─────────────────────────────────────────────────────────────
 def check_lab1(session) -> None:
     header("Lab 1 — Ingestion + Data Lake")
-    outputs = check_stack(session.client("cloudformation"), LAB1_STACK, "Lab 1")
+    outputs = check_module("lab1", "Lab 1")
     if not outputs:
         return
 
@@ -170,9 +187,9 @@ def check_lab1(session) -> None:
         bad("RDS MySQL", str(exc)[:80])
 
     # Tarea DMS
-    task_arn = outputs.get("DMSTaskArn")
+    task_arn = outputs.get("dms_task_arn")
     if not task_arn:
-        bad("Output DMSTaskArn ausente del stack")
+        bad("Output dms_task_arn ausente del modulo")
     else:
         try:
             task = session.client("dms").describe_replication_tasks(
@@ -190,9 +207,9 @@ def check_lab1(session) -> None:
             bad("Tarea DMS", str(exc)[:80])
 
     # Zona raw del data lake
-    bucket = outputs.get("S3BucketName")
+    bucket = outputs.get("s3_bucket_name")
     if not bucket:
-        bad("Output S3BucketName ausente del stack")
+        bad("Output s3_bucket_name ausente del modulo")
         return
     s3 = session.client("s3")
     for table in ("transactions", "customers"):
@@ -210,13 +227,12 @@ def check_lab1(session) -> None:
 # ── Checks: Lab 2 ─────────────────────────────────────────────────────────────
 def check_lab2(session) -> None:
     header("Lab 2 — Transformation + Quality + Catalog")
-    cfn = session.client("cloudformation")
-    outputs = check_stack(cfn, LAB2_STACK, "Lab 2")
+    outputs = check_module("lab2", "Lab 2")
     if not outputs:
         return
 
     glue = session.client("glue")
-    job = outputs.get("GlueJobName")
+    job = outputs.get("glue_job_name")
     if job:
         try:
             glue.get_job(JobName=job)
@@ -235,10 +251,9 @@ def check_lab2(session) -> None:
             "se crea al correr run_job.sh (crawler)",
         )
 
-    lab1 = stack_outputs(cfn, LAB1_STACK) or {}
-    bucket = lab1.get("S3BucketName")
+    bucket = outputs.get("s3_bucket_name")
     if not bucket:
-        warn("No se pudo leer el bucket del Lab 1", "se omite la verificación de curated/")
+        warn("No se pudo leer el bucket", "se omite la verificación de curated/")
         return
 
     s3 = session.client("s3")
@@ -262,7 +277,7 @@ def check_lab2(session) -> None:
 # ── Checks: Lab 3 ─────────────────────────────────────────────────────────────
 def check_lab3(session) -> None:
     header("Lab 3 — Data to AI (RAG)")
-    outputs = check_stack(session.client("cloudformation"), LAB3_STACK, "Lab 3")
+    outputs = check_module("lab3", "Lab 3")
     if not outputs:
         return
 
@@ -305,7 +320,7 @@ def check_lab3(session) -> None:
         bad("Tabla DynamoDB no existe", DYNAMO_TABLE)
 
     # EC2 + Streamlit
-    instance_id = outputs.get("AppServerInstanceId")
+    instance_id = outputs.get("app_server_instance_id")
     if instance_id:
         try:
             res = session.client("ec2").describe_instances(InstanceIds=[instance_id])
@@ -317,9 +332,9 @@ def check_lab3(session) -> None:
         except (ClientError, IndexError) as exc:
             bad("EC2 App Server", str(exc)[:80])
 
-    url = outputs.get("StreamlitURL")
+    url = outputs.get("streamlit_url")
     if not url:
-        warn("Output StreamlitURL ausente del stack")
+        warn("Output streamlit_url ausente del modulo")
         return
     try:
         with urllib.request.urlopen(url, timeout=10) as resp:  # noqa: S310

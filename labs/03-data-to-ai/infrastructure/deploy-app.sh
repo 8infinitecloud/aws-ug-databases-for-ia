@@ -13,11 +13,13 @@
 
 set -euo pipefail
 
-STACK_NAME="financial-compliance-rag-lab"
 REGION="${AWS_REGION:-us-east-1}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+REPO_ROOT="$(cd "${ROOT_DIR}/../.." && pwd)"
+# shellcheck source=../../../scripts/lib/tf.sh
+source "${REPO_ROOT}/scripts/lib/tf.sh"
 
 # Flag para forzar re-ingesta (borra la tabla y vuelve a ingestar)
 REINGEST=false
@@ -28,7 +30,7 @@ fi
 echo "============================================================"
 echo "  FinCorp RAG Lab — Deploy de Aplicación"
 echo "============================================================"
-echo "  Stack:    $STACK_NAME"
+echo "  Modulo:   infra/lab3"
 echo "  Región:   $REGION"
 echo "  Reingest: $REINGEST"
 [ -n "${AWS_PROFILE:-}" ] && echo "  Perfil:   $AWS_PROFILE"
@@ -39,22 +41,14 @@ echo "============================================================"
 # ─────────────────────────────────────────────────────────────────────────────
 
 echo ""
-echo "[1/4] Leyendo configuración del stack..."
+echo "[1/4] Leyendo outputs de Terraform..."
 
-get_output() {
-  aws cloudformation describe-stacks \
-    --stack-name "$STACK_NAME" \
-    --region "$REGION" \
-    --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" \
-    --output text 2>/dev/null || echo ""
-}
-
-S3_BUCKET=$(get_output "S3BucketName")
-INSTANCE_ID=$(get_output "AppServerInstanceId")
-STREAMLIT_URL=$(get_output "StreamlitURL")
+S3_BUCKET=$(tf_output lab3 s3_bucket_name)
+INSTANCE_ID=$(tf_output lab3 app_server_instance_id)
+STREAMLIT_URL=$(tf_output lab3 streamlit_url)
 
 if [ -z "$S3_BUCKET" ] || [ -z "$INSTANCE_ID" ]; then
-  echo "❌ No se encontró el stack '$STACK_NAME'."
+  echo "❌ El modulo infra/lab3 no tiene outputs."
   echo "   Ejecuta primero: ./setup.sh"
   exit 1
 fi

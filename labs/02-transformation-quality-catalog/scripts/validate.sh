@@ -13,7 +13,6 @@ set -euo pipefail
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
@@ -25,35 +24,24 @@ FAILURES=0
 PROJECT_NAME="${PROJECT_NAME:-fincorp-datalake}"
 ENVIRONMENT="${ENVIRONMENT:-lab}"
 REGION="${AWS_REGION:-us-east-1}"
-LAB1_STACK="${PROJECT_NAME}-${ENVIRONMENT}-lab1"
-LAB2_STACK="${PROJECT_NAME}-${ENVIRONMENT}-lab2"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+# shellcheck source=../../../scripts/lib/tf.sh
+source "${REPO_ROOT}/scripts/lib/tf.sh"
 
 echo "============================================================"
 echo "  Lab 2 — Validación del pipeline ETL"
 echo "============================================================"
 echo ""
 
-get_lab1_output() {
-  aws cloudformation describe-stacks \
-    --stack-name "${LAB1_STACK}" \
-    --region     "${REGION}" \
-    --query      "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" \
-    --output     text 2>/dev/null || echo ""
-}
+get_lab1_output() { tf_output lab1 "$1"; }
+get_lab2_output() { tf_output lab2 "$1"; }
 
-get_lab2_output() {
-  aws cloudformation describe-stacks \
-    --stack-name "${LAB2_STACK}" \
-    --region     "${REGION}" \
-    --query      "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" \
-    --output     text 2>/dev/null || echo ""
-}
+S3_BUCKET=$(get_lab1_output s3_bucket_name)
+DB_NAME=$(get_lab2_output glue_database_name)
 
-S3_BUCKET=$(get_lab1_output "S3BucketName")
-DB_NAME=$(get_lab2_output "GlueDatabaseName")
-
-[ -n "${S3_BUCKET}" ] || { fail "S3BucketName no encontrado en Lab 1 stack"; exit 1; }
-[ -n "${DB_NAME}" ]   || { fail "GlueDatabaseName no encontrado en Lab 2 stack"; exit 1; }
+[ -n "${S3_BUCKET}" ] || { fail "s3_bucket_name no encontrado en el modulo del Lab 1"; exit 1; }
+[ -n "${DB_NAME}" ]   || { fail "glue_database_name no encontrado en el modulo del Lab 2"; exit 1; }
 
 # ── [1] Parquet en curated/ ───────────────────────────────────────────────────
 echo ""

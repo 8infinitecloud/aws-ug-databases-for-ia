@@ -113,14 +113,12 @@ aws-ug-databases-for-ia/
 ├── labs/
 │   ├── 01-ingestion-data-lake/
 │   │   ├── dataset/             ← transactions.csv, customers.csv, seed.sql
-│   │   ├── infrastructure/      ← lab1-cfn.yaml (VPC, RDS, DMS, S3)
 │   │   ├── scripts/             ← setup.sh, validate.sh, cleanup.sh
 │   │   └── README.md
 │   ├── 02-transformation-quality-catalog/
 │   │   ├── glue_job.py          ← Glue Python Shell job
 │   │   ├── quality_rules.dqdl   ← Ruleset DQDL (8 reglas)
 │   │   ├── quality_rules.json   ← Ruleset en JSON (referencia)
-│   │   ├── infrastructure/      ← lab2-cfn.yaml (Glue + DQ + Catalog)
 │   │   ├── scripts/             ← setup.sh, run_job.sh, validate.sh, cleanup.sh
 │   │   └── README.md
 │   └── 03-data-to-ai/

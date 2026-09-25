@@ -276,7 +276,6 @@ labs/03-data-to-ai/
 │   ├── init_db.py         # Crea schema pgvector
 │   └── ingest_documents.py # Ingesta documentos con --source y --clear
 ├── infrastructure/
-│   ├── cloudformation.yaml # Aurora + Redis + DynamoDB + EC2
 │   ├── setup.sh            # Provisiona infraestructura (~20 min)
 │   ├── deploy-app.sh       # Despliega solo la app (~5 min)
 │   └── cleanup.sh          # Elimina todos los recursos

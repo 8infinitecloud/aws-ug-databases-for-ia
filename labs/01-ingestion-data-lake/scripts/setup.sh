@@ -36,17 +36,19 @@ ENVIRONMENT="${ENVIRONMENT:-lab}"
 REGION="${AWS_REGION:-us-east-1}"
 DB_USERNAME="${DB_USERNAME:-fincorpadmin}"
 DB_NAME="${DB_NAME:-fincorp}"
-STACK_NAME="${PROJECT_NAME}-${ENVIRONMENT}-lab1"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LAB_DIR="$(dirname "$SCRIPT_DIR")"
-INFRA_DIR="${LAB_DIR}/infrastructure"
+REPO_ROOT="$(cd "${LAB_DIR}/../.." && pwd)"
 DATASET_DIR="${LAB_DIR}/dataset"
+
+# shellcheck source=../../../scripts/lib/tf.sh
+source "${REPO_ROOT}/scripts/lib/tf.sh"
 
 echo "============================================================"
 echo "  FinCorp Data Platform — Lab 1: Ingestion + Data Lake"
 echo "============================================================"
-echo "  Stack:   ${STACK_NAME}"
+echo "  Modulo:  infra/lab1"
 echo "  Región:  ${REGION}"
 echo "  Env:     ${ENVIRONMENT}"
 echo "============================================================"
@@ -57,6 +59,7 @@ info "[0/5] Verificando prerequisitos..."
 
 command -v aws >/dev/null 2>&1 || error "AWS CLI no encontrado. Instala: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
 command -v jq  >/dev/null 2>&1 || error "jq no encontrado. Instala: brew install jq (macOS) / apt install jq (Linux)"
+tf_require || error "Terraform no esta listo. Ver infra/README.md."
 
 AWS_ACCOUNT=$(aws sts get-caller-identity --query Account --output text 2>/dev/null) \
   || error "No se pudo autenticar en AWS. Ejecuta: aws configure"
@@ -72,54 +75,42 @@ if [ -z "${DB_PASSWORD:-}" ]; then
   [ ${#DB_PASSWORD} -ge 8 ] || error "La contraseña debe tener al menos 8 caracteres."
 fi
 
-# ── [1/5] Validar template CloudFormation ─────────────────────────────────────
+# ── [1/5] Inicializar Terraform ───────────────────────────────────────────────
 echo ""
-info "[1/5] Validando template CloudFormation..."
+info "[1/5] Inicializando Terraform (modulo infra/lab1)..."
 
-aws cloudformation validate-template \
-  --template-body "file://${INFRA_DIR}/lab1-cfn.yaml" \
-  --region "${REGION}" \
-  --output text > /dev/null \
-  || error "Template inválido. Revisa lab1-cfn.yaml con cfn-lint."
+tf_init lab1 || error "terraform init fallo. Revisa infra/README.md."
 
-success "Template válido"
+success "Backend remoto conectado"
 
-# ── [2/5] Desplegar CloudFormation ────────────────────────────────────────────
+# ── [2/5] Aplicar ─────────────────────────────────────────────────────────────
 echo ""
-info "[2/5] Desplegando CloudFormation stack (~15 min)..."
+info "[2/5] Aplicando infraestructura (~15 min)..."
 info "     DMS Replication Instance es el recurso más lento (~10 min). ☕"
 
-aws cloudformation deploy \
-  --stack-name    "${STACK_NAME}" \
-  --template-file "${INFRA_DIR}/lab1-cfn.yaml" \
-  --parameter-overrides \
-    ProjectName="${PROJECT_NAME}" \
-    Environment="${ENVIRONMENT}" \
-    DBPassword="${DB_PASSWORD}" \
-    DBUsername="${DB_USERNAME}" \
-    DBName="${DB_NAME}" \
-  --capabilities CAPABILITY_NAMED_IAM \
-  --region        "${REGION}" \
-  --no-fail-on-empty-changeset
+# La contraseña viaja por TF_VAR_, nunca como argumento de linea de comandos:
+# -var la dejaria visible en el historial del shell y en la lista de procesos.
+export TF_VAR_db_password="${DB_PASSWORD}"
+export TF_VAR_project_name="${PROJECT_NAME}"
+export TF_VAR_environment="${ENVIRONMENT}"
+export TF_VAR_db_username="${DB_USERNAME}"
+export TF_VAR_db_name="${DB_NAME}"
+export TF_VAR_aws_region="${REGION}"
 
-success "Stack desplegado: ${STACK_NAME}"
+tf_apply lab1 || error "terraform apply fallo."
+
+success "Infraestructura aplicada"
 
 # ── [3/5] Obtener outputs ─────────────────────────────────────────────────────
 echo ""
-info "[3/5] Leyendo outputs del stack..."
+info "[3/5] Leyendo outputs de Terraform..."
 
-get_output() {
-  aws cloudformation describe-stacks \
-    --stack-name "${STACK_NAME}" \
-    --region     "${REGION}" \
-    --query      "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" \
-    --output     text
-}
+RDS_ENDPOINT=$(tf_output lab1 rds_endpoint)
+S3_BUCKET=$(tf_output lab1 s3_bucket_name)
+SECRET_ARN=$(tf_output lab1 secret_arn)
+DMS_TASK_ARN=$(tf_output lab1 dms_task_arn)
 
-RDS_ENDPOINT=$(get_output "RDSEndpoint")
-S3_BUCKET=$(get_output "S3BucketName")
-SECRET_ARN=$(get_output "SecretArn")
-DMS_TASK_ARN=$(get_output "DMSTaskArn")
+[ -n "${S3_BUCKET}" ] || error "No se pudo leer s3_bucket_name. ¿El apply termino bien?"
 
 success "RDS Endpoint : ${RDS_ENDPOINT}"
 success "S3 Bucket    : ${S3_BUCKET}"

@@ -15,7 +15,6 @@ set -euo pipefail
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
@@ -27,38 +26,28 @@ FAILURES=0
 PROJECT_NAME="${PROJECT_NAME:-fincorp-datalake}"
 ENVIRONMENT="${ENVIRONMENT:-lab}"
 REGION="${AWS_REGION:-us-east-1}"
-STACK_NAME="${PROJECT_NAME}-${ENVIRONMENT}-lab1"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+# shellcheck source=../../../scripts/lib/tf.sh
+source "${REPO_ROOT}/scripts/lib/tf.sh"
 
 echo "============================================================"
 echo "  Lab 1 — Validación post-DMS"
 echo "============================================================"
 echo ""
 
-# ── Helper: obtener output del stack ─────────────────────────────────────────
-get_output() {
-  aws cloudformation describe-stacks \
-    --stack-name "${STACK_NAME}" \
-    --region     "${REGION}" \
-    --query      "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" \
-    --output     text 2>/dev/null || echo ""
-}
+# ── [1] Verificar que el modulo esta desplegado ───────────────────────────────
+info "[1/5] Verificando infraestructura (infra/lab1)..."
 
-# ── [1] Verificar stack existe ────────────────────────────────────────────────
-info "[1/5] Verificando stack CloudFormation..."
-STACK_STATUS=$(aws cloudformation describe-stacks \
-  --stack-name "${STACK_NAME}" \
-  --region     "${REGION}" \
-  --query      "Stacks[0].StackStatus" \
-  --output     text 2>/dev/null || echo "NOT_FOUND")
-
-if [ "${STACK_STATUS}" = "CREATE_COMPLETE" ] || [ "${STACK_STATUS}" = "UPDATE_COMPLETE" ]; then
-  pass "Stack ${STACK_NAME}: ${STACK_STATUS}"
+if tf_deployed lab1; then
+  pass "Modulo infra/lab1 desplegado"
 else
-  fail "Stack ${STACK_NAME}: ${STACK_STATUS} (esperado: CREATE_COMPLETE)"
+  fail "Modulo infra/lab1 sin recursos. Ejecuta setup.sh primero."
 fi
 
-S3_BUCKET=$(get_output "S3BucketName")
-DMS_TASK_ARN=$(get_output "DMSTaskArn")
+S3_BUCKET=$(tf_output lab1 s3_bucket_name)
+DMS_TASK_ARN=$(tf_output lab1 dms_task_arn)
 
 # ── [2] Verificar estado DMS Task ─────────────────────────────────────────────
 echo ""

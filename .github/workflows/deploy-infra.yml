@@ -22,6 +22,10 @@ on:
 env:
   AWS_REGION: us-east-1
   PROJECT_NAME: fincorp-datalake
+  TF_VERSION: "1.9.8"
+  # Terraform en CI: sin color y sin preguntas interactivas.
+  TF_IN_AUTOMATION: "1"
+  TF_INPUT: "0"
 
 jobs:
   # ── LAB 1: VPC + RDS MySQL + DMS + S3 ──────────────────────────────────────
@@ -45,33 +49,50 @@ jobs:
           aws-region: ${{ secrets.AWS_REGION || env.AWS_REGION }}
           role-session-name: gha-lab1-${{ github.run_id }}
 
-      - name: Validate CFN template — Lab 1
-        run: |
-          aws cloudformation validate-template \
-            --template-body file://labs/01-ingestion-data-lake/infrastructure/lab1-cfn.yaml \
-            --region ${{ secrets.AWS_REGION || env.AWS_REGION }}
-          echo "✓ lab1-cfn.yaml válido"
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
 
-      - name: Deploy CloudFormation — Lab 1
+      # El backend.hcl lo genera infra/bootstrap y no se commitea (lleva el
+      # account id). En CI se reconstruye a partir de la cuenta asumida.
+      - name: Reconstruir backend.hcl
+        id: backend
         run: |
-          aws cloudformation deploy \
-            --stack-name  "${{ env.PROJECT_NAME }}-${{ inputs.environment }}-lab1" \
-            --template-file labs/01-ingestion-data-lake/infrastructure/lab1-cfn.yaml \
-            --parameter-overrides \
-              ProjectName="${{ env.PROJECT_NAME }}" \
-              Environment="${{ inputs.environment }}" \
-              DBPassword="${{ inputs.db_password }}" \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --region ${{ secrets.AWS_REGION || env.AWS_REGION }} \
-            --no-fail-on-empty-changeset
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          REGION="${{ secrets.AWS_REGION || env.AWS_REGION }}"
+          BUCKET="${{ env.PROJECT_NAME }}-tfstate-${ACCOUNT_ID}"
+
+          if ! aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            echo "::error::No existe el bucket de state '$BUCKET'."
+            echo "::error::Ejecuta una vez en local: cd infra/bootstrap && terraform apply"
+            exit 1
+          fi
+
+          cat > infra/backend.hcl <<EOF
+          bucket         = "$BUCKET"
+          dynamodb_table = "${{ env.PROJECT_NAME }}-tflock"
+          region         = "$REGION"
+          encrypt        = true
+          EOF
+
+          echo "state_bucket=$BUCKET" >> "$GITHUB_OUTPUT"
+          echo "✓ backend.hcl reconstruido (bucket: $BUCKET)"
+
+      - name: terraform init — Lab 1
+        run: terraform -chdir=infra/lab1 init -backend-config=../backend.hcl -reconfigure
+
+      - name: terraform apply — Lab 1
+        env:
+          TF_VAR_db_password: ${{ inputs.db_password }}
+          TF_VAR_project_name: ${{ env.PROJECT_NAME }}
+          TF_VAR_environment: ${{ inputs.environment }}
+          TF_VAR_aws_region: ${{ secrets.AWS_REGION || env.AWS_REGION }}
+        run: terraform -chdir=infra/lab1 apply -auto-approve
 
       - name: Upload dataset to S3
         run: |
-          S3_BUCKET=$(aws cloudformation describe-stacks \
-            --stack-name "${{ env.PROJECT_NAME }}-${{ inputs.environment }}-lab1" \
-            --region ${{ secrets.AWS_REGION || env.AWS_REGION }} \
-            --query "Stacks[0].Outputs[?OutputKey=='S3BucketName'].OutputValue" \
-            --output text)
+          S3_BUCKET=$(terraform -chdir=infra/lab1 output -raw s3_bucket_name)
           aws s3 cp labs/01-ingestion-data-lake/dataset/transactions.csv \
             "s3://${S3_BUCKET}/staging/transactions/transactions.csv"
           aws s3 cp labs/01-ingestion-data-lake/dataset/customers.csv \
@@ -80,20 +101,18 @@ jobs:
 
       - name: Lab 1 summary
         run: |
-          OUTPUTS=$(aws cloudformation describe-stacks \
-            --stack-name "${{ env.PROJECT_NAME }}-${{ inputs.environment }}-lab1" \
-            --region ${{ secrets.AWS_REGION || env.AWS_REGION }} \
-            --query "Stacks[0].Outputs" --output table)
-          echo "### ✅ Lab 1 desplegado" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          echo "$OUTPUTS" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Siguiente:** Iniciar manualmente la DMS task desde la consola AWS" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "### ✅ Lab 1 desplegado"
+            echo '```'
+            terraform -chdir=infra/lab1 output
+            echo '```'
+            echo ""
+            echo "**Siguiente:** iniciar manualmente la DMS task (\`aws dms start-replication-task\`)."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ── LAB 2: Glue + DQ + Catalog ──────────────────────────────────────────────
   deploy-lab2:
-    name: Deploy Lab 2 (Glue + DQ + Catalog)
+    name: Deploy Lab 2 (Glue + Quality + Catalog)
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     needs: [deploy-lab1]
@@ -116,60 +135,67 @@ jobs:
           aws-region: ${{ secrets.AWS_REGION || env.AWS_REGION }}
           role-session-name: gha-lab2-${{ github.run_id }}
 
-      - name: Get S3 bucket from Lab 1 stack
-        id: lab1
-        run: |
-          S3_BUCKET=$(aws cloudformation describe-stacks \
-            --stack-name "${{ env.PROJECT_NAME }}-${{ inputs.environment }}-lab1" \
-            --region ${{ secrets.AWS_REGION || env.AWS_REGION }} \
-            --query "Stacks[0].Outputs[?OutputKey=='S3BucketName'].OutputValue" \
-            --output text 2>/dev/null || echo "")
-          [ -n "$S3_BUCKET" ] || { echo "❌ No se encontró S3BucketName. ¿Está Lab 1 desplegado?"; exit 1; }
-          echo "s3_bucket=$S3_BUCKET" >> $GITHUB_OUTPUT
-          echo "✓ S3 Bucket: $S3_BUCKET"
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
 
-      - name: Upload Glue job script to S3
+      - name: Reconstruir backend.hcl
+        id: backend
         run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          REGION="${{ secrets.AWS_REGION || env.AWS_REGION }}"
+          BUCKET="${{ env.PROJECT_NAME }}-tfstate-${ACCOUNT_ID}"
+
+          cat > infra/backend.hcl <<EOF
+          bucket         = "$BUCKET"
+          dynamodb_table = "${{ env.PROJECT_NAME }}-tflock"
+          region         = "$REGION"
+          encrypt        = true
+          EOF
+
+          echo "state_bucket=$BUCKET" >> "$GITHUB_OUTPUT"
+
+      # El Lab 2 lee el state del Lab 1, asi que este necesita existir.
+      - name: terraform init — Lab 1 (solo para leer outputs)
+        run: terraform -chdir=infra/lab1 init -backend-config=../backend.hcl -reconfigure
+
+      - name: Subir glue_job.py al data lake
+        run: |
+          S3_BUCKET=$(terraform -chdir=infra/lab1 output -raw s3_bucket_name)
+          if [ -z "$S3_BUCKET" ]; then
+            echo "::error::El Lab 1 no esta desplegado: no hay bucket donde subir el script."
+            exit 1
+          fi
           aws s3 cp labs/02-transformation-quality-catalog/glue_job.py \
-            "s3://${{ steps.lab1.outputs.s3_bucket }}/scripts/glue_job.py"
-          echo "✓ glue_job.py subido"
+            "s3://${S3_BUCKET}/scripts/glue_job.py"
+          echo "✓ glue_job.py subido a s3://${S3_BUCKET}/scripts/"
 
-      - name: Validate CFN template — Lab 2
-        run: |
-          aws cloudformation validate-template \
-            --template-body file://labs/02-transformation-quality-catalog/infrastructure/lab2-cfn.yaml \
-            --region ${{ secrets.AWS_REGION || env.AWS_REGION }}
-          echo "✓ lab2-cfn.yaml válido"
+      - name: terraform init — Lab 2
+        run: terraform -chdir=infra/lab2 init -backend-config=../backend.hcl -reconfigure
 
-      - name: Deploy CloudFormation — Lab 2
-        run: |
-          aws cloudformation deploy \
-            --stack-name "${{ env.PROJECT_NAME }}-${{ inputs.environment }}-lab2" \
-            --template-file labs/02-transformation-quality-catalog/infrastructure/lab2-cfn.yaml \
-            --parameter-overrides \
-              ProjectName="${{ env.PROJECT_NAME }}" \
-              Environment="${{ inputs.environment }}" \
-              S3BucketName="${{ steps.lab1.outputs.s3_bucket }}" \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --region ${{ secrets.AWS_REGION || env.AWS_REGION }} \
-            --no-fail-on-empty-changeset
+      - name: terraform apply — Lab 2
+        env:
+          TF_VAR_state_bucket: ${{ steps.backend.outputs.state_bucket }}
+          TF_VAR_project_name: ${{ env.PROJECT_NAME }}
+          TF_VAR_environment: ${{ inputs.environment }}
+          TF_VAR_aws_region: ${{ secrets.AWS_REGION || env.AWS_REGION }}
+        run: terraform -chdir=infra/lab2 apply -auto-approve
 
       - name: Lab 2 summary
         run: |
-          GLUE_JOB=$(aws cloudformation describe-stacks \
-            --stack-name "${{ env.PROJECT_NAME }}-${{ inputs.environment }}-lab2" \
-            --region ${{ secrets.AWS_REGION || env.AWS_REGION }} \
-            --query "Stacks[0].Outputs[?OutputKey=='GlueJobName'].OutputValue" \
-            --output text)
-          echo "### ✅ Lab 2 desplegado" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Glue Job:** \`$GLUE_JOB\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Siguiente:** Ejecutar el workflow _Deploy App_ o correr \`run_job.sh\` manualmente" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "### ✅ Lab 2 desplegado"
+            echo '```'
+            terraform -chdir=infra/lab2 output
+            echo '```'
+            echo ""
+            echo "**Siguiente:** ejecutar el Glue Job (\`labs/02-.../scripts/run_job.sh\`)."
+          } >> "$GITHUB_STEP_SUMMARY"
 
-  # ── LAB 3: Aurora + Redis + DynamoDB + EC2 ───────────────────────────────────
+  # ── LAB 3: Aurora + Redis + DynamoDB + EC2 ─────────────────────────────────
   deploy-lab3:
-    name: Deploy Lab 3 (Aurora + Redis + DynamoDB)
+    name: Deploy Lab 3 (RAG)
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     if: inputs.labs == 'all' || inputs.labs == 'lab3'
@@ -177,7 +203,6 @@ jobs:
     permissions:
       id-token: write
       contents: read
-      actions: write
 
     steps:
       - uses: actions/checkout@v4
@@ -189,53 +214,42 @@ jobs:
           aws-region: ${{ secrets.AWS_REGION || env.AWS_REGION }}
           role-session-name: gha-lab3-${{ github.run_id }}
 
-      - name: Validate CFN template — Lab 3
-        run: |
-          aws cloudformation validate-template \
-            --template-body file://labs/03-data-to-ai/infrastructure/cloudformation.yaml \
-            --region ${{ secrets.AWS_REGION || env.AWS_REGION }}
-          echo "✓ labs/03-data-to-ai/infrastructure/cloudformation.yaml válido"
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
 
-      - name: Deploy CloudFormation — Lab 3
+      - name: Reconstruir backend.hcl
         run: |
-          aws cloudformation deploy \
-            --stack-name financial-compliance-rag-lab \
-            --template-file labs/03-data-to-ai/infrastructure/cloudformation.yaml \
-            --parameter-overrides \
-              ProjectName=rag-lab \
-              DBPassword="${{ inputs.db_password }}" \
-              EnvironmentType="${{ inputs.environment }}" \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --region ${{ secrets.AWS_REGION || env.AWS_REGION }} \
-            --no-fail-on-empty-changeset
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          REGION="${{ secrets.AWS_REGION || env.AWS_REGION }}"
+          cat > infra/backend.hcl <<EOF
+          bucket         = "${{ env.PROJECT_NAME }}-tfstate-${ACCOUNT_ID}"
+          dynamodb_table = "${{ env.PROJECT_NAME }}-tflock"
+          region         = "$REGION"
+          encrypt        = true
+          EOF
 
-      - name: Show Lab 3 outputs
-        id: lab3-outputs
-        run: |
-          STREAMLIT=$(aws cloudformation describe-stacks \
-            --stack-name financial-compliance-rag-lab \
-            --region ${{ secrets.AWS_REGION || env.AWS_REGION }} \
-            --query "Stacks[0].Outputs[?OutputKey=='StreamlitURL'].OutputValue" \
-            --output text 2>/dev/null || echo "N/A")
-          echo "streamlit_url=$STREAMLIT" >> $GITHUB_OUTPUT
+      - name: terraform init — Lab 3
+        run: terraform -chdir=infra/lab3 init -backend-config=../backend.hcl -reconfigure
+
+      - name: terraform apply — Lab 3
+        env:
+          TF_VAR_db_password: ${{ inputs.db_password }}
+          TF_VAR_environment_type: ${{ inputs.environment }}
+          TF_VAR_aws_region: ${{ secrets.AWS_REGION || env.AWS_REGION }}
+        run: terraform -chdir=infra/lab3 apply -auto-approve
 
       - name: Lab 3 summary
         run: |
-          echo "### ✅ Lab 3 desplegado" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Streamlit URL:** ${{ steps.lab3-outputs.outputs.streamlit_url }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Siguiente:** Ejecutar el workflow _Deploy App_ para desplegar la app Streamlit" >> $GITHUB_STEP_SUMMARY
-
-      - name: Trigger deploy-app workflow
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'deploy-app.yml',
-              ref: context.ref,
-              inputs: { reingest: 'true' }
-            })
-            console.log('✓ Deploy App workflow disparado')
+          STREAMLIT_URL=$(terraform -chdir=infra/lab3 output -raw streamlit_url)
+          {
+            echo "### ✅ Lab 3 desplegado"
+            echo '```'
+            terraform -chdir=infra/lab3 output
+            echo '```'
+            echo ""
+            echo "**Streamlit URL:** ${STREAMLIT_URL}"
+            echo ""
+            echo "**Siguiente:** desplegar la app (workflow \`Deploy App\`)."
+          } >> "$GITHUB_STEP_SUMMARY"

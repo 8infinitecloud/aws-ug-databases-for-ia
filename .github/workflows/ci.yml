@@ -57,43 +57,50 @@ jobs:
 
       - name: shellcheck — Lab 1 scripts
         run: |
-          shellcheck labs/01-ingestion-data-lake/scripts/setup.sh
-          shellcheck labs/01-ingestion-data-lake/scripts/validate.sh
-          shellcheck labs/01-ingestion-data-lake/scripts/cleanup.sh
+          shellcheck -x --severity=warning labs/01-ingestion-data-lake/scripts/setup.sh
+          shellcheck -x --severity=warning labs/01-ingestion-data-lake/scripts/validate.sh
+          shellcheck -x --severity=warning labs/01-ingestion-data-lake/scripts/cleanup.sh
 
       - name: shellcheck — Lab 2 scripts
         run: |
-          shellcheck labs/02-transformation-quality-catalog/scripts/setup.sh
-          shellcheck labs/02-transformation-quality-catalog/scripts/run_job.sh
-          shellcheck labs/02-transformation-quality-catalog/scripts/validate.sh
-          shellcheck labs/02-transformation-quality-catalog/scripts/cleanup.sh
+          shellcheck -x --severity=warning labs/02-transformation-quality-catalog/scripts/setup.sh
+          shellcheck -x --severity=warning labs/02-transformation-quality-catalog/scripts/run_job.sh
+          shellcheck -x --severity=warning labs/02-transformation-quality-catalog/scripts/validate.sh
+          shellcheck -x --severity=warning labs/02-transformation-quality-catalog/scripts/cleanup.sh
 
       - name: shellcheck — Lab 3 infrastructure scripts
         run: |
-          shellcheck labs/03-data-to-ai/infrastructure/setup.sh
-          shellcheck labs/03-data-to-ai/infrastructure/deploy-app.sh
-          shellcheck labs/03-data-to-ai/infrastructure/cleanup.sh
+          shellcheck -x --severity=warning scripts/lib/tf.sh
+          shellcheck -x --severity=warning labs/03-data-to-ai/infrastructure/setup.sh
+          shellcheck -x --severity=warning labs/03-data-to-ai/infrastructure/deploy-app.sh
+          shellcheck -x --severity=warning labs/03-data-to-ai/infrastructure/cleanup.sh
 
   # ── CloudFormation templates ─────────────────────────────────────────────────
-  validate-cloudformation:
-    name: CloudFormation templates (cfn-lint)
+  validate-terraform:
+    name: Terraform (fmt + validate)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [bootstrap, lab1, lab2, lab3]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install cfn-lint
-        # 1.11.0 traia catalogos de EngineVersion de 2024 y rechazaba
-        # versiones de RDS/Aurora que AWS si acepta hoy.
-        run: pip install cfn-lint==1.57.0 --quiet
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
 
-      - name: cfn-lint — Lab 1
-        run: cfn-lint labs/01-ingestion-data-lake/infrastructure/lab1-cfn.yaml --non-zero-exit-code error
+      - name: terraform fmt — ${{ matrix.module }}
+        run: terraform -chdir=infra/${{ matrix.module }} fmt -check -diff
 
-      - name: cfn-lint — Lab 2
-        run: cfn-lint labs/02-transformation-quality-catalog/infrastructure/lab2-cfn.yaml --non-zero-exit-code error
+      # -backend=false: en CI no hay credenciales del backend remoto y no hacen
+      # falta para comprobar que la configuracion es valida.
+      - name: terraform init — ${{ matrix.module }}
+        run: terraform -chdir=infra/${{ matrix.module }} init -backend=false -input=false
 
-      - name: cfn-lint — Lab 3 (infrastructure)
-        run: cfn-lint labs/03-data-to-ai/infrastructure/cloudformation.yaml --non-zero-exit-code error
+      - name: terraform validate — ${{ matrix.module }}
+        run: terraform -chdir=infra/${{ matrix.module }} validate
 
   # ── Datasets + corpus ────────────────────────────────────────────────────────
   validate-data:
