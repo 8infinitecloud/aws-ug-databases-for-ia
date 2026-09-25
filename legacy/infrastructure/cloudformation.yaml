@@ -183,7 +183,7 @@ Resources:
     UpdateReplacePolicy: Delete
     Properties:
       Engine: aurora-postgresql
-      EngineVersion: '16.4'
+      EngineVersion: '16.10'
       DatabaseName: compliance_db
       MasterUsername: ragadmin
       MasterUserPassword: !Ref DBPassword
