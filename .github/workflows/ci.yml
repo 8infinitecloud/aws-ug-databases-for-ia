@@ -7,8 +7,9 @@ on:
     branches: [main]
 
 jobs:
+  # ── Lab 3: Python syntax + lint ─────────────────────────────────────────────
   validate-python:
-    name: Python syntax & lint
+    name: Python syntax & lint (Lab 3)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,19 +18,34 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Check Python syntax (all modules)
+      - name: Check Python syntax — Lab 3 modules
         run: |
-          find ingestion/ query/ app/ scripts/ -name "*.py" | while read f; do
+          find legacy/ingestion/ legacy/query/ legacy/app/ legacy/scripts/ scripts/ -name "*.py" | while read f; do
             python -c "import ast; ast.parse(open('$f').read())" && echo "✓ $f"
           done
 
+      - name: Check Python syntax — Lab 2 Glue job
+        run: |
+          python -c "import ast; ast.parse(open('labs/02-transformation-quality-catalog/glue_job.py').read())" \
+            && echo "✓ labs/02-transformation-quality-catalog/glue_job.py"
+
       - name: Install linter
-        run: pip install ruff --quiet
+        run: pip install ruff==0.7.0 --quiet
 
-      - name: Lint with ruff
-        # E501 (line too long) ignorado — los comentarios inline del lab son deliberadamente descriptivos
-        run: ruff check ingestion/ query/ app/ scripts/ --ignore E501 --ignore F401
+      - name: Lint with ruff — Lab 3 modules
+        # E501 ignorado: comentarios inline del lab son deliberadamente descriptivos
+        run: |
+          ruff check legacy/ingestion/ legacy/query/ legacy/app/ legacy/scripts/ scripts/ \
+            --ignore E501,F401 \
+            --output-format=concise
 
+      - name: Lint with ruff — Lab 2 Glue job
+        run: |
+          ruff check labs/02-transformation-quality-catalog/glue_job.py \
+            --ignore E501,F401 \
+            --output-format=concise
+
+  # ── Lab 1 + Lab 2: Shell scripts ────────────────────────────────────────────
   validate-shell:
     name: Shell scripts (shellcheck)
     runs-on: ubuntu-latest
@@ -39,31 +55,106 @@ jobs:
       - name: Install shellcheck
         run: sudo apt-get install -y shellcheck
 
-      - name: Check bash scripts
+      - name: shellcheck — Lab 1 scripts
         run: |
-          shellcheck infrastructure/setup.sh
-          shellcheck infrastructure/deploy-app.sh
-          shellcheck infrastructure/cleanup.sh
+          shellcheck labs/01-ingestion-data-lake/scripts/setup.sh
+          shellcheck labs/01-ingestion-data-lake/scripts/validate.sh
+          shellcheck labs/01-ingestion-data-lake/scripts/cleanup.sh
 
+      - name: shellcheck — Lab 2 scripts
+        run: |
+          shellcheck labs/02-transformation-quality-catalog/scripts/setup.sh
+          shellcheck labs/02-transformation-quality-catalog/scripts/run_job.sh
+          shellcheck labs/02-transformation-quality-catalog/scripts/validate.sh
+          shellcheck labs/02-transformation-quality-catalog/scripts/cleanup.sh
+
+      - name: shellcheck — Lab 3 infrastructure scripts
+        run: |
+          shellcheck legacy/infrastructure/setup.sh
+          shellcheck legacy/infrastructure/deploy-app.sh
+          shellcheck legacy/infrastructure/cleanup.sh
+
+  # ── CloudFormation templates ─────────────────────────────────────────────────
   validate-cloudformation:
-    name: CloudFormation template
+    name: CloudFormation templates (cfn-lint)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install cfn-lint
-        run: pip install cfn-lint --quiet
+        # 1.11.0 traia catalogos de EngineVersion de 2024 y rechazaba
+        # versiones de RDS/Aurora que AWS si acepta hoy.
+        run: pip install cfn-lint==1.57.0 --quiet
 
-      - name: Lint CloudFormation template
-        run: cfn-lint infrastructure/cloudformation.yaml --non-zero-exit-code error
+      - name: cfn-lint — Lab 1
+        run: cfn-lint labs/01-ingestion-data-lake/infrastructure/lab1-cfn.yaml --non-zero-exit-code error
 
+      - name: cfn-lint — Lab 2
+        run: cfn-lint labs/02-transformation-quality-catalog/infrastructure/lab2-cfn.yaml --non-zero-exit-code error
+
+      - name: cfn-lint — Lab 3 (infrastructure)
+        run: cfn-lint legacy/infrastructure/cloudformation.yaml --non-zero-exit-code error
+
+  # ── Datasets + corpus ────────────────────────────────────────────────────────
   validate-data:
-    name: Sample documents exist
+    name: Datasets y documentos
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify corpus files are present
+      - name: Verificar datasets Lab 1
+        run: |
+          required=(
+            "labs/01-ingestion-data-lake/dataset/transactions.csv"
+            "labs/01-ingestion-data-lake/dataset/customers.csv"
+            "labs/01-ingestion-data-lake/dataset/seed.sql"
+          )
+          for f in "${required[@]}"; do
+            [ -f "$f" ] && echo "✓ $f" || { echo "❌ Missing: $f"; exit 1; }
+          done
+
+      - name: Verificar columnas de transactions.csv
+        run: |
+          HEADER=$(head -1 labs/01-ingestion-data-lake/dataset/transactions.csv)
+          EXPECTED="transaction_id,customer_id,amount,currency,transaction_type,status,transaction_date,branch_id"
+          if [ "$HEADER" = "$EXPECTED" ]; then
+            echo "✓ transactions.csv header correcto"
+          else
+            echo "❌ Header inesperado: $HEADER"
+            echo "   Esperado: $EXPECTED"
+            exit 1
+          fi
+
+      - name: Verificar columnas de customers.csv
+        run: |
+          HEADER=$(head -1 labs/01-ingestion-data-lake/dataset/customers.csv)
+          EXPECTED="customer_id,name,email,country,risk_level,onboarding_date"
+          if [ "$HEADER" = "$EXPECTED" ]; then
+            echo "✓ customers.csv header correcto"
+          else
+            echo "❌ Header inesperado: $HEADER"
+            exit 1
+          fi
+
+      - name: Verificar conteo de filas en transactions.csv
+        run: |
+          ROWS=$(wc -l < labs/01-ingestion-data-lake/dataset/transactions.csv)
+          # ~1001 (1000 datos + 1 header), con tolerancia
+          if [ "$ROWS" -ge 900 ] && [ "$ROWS" -le 1100 ]; then
+            echo "✓ transactions.csv: $ROWS líneas (dentro del rango esperado)"
+          else
+            echo "❌ transactions.csv tiene $ROWS líneas (esperado: 901-1101)"
+            exit 1
+          fi
+
+      - name: Verificar ruleset DQDL Lab 2
+        run: |
+          [ -f "labs/02-transformation-quality-catalog/quality_rules.dqdl" ] \
+            && echo "✓ quality_rules.dqdl existe" || { echo "❌ Falta quality_rules.dqdl"; exit 1; }
+          grep -q "Completeness" labs/02-transformation-quality-catalog/quality_rules.dqdl \
+            && echo "✓ Contiene reglas Completeness" || { echo "❌ Sin reglas Completeness"; exit 1; }
+
+      - name: Verificar corpus documentos Lab 3
         run: |
           required=(
             "data/compliance/aml_policy.md"

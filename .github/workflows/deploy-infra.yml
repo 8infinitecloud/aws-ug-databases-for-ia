@@ -1,25 +1,178 @@
 name: Deploy Infrastructure
 
-# Solo se ejecuta manualmente — provisionar infra es una operación deliberada,
-# no algo que deba ocurrir en cada push.
+# Solo se ejecuta manualmente — provisionar infra es una operación deliberada.
 on:
   workflow_dispatch:
     inputs:
+      labs:
+        description: "Labs a desplegar"
+        type: choice
+        options: [all, lab1, lab2, lab3]
+        default: all
       environment:
-        description: "Ambiente a desplegar"
+        description: "Ambiente"
         type: choice
         options: [lab, dev, prod]
         default: lab
       db_password:
-        description: "Password de Aurora (mínimo 8 caracteres)"
+        description: "Password para RDS MySQL y Aurora (mín. 8 caracteres)"
         required: true
-        default: "RagLab2024!"
+        default: "FinCorp2026!"
+
+env:
+  AWS_REGION: us-east-1
+  PROJECT_NAME: fincorp-datalake
 
 jobs:
-  deploy-infra:
-    name: CloudFormation deploy
+  # ── LAB 1: VPC + RDS MySQL + DMS + S3 ──────────────────────────────────────
+  deploy-lab1:
+    name: Deploy Lab 1 (DMS + S3)
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
+    if: inputs.labs == 'all' || inputs.labs == 'lab1'
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION || env.AWS_REGION }}
+          role-session-name: gha-lab1-${{ github.run_id }}
+
+      - name: Validate CFN template — Lab 1
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://labs/01-ingestion-data-lake/infrastructure/lab1-cfn.yaml \
+            --region ${{ secrets.AWS_REGION || env.AWS_REGION }}
+          echo "✓ lab1-cfn.yaml válido"
+
+      - name: Deploy CloudFormation — Lab 1
+        run: |
+          aws cloudformation deploy \
+            --stack-name  "${{ env.PROJECT_NAME }}-${{ inputs.environment }}-lab1" \
+            --template-file labs/01-ingestion-data-lake/infrastructure/lab1-cfn.yaml \
+            --parameter-overrides \
+              ProjectName="${{ env.PROJECT_NAME }}" \
+              Environment="${{ inputs.environment }}" \
+              DBPassword="${{ inputs.db_password }}" \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --region ${{ secrets.AWS_REGION || env.AWS_REGION }} \
+            --no-fail-on-empty-changeset
+
+      - name: Upload dataset to S3
+        run: |
+          S3_BUCKET=$(aws cloudformation describe-stacks \
+            --stack-name "${{ env.PROJECT_NAME }}-${{ inputs.environment }}-lab1" \
+            --region ${{ secrets.AWS_REGION || env.AWS_REGION }} \
+            --query "Stacks[0].Outputs[?OutputKey=='S3BucketName'].OutputValue" \
+            --output text)
+          aws s3 cp labs/01-ingestion-data-lake/dataset/transactions.csv \
+            "s3://${S3_BUCKET}/staging/transactions/transactions.csv"
+          aws s3 cp labs/01-ingestion-data-lake/dataset/customers.csv \
+            "s3://${S3_BUCKET}/staging/customers/customers.csv"
+          echo "✓ Dataset subido a s3://${S3_BUCKET}/staging/"
+
+      - name: Lab 1 summary
+        run: |
+          OUTPUTS=$(aws cloudformation describe-stacks \
+            --stack-name "${{ env.PROJECT_NAME }}-${{ inputs.environment }}-lab1" \
+            --region ${{ secrets.AWS_REGION || env.AWS_REGION }} \
+            --query "Stacks[0].Outputs" --output table)
+          echo "### ✅ Lab 1 desplegado" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "$OUTPUTS" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Siguiente:** Iniciar manualmente la DMS task desde la consola AWS" >> $GITHUB_STEP_SUMMARY
+
+  # ── LAB 2: Glue + DQ + Catalog ──────────────────────────────────────────────
+  deploy-lab2:
+    name: Deploy Lab 2 (Glue + DQ + Catalog)
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    needs: [deploy-lab1]
+    if: |
+      always() &&
+      (inputs.labs == 'all' || inputs.labs == 'lab2') &&
+      (needs.deploy-lab1.result == 'success' || needs.deploy-lab1.result == 'skipped')
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION || env.AWS_REGION }}
+          role-session-name: gha-lab2-${{ github.run_id }}
+
+      - name: Get S3 bucket from Lab 1 stack
+        id: lab1
+        run: |
+          S3_BUCKET=$(aws cloudformation describe-stacks \
+            --stack-name "${{ env.PROJECT_NAME }}-${{ inputs.environment }}-lab1" \
+            --region ${{ secrets.AWS_REGION || env.AWS_REGION }} \
+            --query "Stacks[0].Outputs[?OutputKey=='S3BucketName'].OutputValue" \
+            --output text 2>/dev/null || echo "")
+          [ -n "$S3_BUCKET" ] || { echo "❌ No se encontró S3BucketName. ¿Está Lab 1 desplegado?"; exit 1; }
+          echo "s3_bucket=$S3_BUCKET" >> $GITHUB_OUTPUT
+          echo "✓ S3 Bucket: $S3_BUCKET"
+
+      - name: Upload Glue job script to S3
+        run: |
+          aws s3 cp labs/02-transformation-quality-catalog/glue_job.py \
+            "s3://${{ steps.lab1.outputs.s3_bucket }}/scripts/glue_job.py"
+          echo "✓ glue_job.py subido"
+
+      - name: Validate CFN template — Lab 2
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://labs/02-transformation-quality-catalog/infrastructure/lab2-cfn.yaml \
+            --region ${{ secrets.AWS_REGION || env.AWS_REGION }}
+          echo "✓ lab2-cfn.yaml válido"
+
+      - name: Deploy CloudFormation — Lab 2
+        run: |
+          aws cloudformation deploy \
+            --stack-name "${{ env.PROJECT_NAME }}-${{ inputs.environment }}-lab2" \
+            --template-file labs/02-transformation-quality-catalog/infrastructure/lab2-cfn.yaml \
+            --parameter-overrides \
+              ProjectName="${{ env.PROJECT_NAME }}" \
+              Environment="${{ inputs.environment }}" \
+              S3BucketName="${{ steps.lab1.outputs.s3_bucket }}" \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --region ${{ secrets.AWS_REGION || env.AWS_REGION }} \
+            --no-fail-on-empty-changeset
+
+      - name: Lab 2 summary
+        run: |
+          GLUE_JOB=$(aws cloudformation describe-stacks \
+            --stack-name "${{ env.PROJECT_NAME }}-${{ inputs.environment }}-lab2" \
+            --region ${{ secrets.AWS_REGION || env.AWS_REGION }} \
+            --query "Stacks[0].Outputs[?OutputKey=='GlueJobName'].OutputValue" \
+            --output text)
+          echo "### ✅ Lab 2 desplegado" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Glue Job:** \`$GLUE_JOB\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Siguiente:** Ejecutar el workflow _Deploy App_ o correr \`run_job.sh\` manualmente" >> $GITHUB_STEP_SUMMARY
+
+  # ── LAB 3: Aurora + Redis + DynamoDB + EC2 ───────────────────────────────────
+  deploy-lab3:
+    name: Deploy Lab 3 (Aurora + Redis + DynamoDB)
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    if: inputs.labs == 'all' || inputs.labs == 'lab3'
 
     permissions:
       id-token: write
@@ -33,63 +186,48 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
-          role-session-name: github-actions-infra-${{ github.run_id }}
+          aws-region: ${{ secrets.AWS_REGION || env.AWS_REGION }}
+          role-session-name: gha-lab3-${{ github.run_id }}
 
-      - name: Validate CloudFormation template
+      - name: Validate CFN template — Lab 3
         run: |
           aws cloudformation validate-template \
-            --template-body file://infrastructure/cloudformation.yaml \
-            --region ${{ secrets.AWS_REGION || 'us-east-1' }}
-          echo "✓ Template válido"
+            --template-body file://legacy/infrastructure/cloudformation.yaml \
+            --region ${{ secrets.AWS_REGION || env.AWS_REGION }}
+          echo "✓ legacy/infrastructure/cloudformation.yaml válido"
 
-      - name: Deploy CloudFormation stack
+      - name: Deploy CloudFormation — Lab 3
         run: |
           aws cloudformation deploy \
             --stack-name financial-compliance-rag-lab \
-            --template-file infrastructure/cloudformation.yaml \
+            --template-file legacy/infrastructure/cloudformation.yaml \
             --parameter-overrides \
               ProjectName=rag-lab \
               DBPassword="${{ inputs.db_password }}" \
-              EnvironmentType=${{ inputs.environment }} \
+              EnvironmentType="${{ inputs.environment }}" \
             --capabilities CAPABILITY_NAMED_IAM \
-            --region ${{ secrets.AWS_REGION || 'us-east-1' }} \
+            --region ${{ secrets.AWS_REGION || env.AWS_REGION }} \
             --no-fail-on-empty-changeset
 
-      - name: Show stack outputs
-        id: outputs
+      - name: Show Lab 3 outputs
+        id: lab3-outputs
         run: |
-          aws cloudformation describe-stacks \
-            --stack-name financial-compliance-rag-lab \
-            --region ${{ secrets.AWS_REGION || 'us-east-1' }} \
-            --query "Stacks[0].Outputs" \
-            --output table
-
           STREAMLIT=$(aws cloudformation describe-stacks \
             --stack-name financial-compliance-rag-lab \
+            --region ${{ secrets.AWS_REGION || env.AWS_REGION }} \
             --query "Stacks[0].Outputs[?OutputKey=='StreamlitURL'].OutputValue" \
-            --output text)
+            --output text 2>/dev/null || echo "N/A")
           echo "streamlit_url=$STREAMLIT" >> $GITHUB_OUTPUT
 
-      - name: Infra summary
+      - name: Lab 3 summary
         run: |
-          echo "### ✅ Infraestructura desplegada" >> $GITHUB_STEP_SUMMARY
+          echo "### ✅ Lab 3 desplegado" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Environment:** ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Streamlit URL:** ${{ steps.outputs.outputs.streamlit_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Streamlit URL:** ${{ steps.lab3-outputs.outputs.streamlit_url }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Próximo paso:** ejecutar el workflow _Deploy App_" >> $GITHUB_STEP_SUMMARY
+          echo "**Siguiente:** Ejecutar el workflow _Deploy App_ para desplegar la app Streamlit" >> $GITHUB_STEP_SUMMARY
 
-  # Trigger automático del deploy de app al terminar el de infra
-  trigger-app-deploy:
-    name: Trigger app deploy
-    needs: deploy-infra
-    runs-on: ubuntu-latest
-    permissions:
-      actions: write
-      contents: read
-    steps:
-      - name: Dispatch deploy-app workflow
+      - name: Trigger deploy-app workflow
         uses: actions/github-script@v7
         with:
           script: |

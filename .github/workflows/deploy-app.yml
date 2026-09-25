@@ -6,12 +6,12 @@ on:
   push:
     branches: [main]
     paths:
-      - "app/**"
-      - "ingestion/**"
-      - "query/**"
-      - "data/**"
-      - "scripts/**"
-      - "requirements.txt"
+      - "legacy/app/**"
+      - "legacy/ingestion/**"
+      - "legacy/query/**"
+      - "legacy/data/**"
+      - "legacy/scripts/**"
+      - "legacy/requirements.txt"
 
   # También ejecutable manualmente desde la UI de GitHub Actions
   workflow_dispatch:
@@ -115,7 +115,10 @@ jobs:
 
       - name: Package app code
         run: |
+          # -C legacy: el codigo del Lab 3 vive en legacy/, pero el tar debe
+          # conservar el layout app/ ingestion/ query/ ... que espera el EC2.
           tar -czf /tmp/rag-lab-app.tar.gz \
+            -C legacy \
             --exclude='.git' \
             --exclude='.env' \
             --exclude='*.pptx' \
@@ -130,7 +133,7 @@ jobs:
           aws s3 cp /tmp/rag-lab-app.tar.gz \
             "s3://${{ steps.stack.outputs.s3_bucket }}/app-code.tar.gz"
 
-          aws s3 sync data/ \
+          aws s3 sync legacy/data/ \
             "s3://${{ steps.stack.outputs.s3_bucket }}/compliance-docs/" \
             --exclude "*.DS_Store"
 

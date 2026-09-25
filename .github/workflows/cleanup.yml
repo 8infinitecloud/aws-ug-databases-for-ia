@@ -1,22 +1,34 @@
 name: Cleanup — Eliminar recursos AWS
 
 # Solo manual — nunca automático.
-# Aurora + ElastiCache cuestan ~$15-25 USD/día si se dejan corriendo.
+# Costos estimados si se dejan corriendo:
+#   Lab 1 (RDS + DMS):           ~$0.09/hr
+#   Lab 2 (Glue):                $0 en idle
+#   Lab 3 (Aurora + ElastiCache): ~$15-25/día
 on:
   workflow_dispatch:
     inputs:
       confirm:
         description: "Escribe ELIMINAR para confirmar (irreversible)"
         required: true
+      labs:
+        description: "Labs a limpiar"
+        type: choice
+        options: [all, lab1, lab2, lab3]
+        default: all
       environment:
-        description: "Ambiente a eliminar"
+        description: "Ambiente"
         type: choice
         options: [lab, dev, prod]
         default: lab
 
+env:
+  AWS_REGION: us-east-1
+  PROJECT_NAME: fincorp-datalake
+
 jobs:
   cleanup:
-    name: Eliminar stack AWS
+    name: Eliminar recursos AWS (${{ inputs.labs }})
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
 
@@ -31,77 +43,211 @@ jobs:
             echo "❌ Confirmación incorrecta. Escribe exactamente: ELIMINAR"
             exit 1
           fi
-          echo "✓ Confirmación válida — iniciando cleanup"
+          echo "✓ Confirmación válida — iniciando cleanup de: ${{ inputs.labs }}"
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
-          role-session-name: github-actions-cleanup-${{ github.run_id }}
+          aws-region: ${{ secrets.AWS_REGION || env.AWS_REGION }}
+          role-session-name: gha-cleanup-${{ github.run_id }}
 
-      - name: Vaciar bucket S3
+      # ── Lab 2: Glue + DQ + Catalog ───────────────────────────────────────────
+      - name: Cleanup Lab 2 (Glue)
+        if: inputs.labs == 'all' || inputs.labs == 'lab2'
         env:
-          AWS_REGION_VAL: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          LAB2_STACK: "${{ env.PROJECT_NAME }}-${{ inputs.environment }}-lab2"
+          LAB1_STACK: "${{ env.PROJECT_NAME }}-${{ inputs.environment }}-lab1"
+          REGION: ${{ secrets.AWS_REGION || env.AWS_REGION }}
         run: |
+          # Eliminar tablas del Glue Catalog
+          TABLES=$(aws glue get-tables \
+            --database-name "financial_platform" \
+            --region "$REGION" \
+            --query "TableList[*].Name" \
+            --output text 2>/dev/null || echo "")
+
+          if [ -n "$TABLES" ]; then
+            for TABLE in $TABLES; do
+              aws glue delete-table \
+                --database-name "financial_platform" \
+                --name "$TABLE" \
+                --region "$REGION" 2>/dev/null \
+                && echo "  ✓ Tabla eliminada: $TABLE" || true
+            done
+          fi
+
+          # Limpiar zonas curated/rejected/quality-reports en S3
           S3_BUCKET=$(aws cloudformation describe-stacks \
-            --stack-name financial-compliance-rag-lab \
-            --region "$AWS_REGION_VAL" \
+            --stack-name "$LAB1_STACK" \
+            --region "$REGION" \
             --query "Stacks[0].Outputs[?OutputKey=='S3BucketName'].OutputValue" \
             --output text 2>/dev/null || echo "")
 
           if [ -n "$S3_BUCKET" ] && [ "$S3_BUCKET" != "None" ]; then
-            aws s3 rm "s3://$S3_BUCKET" --recursive --region "$AWS_REGION_VAL" 2>/dev/null || true
-            echo "✓ Bucket vaciado: $S3_BUCKET"
-          else
-            echo "  (bucket no encontrado o stack ya no existe)"
+            for PREFIX in curated/ rejected/ quality-reports/ scripts/; do
+              aws s3 rm "s3://$S3_BUCKET/$PREFIX" \
+                --recursive --region "$REGION" 2>/dev/null || true
+              echo "  ✓ Limpiado: s3://$S3_BUCKET/$PREFIX"
+            done
           fi
 
-      - name: Eliminar tabla DynamoDB
+          # Eliminar stack Lab 2
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$LAB2_STACK" --region "$REGION" \
+            --query "Stacks[0].StackStatus" --output text 2>/dev/null || echo "NOT_FOUND")
+
+          if [ "$STATUS" != "NOT_FOUND" ]; then
+            aws cloudformation delete-stack \
+              --stack-name "$LAB2_STACK" --region "$REGION"
+            aws cloudformation wait stack-delete-complete \
+              --stack-name "$LAB2_STACK" --region "$REGION" \
+              || echo "  (wait timeout — stack puede seguir eliminándose)"
+            echo "  ✓ Stack Lab 2 eliminado: $LAB2_STACK"
+          else
+            echo "  (Stack Lab 2 no existe)"
+          fi
+
+      # ── Lab 1: RDS + DMS + S3 ───────────────────────────────────────────────
+      - name: Cleanup Lab 1 (RDS + DMS + S3)
+        if: inputs.labs == 'all' || inputs.labs == 'lab1'
         env:
-          AWS_REGION_VAL: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          LAB1_STACK: "${{ env.PROJECT_NAME }}-${{ inputs.environment }}-lab1"
+          REGION: ${{ secrets.AWS_REGION || env.AWS_REGION }}
         run: |
+          # Obtener ARN de DMS task
+          DMS_TASK_ARN=$(aws cloudformation describe-stacks \
+            --stack-name "$LAB1_STACK" --region "$REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='DMSTaskArn'].OutputValue" \
+            --output text 2>/dev/null || echo "")
+
+          # Detener DMS task si está corriendo
+          if [ -n "$DMS_TASK_ARN" ] && [ "$DMS_TASK_ARN" != "None" ]; then
+            TASK_STATUS=$(aws dms describe-replication-tasks \
+              --filters "Name=replication-task-arn,Values=$DMS_TASK_ARN" \
+              --region "$REGION" \
+              --query "ReplicationTasks[0].Status" \
+              --output text 2>/dev/null || echo "unknown")
+
+            if [ "$TASK_STATUS" = "running" ]; then
+              aws dms stop-replication-task \
+                --replication-task-arn "$DMS_TASK_ARN" \
+                --region "$REGION" > /dev/null 2>&1 || true
+              sleep 20
+              echo "  ✓ Tarea DMS detenida"
+            fi
+          fi
+
+          # Vaciar bucket S3 (objetos + versiones)
+          S3_BUCKET=$(aws cloudformation describe-stacks \
+            --stack-name "$LAB1_STACK" --region "$REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='S3BucketName'].OutputValue" \
+            --output text 2>/dev/null || echo "")
+
+          if [ -n "$S3_BUCKET" ] && [ "$S3_BUCKET" != "None" ]; then
+            aws s3 rm "s3://$S3_BUCKET" --recursive --region "$REGION" 2>/dev/null || true
+
+            # Eliminar versiones
+            aws s3api list-object-versions \
+              --bucket "$S3_BUCKET" --region "$REGION" \
+              --output json 2>/dev/null | \
+          python3 -c "
+          import json, sys
+          try:
+              data = json.load(sys.stdin)
+              objects = []
+              for v in data.get('Versions', []):
+                  objects.append({'Key': v['Key'], 'VersionId': v['VersionId']})
+              for m in data.get('DeleteMarkers', []):
+                  objects.append({'Key': m['Key'], 'VersionId': m['VersionId']})
+              if objects:
+                  print(json.dumps({'Objects': objects, 'Quiet': True}))
+          except Exception:
+              pass
+          " | xargs -I{} aws s3api delete-objects \
+              --bucket "$S3_BUCKET" --region "$REGION" \
+              --delete "{}" 2>/dev/null || true
+
+            echo "  ✓ Bucket vaciado: $S3_BUCKET"
+          fi
+
+          # Eliminar stack Lab 1
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$LAB1_STACK" --region "$REGION" \
+            --query "Stacks[0].StackStatus" --output text 2>/dev/null || echo "NOT_FOUND")
+
+          if [ "$STATUS" != "NOT_FOUND" ]; then
+            aws cloudformation delete-stack \
+              --stack-name "$LAB1_STACK" --region "$REGION"
+            aws cloudformation wait stack-delete-complete \
+              --stack-name "$LAB1_STACK" --region "$REGION" \
+              || echo "  (wait timeout — stack puede seguir eliminándose)"
+            echo "  ✓ Stack Lab 1 eliminado: $LAB1_STACK"
+          else
+            echo "  (Stack Lab 1 no existe)"
+          fi
+
+      # ── Lab 3: Aurora + Redis + DynamoDB + EC2 ──────────────────────────────
+      - name: Cleanup Lab 3 (Aurora + ElastiCache)
+        if: inputs.labs == 'all' || inputs.labs == 'lab3'
+        env:
+          LAB3_STACK: financial-compliance-rag-lab
+          REGION: ${{ secrets.AWS_REGION || env.AWS_REGION }}
+        run: |
+          # Vaciar bucket S3 del Lab 3
+          S3_BUCKET=$(aws cloudformation describe-stacks \
+            --stack-name "$LAB3_STACK" --region "$REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='S3BucketName'].OutputValue" \
+            --output text 2>/dev/null || echo "")
+
+          if [ -n "$S3_BUCKET" ] && [ "$S3_BUCKET" != "None" ]; then
+            aws s3 rm "s3://$S3_BUCKET" --recursive --region "$REGION" 2>/dev/null || true
+            echo "  ✓ Bucket S3 Lab 3 vaciado"
+          fi
+
+          # Eliminar tabla DynamoDB
           aws dynamodb delete-table \
             --table-name rag_user_memory \
-            --region "$AWS_REGION_VAL" 2>/dev/null \
-            && echo "✓ Tabla DynamoDB eliminada" \
-            || echo "  (tabla no existía o ya eliminada)"
+            --region "$REGION" 2>/dev/null \
+            && echo "  ✓ Tabla DynamoDB eliminada" \
+            || echo "  (tabla no existía)"
 
-      - name: Eliminar CloudFormation stack
-        env:
-          AWS_REGION_VAL: ${{ secrets.AWS_REGION || 'us-east-1' }}
-        run: |
+          # Eliminar stack Lab 3
           STATUS=$(aws cloudformation describe-stacks \
-            --stack-name financial-compliance-rag-lab \
-            --region "$AWS_REGION_VAL" \
-            --query "Stacks[0].StackStatus" \
-            --output text 2>/dev/null || echo "NOT_FOUND")
+            --stack-name "$LAB3_STACK" --region "$REGION" \
+            --query "Stacks[0].StackStatus" --output text 2>/dev/null || echo "NOT_FOUND")
 
-          if [ "$STATUS" = "NOT_FOUND" ]; then
-            echo "  Stack no existe — nada que eliminar"
-            exit 0
+          if [ "$STATUS" != "NOT_FOUND" ]; then
+            aws cloudformation delete-stack \
+              --stack-name "$LAB3_STACK" --region "$REGION"
+            echo "  Esperando eliminación (Aurora + ElastiCache tardan ~10 min)..."
+            aws cloudformation wait stack-delete-complete \
+              --stack-name "$LAB3_STACK" --region "$REGION" \
+              || echo "  (wait timeout — stack puede seguir eliminándose)"
+            echo "  ✓ Stack Lab 3 eliminado: $LAB3_STACK"
+          else
+            echo "  (Stack Lab 3 no existe)"
           fi
 
-          echo "Eliminando stack (status actual: $STATUS)..."
-          aws cloudformation delete-stack \
-            --stack-name financial-compliance-rag-lab \
-            --region "$AWS_REGION_VAL"
-
-          echo "Esperando eliminación completa (10-15 min)..."
-          aws cloudformation wait stack-delete-complete \
-            --stack-name financial-compliance-rag-lab \
-            --region "$AWS_REGION_VAL"
-
-          echo "✓ Stack eliminado"
-
+      # ── Summary ──────────────────────────────────────────────────────────────
       - name: Cleanup summary
         if: success()
         run: |
-          echo "### ✅ Cleanup completado" >> $GITHUB_STEP_SUMMARY
+          echo "### ✅ Cleanup completado (${{ inputs.labs }})" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Recursos eliminados:**" >> $GITHUB_STEP_SUMMARY
-          echo "- CloudFormation stack (VPC, Aurora, ElastiCache, EC2)" >> $GITHUB_STEP_SUMMARY
-          echo "- Bucket S3 (vaciado)" >> $GITHUB_STEP_SUMMARY
-          echo "- Tabla DynamoDB" >> $GITHUB_STEP_SUMMARY
+          case "${{ inputs.labs }}" in
+            all)
+              echo "**Recursos eliminados:**" >> $GITHUB_STEP_SUMMARY
+              echo "- Lab 1: CloudFormation stack (VPC, RDS, DMS, S3, IAM, Secrets)" >> $GITHUB_STEP_SUMMARY
+              echo "- Lab 2: CloudFormation stack (Glue, Crawler, Catalog, DQ Ruleset, IAM)" >> $GITHUB_STEP_SUMMARY
+              echo "- Lab 3: CloudFormation stack (Aurora, ElastiCache, DynamoDB, EC2, S3)" >> $GITHUB_STEP_SUMMARY
+              ;;
+            lab1)
+              echo "- Lab 1: CloudFormation stack (VPC, RDS, DMS, S3, IAM, Secrets)" >> $GITHUB_STEP_SUMMARY ;;
+            lab2)
+              echo "- Lab 2: CloudFormation stack (Glue, Crawler, Catalog, DQ Ruleset, IAM)" >> $GITHUB_STEP_SUMMARY ;;
+            lab3)
+              echo "- Lab 3: CloudFormation stack (Aurora, ElastiCache, DynamoDB, EC2, S3)" >> $GITHUB_STEP_SUMMARY ;;
+          esac
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "No se generarán más costos por estos recursos." >> $GITHUB_STEP_SUMMARY
