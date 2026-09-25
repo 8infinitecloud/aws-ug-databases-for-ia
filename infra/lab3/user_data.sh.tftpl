@@ -1,0 +1,47 @@
+#!/bin/bash -xe
+exec > >(tee /var/log/user-data.log | logger -t user-data) 2>&1
+
+echo "=== Instalando dependencias del sistema ==="
+yum update -y
+yum install -y python3.11 git tar
+
+# ensurepip arranca pip para python3.11: en AL2023 no existe el paquete python3.11-pip
+python3.11 -m ensurepip --upgrade
+ln -sf /usr/bin/python3.11 /usr/local/bin/python3
+
+echo "=== Actualizando pip ==="
+python3 -m pip install --upgrade pip --quiet
+
+echo "=== Creando directorio de la app ==="
+mkdir -p /opt/rag-lab
+chown ec2-user:ec2-user /opt/rag-lab
+
+echo "=== Escribiendo archivo .env ==="
+cat > /opt/rag-lab/.env << 'ENVEOF'
+AWS_REGION=${region}
+BEDROCK_EMBEDDING_MODEL=amazon.titan-embed-text-v2:0
+BEDROCK_LLM_MODEL=amazon.nova-pro-v1:0
+EMBEDDING_DIMENSIONS=1024
+AURORA_HOST=${aurora_host}
+AURORA_PORT=5432
+AURORA_DB=compliance_db
+AURORA_USER=ragadmin
+AURORA_SECRET_ARN=${aurora_secret_arn}
+REDIS_HOST=${redis_host}
+REDIS_PORT=6379
+REDIS_SESSION_TTL=7200
+MAX_SESSION_MESSAGES=10
+DYNAMODB_TABLE=${dynamodb_table}
+DYNAMODB_REGION=${region}
+S3_BUCKET=${bucket_name}
+S3_PREFIX=compliance-docs/
+RETRIEVAL_TOP_K=5
+RETRIEVAL_MIN_SCORE=0.70
+CHUNK_SIZE=1000
+CHUNK_OVERLAP=200
+DEMO_USER_ID=demo-user-001
+VERBOSE_LOGGING=true
+ENVEOF
+
+echo "=== UserData completado. El codigo de la app lo sube deploy-app.sh ==="
+touch /tmp/userdata-complete

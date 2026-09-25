@@ -49,10 +49,21 @@ logs/
 *.pkl
 chroma_db/
 
-# Terraform / CDK
+# Terraform
+# El state guarda las contrasenas de RDS y Aurora EN CLARO. Nunca se commitea.
 .terraform/
+.terraform.lock.hcl.bak
 *.tfstate
-*.tfstate.backup
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+# Generado por infra/bootstrap: lleva el account id.
+infra/backend.hcl
+# .terraform.lock.hcl SI se commitea: fija las versiones de los providers.
+
+# CDK
 cdk.out/
 node_modules/
 
