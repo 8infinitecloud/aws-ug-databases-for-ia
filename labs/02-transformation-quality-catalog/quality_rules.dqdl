@@ -1,0 +1,33 @@
+Rules = [
+    # ── Completeness ─────────────────────────────────────────────────────────
+    # Al menos el 95% de transacciones deben tener amount.
+    # El dataset del Lab 1 tiene ~5% NULLs deliberados → esta regla FALLARÁ.
+    Completeness "amount" >= 0.95,
+
+    # transaction_id y customer_id son obligatorios en todos los registros.
+    IsComplete "transaction_id",
+    IsComplete "customer_id",
+
+    # ── Uniqueness ────────────────────────────────────────────────────────────
+    # Cada transaction_id debe ser único (no duplicados).
+    # El dataset del Lab 1 tiene ~3% duplicados → esta regla FALLARÁ.
+    Uniqueness "transaction_id" = 1.0,
+
+    # ── Validity — ColumnValues ───────────────────────────────────────────────
+    # transaction_type debe ser uno de los valores canónicos en inglés.
+    # El dataset tiene "DEPÓSITO", "RETIRO", "TRANSFERENCIA" → esta regla FALLARÁ
+    # antes de la normalización. Después del job de Glue, todos deben pasar.
+    ColumnValues "transaction_type" in ["DEPOSIT", "WITHDRAWAL", "TRANSFER"],
+
+    # status debe ser uno de los valores canónicos en MAYÚSCULAS.
+    # El dataset tiene "pending", "Completed", etc. → esta regla FALLARÁ
+    # antes de la normalización.
+    ColumnValues "status" in ["PENDING", "COMPLETED", "FAILED", "PROCESSING"],
+
+    # currency debe ser uno de los valores permitidos.
+    ColumnValues "currency" in ["USD", "PEN", "EUR"],
+
+    # ── Length ────────────────────────────────────────────────────────────────
+    # transaction_id debe tener entre 1 y 20 caracteres.
+    ColumnLength "transaction_id" between 1 and 20
+]

@@ -1,0 +1,555 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Lab 1 — Ingestion + Data Lake | FinCorp Data Platform
+  Recursos: VPC, RDS MySQL, DMS (Full Load + CDC), S3 Data Lake (raw/ + curated/)
+
+# =============================================================================
+# PARÁMETROS
+# =============================================================================
+Parameters:
+  ProjectName:
+    Type: String
+    Default: fincorp-datalake
+    Description: Prefijo para nombres de recursos
+    AllowedPattern: "[a-z0-9-]+"
+
+  Environment:
+    Type: String
+    Default: lab
+    AllowedValues: [lab, dev, prod]
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    Description: Contraseña para la instancia RDS MySQL (mínimo 8 caracteres)
+    ConstraintDescription: Debe tener al menos 8 caracteres
+
+  DBUsername:
+    Type: String
+    Default: fincorpadmin
+    Description: Usuario administrador de RDS MySQL
+
+  DBName:
+    Type: String
+    Default: fincorp
+    Description: Nombre de la base de datos en RDS
+
+# =============================================================================
+# METADATA (mejora la experiencia en la consola de CloudFormation)
+# =============================================================================
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Proyecto
+        Parameters: [ProjectName, Environment]
+      - Label:
+          default: Base de Datos MySQL
+        Parameters: [DBUsername, DBPassword, DBName]
+    ParameterLabels:
+      ProjectName:
+        default: Nombre del proyecto
+      DBPassword:
+        default: Contraseña RDS
+
+# =============================================================================
+# RECURSOS
+# =============================================================================
+Resources:
+
+  # ---------------------------------------------------------------------------
+  # VPC + Red
+  # ---------------------------------------------------------------------------
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-vpc"
+        - Key: Project
+          Value: !Ref ProjectName
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-igw"
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Subnet pública — para Bastion o acceso temporal durante el lab
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-public-1"
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-public-rt"
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # Subnets privadas — RDS y DMS no expuestos a internet
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-private-1"
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-private-2"
+
+  # ---------------------------------------------------------------------------
+  # Security Groups
+  # ---------------------------------------------------------------------------
+  DMSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: DMS Replication Instance - salida a RDS y S3
+      VpcId: !Ref VPC
+      # DMS no necesita ingress desde internet; solo egress a RDS (3306) y S3 (443)
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: 10.0.0.0/16
+          Description: MySQL RDS dentro de la VPC
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: S3 endpoint (HTTPS)
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-dms-sg"
+
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: RDS MySQL - solo acepta conexiones desde DMS
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref DMSSecurityGroup
+          Description: DMS Replication Instance
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-rds-sg"
+
+  # ---------------------------------------------------------------------------
+  # RDS MySQL
+  # ---------------------------------------------------------------------------
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnets privadas para RDS MySQL
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-db-subnet-group"
+
+  # Parameter group: binlog requerido por DMS para CDC.
+  # Estos parametros NO son validos dentro de AWS::RDS::DBInstance.
+  DBParameterGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      Description: Habilita binlog ROW para CDC de AWS DMS
+      Family: mysql8.0
+      Parameters:
+        binlog_format: ROW
+        binlog_row_image: Full
+        binlog_checksum: NONE
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-mysql-pg"
+
+  RDSInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      DBInstanceIdentifier: !Sub "${ProjectName}-${Environment}-mysql"
+      DBName: !Ref DBName
+      DBInstanceClass: db.t3.micro
+      Engine: mysql
+      EngineVersion: "8.0.43"
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      AllocatedStorage: "20"
+      StorageType: gp2
+      MultiAZ: false
+      PubliclyAccessible: false
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref RDSSecurityGroup
+      # DMS CDC exige backups automaticos activos para retener el binlog.
+      BackupRetentionPeriod: 1
+      DeletionProtection: false
+      DBParameterGroupName: !Ref DBParameterGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-mysql"
+        - Key: Lab
+          Value: Lab1-Ingestion
+
+  # ---------------------------------------------------------------------------
+  # Secrets Manager — credenciales RDS
+  # ---------------------------------------------------------------------------
+  RDSSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${ProjectName}/${Environment}/rds-mysql"
+      Description: Credenciales RDS MySQL para FinCorp Data Platform
+      SecretString: !Sub |
+        {
+          "username": "${DBUsername}",
+          "password": "${DBPassword}",
+          "host": "${RDSInstance.Endpoint.Address}",
+          "port": "3306",
+          "dbname": "${DBName}",
+          "engine": "mysql"
+        }
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ---------------------------------------------------------------------------
+  # S3 Data Lake
+  # ---------------------------------------------------------------------------
+  DataLakeBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain   # Retener datos al hacer cleanup del stack
+    Properties:
+      BucketName: !Sub "${ProjectName}-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: MoveOldRawToIA
+            Status: Enabled
+            Prefix: raw/
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 90
+          - Id: MoveOldCuratedToIA
+            Status: Enabled
+            Prefix: curated/
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 180
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-datalake"
+        - Key: Lab
+          Value: Lab1-Ingestion
+
+  # Política del bucket — permite que DMS escriba en raw/
+  DataLakeBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DataLakeBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowDMSWrite
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt DMSRole.Arn
+            Action:
+              - s3:PutObject
+              - s3:DeleteObject
+              - s3:GetObject
+              - s3:ListBucket
+            Resource:
+              - !GetAtt DataLakeBucket.Arn
+              - !Sub "${DataLakeBucket.Arn}/*"
+
+  # ---------------------------------------------------------------------------
+  # IAM Role para DMS
+  # ---------------------------------------------------------------------------
+  DMSRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-${Environment}-dms-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: dms.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+      Policies:
+        - PolicyName: DMSVPCManagement
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                  - ec2:DescribeVpcs
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeSecurityGroups
+                  - ec2:ModifyNetworkInterfaceAttribute
+                Resource: "*"
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ---------------------------------------------------------------------------
+  # DMS — Replication Instance
+  # ---------------------------------------------------------------------------
+  DMSSubnetGroup:
+    Type: AWS::DMS::ReplicationSubnetGroup
+    Properties:
+      ReplicationSubnetGroupDescription: Subnets para DMS Replication Instance
+      ReplicationSubnetGroupIdentifier: !Sub "${ProjectName}-${Environment}-dms-subnet"
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  DMSReplicationInstance:
+    Type: AWS::DMS::ReplicationInstance
+    DependsOn:
+      - DMSRole
+      - DMSSubnetGroup
+    Properties:
+      ReplicationInstanceIdentifier: !Sub "${ProjectName}-${Environment}-ri"
+      ReplicationInstanceClass: dms.t3.medium
+      AllocatedStorage: 50
+      MultiAZ: false
+      PubliclyAccessible: false
+      ReplicationSubnetGroupIdentifier: !Ref DMSSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref DMSSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-ri"
+        - Key: Lab
+          Value: Lab1-Ingestion
+
+  # ---------------------------------------------------------------------------
+  # DMS — Source Endpoint (MySQL RDS)
+  # ---------------------------------------------------------------------------
+  DMSSourceEndpoint:
+    Type: AWS::DMS::Endpoint
+    Properties:
+      EndpointIdentifier: !Sub "${ProjectName}-${Environment}-source-mysql"
+      EndpointType: source
+      EngineName: mysql
+      ServerName: !GetAtt RDSInstance.Endpoint.Address
+      Port: 3306
+      DatabaseName: !Ref DBName
+      Username: !Ref DBUsername
+      Password: !Ref DBPassword
+      Tags:
+        - Key: Lab
+          Value: Lab1-Ingestion
+
+  # ---------------------------------------------------------------------------
+  # DMS — Target Endpoint (S3)
+  # ---------------------------------------------------------------------------
+  DMSTargetEndpoint:
+    Type: AWS::DMS::Endpoint
+    Properties:
+      EndpointIdentifier: !Sub "${ProjectName}-${Environment}-target-s3"
+      EndpointType: target
+      EngineName: s3
+      S3Settings:
+        BucketName: !Ref DataLakeBucket
+        BucketFolder: raw
+        ServiceAccessRoleArn: !GetAtt DMSRole.Arn
+        DataFormat: csv
+        EncodingType: plain
+        # Incluir encabezados de columna en el CSV para que Glue pueda inferir schema
+        IncludeOpForFullLoad: false
+        TimestampColumnName: dms_timestamp
+        CompressionType: NONE
+        # Un archivo por tabla para simplificar el Lab 2
+        CsvRowDelimiter: "\\n"
+        CsvDelimiter: ","
+      Tags:
+        - Key: Lab
+          Value: Lab1-Ingestion
+
+  # ---------------------------------------------------------------------------
+  # DMS — Replication Task (Full Load + CDC)
+  # ---------------------------------------------------------------------------
+  DMSReplicationTask:
+    Type: AWS::DMS::ReplicationTask
+    Properties:
+      ReplicationTaskIdentifier: !Sub "${ProjectName}-${Environment}-task"
+      ReplicationInstanceArn: !Ref DMSReplicationInstance
+      SourceEndpointArn: !Ref DMSSourceEndpoint
+      TargetEndpointArn: !Ref DMSTargetEndpoint
+      MigrationType: full-load-and-cdc
+      TableMappings: !Sub |
+        {
+          "rules": [
+            {
+              "rule-type": "selection",
+              "rule-id": "1",
+              "rule-name": "include-transactions",
+              "object-locator": {
+                "schema-name": "${DBName}",
+                "table-name": "transactions"
+              },
+              "rule-action": "include"
+            },
+            {
+              "rule-type": "selection",
+              "rule-id": "2",
+              "rule-name": "include-customers",
+              "object-locator": {
+                "schema-name": "${DBName}",
+                "table-name": "customers"
+              },
+              "rule-action": "include"
+            }
+          ]
+        }
+      ReplicationTaskSettings: |
+        {
+          "TargetMetadata": {
+            "TargetSchema": "",
+            "SupportLobs": false,
+            "FullLobMode": false,
+            "LobChunkSize": 64,
+            "LimitedSizeLobMode": true,
+            "LobMaxSize": 32
+          },
+          "FullLoadSettings": {
+            "TargetTablePrepMode": "DROP_AND_CREATE",
+            "CreatePkAfterFullLoad": false,
+            "StopTaskCachedChangesApplied": false,
+            "StopTaskCachedChangesNotApplied": false,
+            "MaxFullLoadSubTasks": 8,
+            "TransactionConsistencyTimeout": 600,
+            "CommitRate": 50000
+          },
+          "Logging": {
+            "EnableLogging": true,
+            "LogComponents": [
+              {"Id": "SOURCE_UNLOAD", "Severity": "LOGGER_SEVERITY_DEFAULT"},
+              {"Id": "TARGET_LOAD", "Severity": "LOGGER_SEVERITY_DEFAULT"},
+              {"Id": "TASK_MANAGER", "Severity": "LOGGER_SEVERITY_DEFAULT"}
+            ]
+          }
+        }
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-task"
+        - Key: Lab
+          Value: Lab1-Ingestion
+
+# =============================================================================
+# OUTPUTS
+# =============================================================================
+Outputs:
+  VPCId:
+    Description: ID de la VPC
+    Value: !Ref VPC
+    Export:
+      Name: !Sub "${ProjectName}-${Environment}-vpc-id"
+
+  RDSEndpoint:
+    Description: Endpoint de RDS MySQL
+    Value: !GetAtt RDSInstance.Endpoint.Address
+    Export:
+      Name: !Sub "${ProjectName}-${Environment}-rds-endpoint"
+
+  RDSPort:
+    Description: Puerto de RDS MySQL
+    Value: !GetAtt RDSInstance.Endpoint.Port
+    Export:
+      Name: !Sub "${ProjectName}-${Environment}-rds-port"
+
+  SecretArn:
+    Description: ARN del Secret con credenciales RDS
+    Value: !Ref RDSSecret
+    Export:
+      Name: !Sub "${ProjectName}-${Environment}-secret-arn"
+
+  S3BucketName:
+    Description: Nombre del bucket S3 del Data Lake
+    Value: !Ref DataLakeBucket
+    Export:
+      Name: !Sub "${ProjectName}-${Environment}-s3-bucket"
+
+  S3BucketArn:
+    Description: ARN del bucket S3
+    Value: !GetAtt DataLakeBucket.Arn
+    Export:
+      Name: !Sub "${ProjectName}-${Environment}-s3-bucket-arn"
+
+  DMSTaskArn:
+    Description: ARN de la tarea DMS
+    Value: !Ref DMSReplicationTask
+    Export:
+      Name: !Sub "${ProjectName}-${Environment}-dms-task-arn"
+
+  DMSReplicationInstanceArn:
+    Description: ARN de la instancia de replicación DMS
+    Value: !Ref DMSReplicationInstance
+    Export:
+      Name: !Sub "${ProjectName}-${Environment}-dms-ri-arn"
+
+  DataLakeRawPrefix:
+    Description: Prefijo S3 para la zona raw del Data Lake
+    Value: !Sub "s3://${DataLakeBucket}/raw/"
+
+  DataLakeCuratedPrefix:
+    Description: Prefijo S3 para la zona curated del Data Lake
+    Value: !Sub "s3://${DataLakeBucket}/curated/"

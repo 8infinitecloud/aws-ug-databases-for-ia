@@ -1,0 +1,137 @@
+{
+  "_comment": "Reglas de calidad del Lab 2 en formato JSON — referencia programática del ruleset DQDL",
+  "_dqdl_file": "quality_rules.dqdl",
+  "_target_table": "financial_platform.transactions_curated",
+
+  "rules": [
+    {
+      "id": "R01",
+      "rule_type": "Completeness",
+      "column": "amount",
+      "expression": ">= 0.95",
+      "threshold": 0.95,
+      "description": "Al menos el 95% de las transacciones deben tener un monto registrado",
+      "business_reason": "Una transacción sin monto no puede ser procesada ni auditada"
+    },
+    {
+      "id": "R02",
+      "rule_type": "IsComplete",
+      "column": "transaction_id",
+      "expression": "= 1.0",
+      "threshold": 1.0,
+      "description": "Todos los registros deben tener transaction_id",
+      "business_reason": "Clave primaria del negocio — sin ID no hay trazabilidad"
+    },
+    {
+      "id": "R03",
+      "rule_type": "IsComplete",
+      "column": "customer_id",
+      "expression": "= 1.0",
+      "threshold": 1.0,
+      "description": "Todos los registros deben estar vinculados a un cliente",
+      "business_reason": "Requerimiento regulatorio KYC — toda transacción debe tener un cliente identificado"
+    },
+    {
+      "id": "R04",
+      "rule_type": "Uniqueness",
+      "column": "transaction_id",
+      "expression": "= 1.0",
+      "threshold": 1.0,
+      "description": "No debe haber transaction_id duplicados en el dataset",
+      "business_reason": "Duplicados pueden causar doble contabilización y reportes erróneos"
+    },
+    {
+      "id": "R05",
+      "rule_type": "ColumnValues",
+      "column": "transaction_type",
+      "expression": "in [\"DEPOSIT\", \"WITHDRAWAL\", \"TRANSFER\"]",
+      "valid_values": ["DEPOSIT", "WITHDRAWAL", "TRANSFER"],
+      "description": "transaction_type debe ser uno de los valores del enum canónico en inglés",
+      "business_reason": "Valores en español ('DEPÓSITO', 'RETIRO') rompen los dashboards de Analytics"
+    },
+    {
+      "id": "R06",
+      "rule_type": "ColumnValues",
+      "column": "status",
+      "expression": "in [\"PENDING\", \"COMPLETED\", \"FAILED\", \"PROCESSING\"]",
+      "valid_values": ["PENDING", "COMPLETED", "FAILED", "PROCESSING"],
+      "description": "status debe estar en mayúsculas y ser uno de los valores permitidos",
+      "business_reason": "Case inconsistente ('pending' vs 'PENDING') rompe los filtros en SQL"
+    },
+    {
+      "id": "R07",
+      "rule_type": "ColumnValues",
+      "column": "currency",
+      "expression": "in [\"USD\", \"PEN\", \"EUR\"]",
+      "valid_values": ["USD", "PEN", "EUR"],
+      "description": "currency debe ser un código ISO 4217 válido de los soportados",
+      "business_reason": "Monedas no soportadas causan errores en el sistema de conversión"
+    },
+    {
+      "id": "R08",
+      "rule_type": "ColumnLength",
+      "column": "transaction_id",
+      "expression": "between 1 and 20",
+      "min_length": 1,
+      "max_length": 20,
+      "description": "transaction_id debe tener entre 1 y 20 caracteres",
+      "business_reason": "IDs demasiado largos indican datos corruptos o mal formateados"
+    }
+  ],
+
+  "expected_results_on_raw_data": {
+    "_note": "Resultados esperados cuando se aplican las reglas al dataset RAW (antes de normalización)",
+    "R01_completeness_amount": {
+      "expected_pass": false,
+      "reason": "Dataset tiene ~5% NULLs deliberados en amount (~50/1000 filas)"
+    },
+    "R02_completeness_transaction_id": {
+      "expected_pass": true,
+      "reason": "No hay transaction_ids NULL en el dataset"
+    },
+    "R03_completeness_customer_id": {
+      "expected_pass": true,
+      "reason": "No hay customer_ids NULL en el dataset"
+    },
+    "R04_uniqueness_transaction_id": {
+      "expected_pass": false,
+      "reason": "Dataset tiene ~3% duplicados deliberados (~30/1000 filas)"
+    },
+    "R05_validity_transaction_type": {
+      "expected_pass": false,
+      "reason": "Dataset tiene ~2% valores en español ('DEPÓSITO', 'RETIRO', 'TRANSFERENCIA')"
+    },
+    "R06_validity_status": {
+      "expected_pass": false,
+      "reason": "Dataset tiene ~8% valores en lowercase/mixed case ('pending', 'Completed')"
+    },
+    "R07_validity_currency": {
+      "expected_pass": true,
+      "reason": "Todas las monedas son USD/PEN/EUR"
+    },
+    "R08_length_transaction_id": {
+      "expected_pass": true,
+      "reason": "Todos los IDs tienen formato TXN0000001 (10 chars)"
+    }
+  },
+
+  "expected_results_on_curated_data": {
+    "_note": "Resultados esperados después de aplicar el Glue job (normalización)",
+    "R01_completeness_amount": {
+      "expected_pass": false,
+      "reason": "Los NULL se rechazan al curated — la regla reporta el estado del raw"
+    },
+    "R04_uniqueness_transaction_id": {
+      "expected_pass": true,
+      "reason": "Los duplicados son rechazados en el curated"
+    },
+    "R05_validity_transaction_type": {
+      "expected_pass": true,
+      "reason": "El job normaliza DEPÓSITO→DEPOSIT antes de escribir curated"
+    },
+    "R06_validity_status": {
+      "expected_pass": true,
+      "reason": "El job aplica upper() al status antes de escribir curated"
+    }
+  }
+}

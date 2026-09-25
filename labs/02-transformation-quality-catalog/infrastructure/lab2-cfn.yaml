@@ -1,0 +1,290 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Lab 2 — Transformation + Data Quality + Catalog | FinCorp Data Platform
+  Recursos: Glue Job (Python Shell), Glue DQ Ruleset, Glue Crawler, Glue Database, IAM Roles
+
+# =============================================================================
+# PARÁMETROS
+# =============================================================================
+Parameters:
+  ProjectName:
+    Type: String
+    Default: fincorp-datalake
+    Description: Debe coincidir con el ProjectName del Lab 1
+
+  Environment:
+    Type: String
+    Default: lab
+    AllowedValues: [lab, dev, prod]
+
+  S3BucketName:
+    Type: String
+    Description: >
+      Nombre del bucket S3 creado en el Lab 1.
+      Se puede obtener del stack output: aws cloudformation describe-stacks
+      --stack-name fincorp-datalake-lab-lab1
+      --query "Stacks[0].Outputs[?OutputKey=='S3BucketName'].OutputValue"
+      --output text
+
+  GlueJobScriptS3Key:
+    Type: String
+    Default: scripts/glue_job.py
+    Description: Ruta S3 del script Glue (relativa al bucket)
+
+  GlueDatabaseName:
+    Type: String
+    Default: financial_platform
+    Description: Nombre de la base de datos en Glue Data Catalog
+
+# =============================================================================
+# METADATA
+# =============================================================================
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Proyecto
+        Parameters: [ProjectName, Environment]
+      - Label:
+          default: S3
+        Parameters: [S3BucketName, GlueJobScriptS3Key]
+      - Label:
+          default: Glue
+        Parameters: [GlueDatabaseName]
+
+# =============================================================================
+# RECURSOS
+# =============================================================================
+Resources:
+
+  # ---------------------------------------------------------------------------
+  # IAM Role para Glue
+  # ---------------------------------------------------------------------------
+  GlueServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-${Environment}-glue-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: glue.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+      Policies:
+        - PolicyName: GlueS3Access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: S3DataLakeAccess
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                Resource:
+                  - !Sub "arn:aws:s3:::${S3BucketName}"
+                  - !Sub "arn:aws:s3:::${S3BucketName}/*"
+              - Sid: CloudWatchLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "arn:aws:logs:*:*:/aws-glue/*"
+              - Sid: GlueCatalogAccess
+                Effect: Allow
+                Action:
+                  - glue:GetDatabase
+                  - glue:GetDatabases
+                  - glue:GetTable
+                  - glue:GetTables
+                  - glue:CreateTable
+                  - glue:UpdateTable
+                  - glue:BatchCreatePartition
+                  - glue:CreatePartition
+                  - glue:GetPartition
+                  - glue:GetPartitions
+                Resource: "*"
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Lab
+          Value: Lab2-Transformation
+
+  # ---------------------------------------------------------------------------
+  # CloudWatch Log Group para el Glue Job
+  # ---------------------------------------------------------------------------
+  GlueJobLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws-glue/jobs/${ProjectName}-${Environment}"
+      RetentionInDays: 7  # En lab no necesitamos retención larga
+
+  # ---------------------------------------------------------------------------
+  # Glue Database (Data Catalog)
+  # ---------------------------------------------------------------------------
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Ref GlueDatabaseName
+        Description: >
+          Base de datos del catálogo FinCorp — contiene las tablas curadas
+          procesadas por el Lab 2 (Transformation + Data Quality)
+        Parameters:
+          lab: "Lab2-Transformation"
+          owner: "data-engineering-team@fincorp.com"
+          business_domain: "Finance / Transactions"
+          source: "DMS via S3 raw zone (Lab 1)"
+
+  # ---------------------------------------------------------------------------
+  # Glue Job — Python Shell
+  # ---------------------------------------------------------------------------
+  GlueETLJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-etl"
+      Description: >
+        FinCorp ETL Job — Lee S3 raw/, transforma, valida calidad y escribe curated/ en Parquet.
+        Tipo: Python Shell (no PySpark) — dataset pequeño, inicia en ~20 segundos.
+      Role: !GetAtt GlueServiceRole.Arn
+      Command:
+        Name: pythonshell
+        PythonVersion: "3"
+        ScriptLocation: !Sub "s3://${S3BucketName}/${GlueJobScriptS3Key}"
+      # 0.0625 DPU = 1/16 DPU (mínimo para Python Shell) = ~$0.0006 por ejecución de 3 min
+      MaxCapacity: 0.0625
+      GlueVersion: "3.0"
+      MaxRetries: 0
+      Timeout: 10  # minutos — suficiente para el dataset del lab
+      DefaultArguments:
+        "--S3_BUCKET":       !Ref S3BucketName
+        "--RAW_PREFIX":      "raw/"
+        "--CURATED_PREFIX":  "curated/"
+        "--REJECTED_PREFIX": "rejected/"
+        "--REPORTS_PREFIX":  "quality-reports/"
+        "--DATABASE_NAME":   !Ref GlueDatabaseName
+        "--JOB_NAME":        !Sub "${ProjectName}-${Environment}-etl"
+        "--enable-continuous-cloudwatch-log": "true"
+        "--enable-metrics": "true"
+      ExecutionProperty:
+        MaxConcurrentRuns: 1
+      Tags:
+        Lab: Lab2-Transformation
+        Project: !Ref ProjectName
+
+  # ---------------------------------------------------------------------------
+  # Glue Crawler — descubre schema del curated Parquet
+  # ---------------------------------------------------------------------------
+  GlueCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-crawler"
+      Description: >
+        Crawler para descubrir el schema de los datos curados en S3.
+        Apunta a curated/transactions/ y actualiza el Glue Catalog automáticamente.
+      Role: !GetAtt GlueServiceRole.Arn
+      DatabaseName: !Ref GlueDatabaseName
+      Targets:
+        S3Targets:
+          - Path: !Sub "s3://${S3BucketName}/curated/transactions/"
+      # Schema changes: cuando el crawler detecta un cambio de schema, actualizar
+      SchemaChangePolicy:
+        UpdateBehavior: UPDATE_IN_DATABASE
+        DeleteBehavior: LOG
+      # Sin schedule — se ejecuta manualmente después del Glue job
+      # Schedule: cron(0 6 * * ? *)  # Descomentar para producción
+      Configuration: |
+        {
+          "Version": 1.0,
+          "CrawlerOutput": {
+            "Partitions": { "AddOrUpdateBehavior": "InheritFromTable" },
+            "Tables": { "AddOrUpdateBehavior": "MergeNewColumns" }
+          },
+          "Grouping": {
+            "TableGroupingPolicy": "CombineCompatibleSchemas"
+          }
+        }
+      Tags:
+        Lab: Lab2-Transformation
+        Project: !Ref ProjectName
+
+  # ---------------------------------------------------------------------------
+  # Glue Data Quality Ruleset
+  # ---------------------------------------------------------------------------
+  GlueDataQualityRuleset:
+    Type: AWS::Glue::DataQualityRuleset
+    DependsOn: GlueDatabase
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-dq-ruleset"
+      Description: >
+        Reglas de calidad para transactions_curated.
+        Detecta: NULLs en amount, IDs duplicados, tipos inválidos, status case incorrecto.
+      Ruleset: |
+        Rules = [
+          Completeness "amount" >= 0.95,
+          IsComplete "transaction_id",
+          IsComplete "customer_id",
+          Uniqueness "transaction_id" = 1.0,
+          ColumnValues "transaction_type" in ["DEPOSIT", "WITHDRAWAL", "TRANSFER"],
+          ColumnValues "status" in ["PENDING", "COMPLETED", "FAILED", "PROCESSING"],
+          ColumnValues "currency" in ["USD", "PEN", "EUR"],
+          ColumnLength "transaction_id" between 1 and 20
+        ]
+      # Sin TargetTable a proposito: la tabla transactions_curated no existe
+      # hasta que el Crawler corre (PASO 3 de run_job.sh), y declararla aqui
+      # hace fallar la creacion del stack con EntityNotFoundException.
+      # TargetTable solo se puede fijar al crear el ruleset (UpdateDataQualityRuleset
+      # no lo acepta), asi que el ruleset queda standalone. No afecta al lab: la
+      # validacion efectiva la ejecuta glue_job.py en Python sobre las mismas reglas.
+      Tags:
+        Lab: Lab2-Transformation
+        Project: !Ref ProjectName
+
+# =============================================================================
+# OUTPUTS
+# =============================================================================
+Outputs:
+  GlueJobName:
+    Description: Nombre del Glue Job
+    Value: !Ref GlueETLJob
+    Export:
+      Name: !Sub "${ProjectName}-${Environment}-glue-job-name"
+
+  GlueJobArn:
+    Description: ARN del Glue Job
+    Value: !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:job/${GlueETLJob}"
+
+  GlueDatabaseName:
+    Description: Nombre de la base de datos en Glue Catalog
+    Value: !Ref GlueDatabaseName
+    Export:
+      Name: !Sub "${ProjectName}-${Environment}-glue-db-name"
+
+  CrawlerName:
+    Description: Nombre del Glue Crawler
+    Value: !Ref GlueCrawler
+    Export:
+      Name: !Sub "${ProjectName}-${Environment}-crawler-name"
+
+  RulesetName:
+    Description: Nombre del Glue DQ Ruleset
+    Value: !Ref GlueDataQualityRuleset
+
+  GlueRoleArn:
+    Description: ARN del IAM Role para Glue
+    Value: !GetAtt GlueServiceRole.Arn
+
+  CuratedS3Path:
+    Description: Ruta S3 de la zona curated
+    Value: !Sub "s3://${S3BucketName}/curated/transactions/"
+
+  QualityReportS3Path:
+    Description: Ruta S3 del quality report más reciente
+    Value: !Sub "s3://${S3BucketName}/quality-reports/latest/quality_report.json"
