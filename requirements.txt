@@ -1,29 +1,49 @@
-# Core AWS SDKs
-boto3>=1.35.0
-botocore>=1.35.0
+# =============================================================================
+# requirements.txt — FinCorp Data Platform for AI
+# =============================================================================
+# Dependencias del Lab 3 (RAG + 3 capas de memoria).
+# Los Labs 1 y 2 usan servicios AWS administrados (DMS, Glue) que no
+# requieren dependencias Python locales para su ejecución en AWS.
+#
+# Instalación:
+#   python -m venv .venv
+#   source .venv/bin/activate    # Windows: .venv\Scripts\activate
+#   pip install -r requirements.txt
+# =============================================================================
 
-# LangChain ecosystem — use >= to let pip resolve compatible versions within 0.3.x
-langchain>=0.3.7,<0.4.0
-langchain-aws>=0.2.6,<0.3.0
-langchain-community>=0.3.7,<0.4.0
-langchain-core>=0.3.15,<0.4.0
+# ── AWS SDK ───────────────────────────────────────────────────────────────────
+boto3==1.35.36
+botocore==1.35.36
 
-# PostgreSQL + pgvector
-psycopg2-binary>=2.9.9
-pgvector>=0.3.2
-# Redis (session memory)
-redis>=5.1.1
+# ── LangChain ─────────────────────────────────────────────────────────────────
+langchain==0.3.7
+langchain-aws==0.2.6
+langchain-community==0.3.7
+langchain-core==0.3.15
+langchain-text-splitters==0.3.2
 
-# Streamlit UI
-streamlit>=1.40.0
-plotly>=5.24.0
+# ── Vector Store — Aurora pgvector ────────────────────────────────────────────
+psycopg2-binary==2.9.9
+pgvector==0.3.5
 
-# Utilities
-python-dotenv>=1.0.1
-pydantic>=2.9.0
-tenacity>=9.0.0        # retry logic for Bedrock throttling
-rich>=13.9.0           # pretty terminal output during ingestion
+# ── Session Memory — ElastiCache Redis ────────────────────────────────────────
+redis==5.1.1
 
-# Testing
-pytest>=8.3.0
-pytest-asyncio>=0.24.0
+# ── Streamlit UI ──────────────────────────────────────────────────────────────
+streamlit==1.40.0
+plotly==5.24.1
+
+# ── Data Processing (usado también por glue_job.py localmente) ────────────────
+pandas==2.2.3
+numpy==1.26.4
+pyarrow==17.0.0
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+python-dotenv==1.0.1
+pydantic==2.9.2
+tenacity==9.0.0
+rich==13.9.2
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+pytest==8.3.3
+pytest-asyncio==0.24.0
