@@ -20,7 +20,7 @@ jobs:
 
       - name: Check Python syntax — Lab 3 modules
         run: |
-          find legacy/ingestion/ legacy/query/ legacy/app/ legacy/scripts/ scripts/ -name "*.py" | while read f; do
+          find labs/03-data-to-ai/ingestion/ labs/03-data-to-ai/query/ labs/03-data-to-ai/app/ labs/03-data-to-ai/scripts/ scripts/ -name "*.py" | while read f; do
             python -c "import ast; ast.parse(open('$f').read())" && echo "✓ $f"
           done
 
@@ -35,7 +35,7 @@ jobs:
       - name: Lint with ruff — Lab 3 modules
         # E501 ignorado: comentarios inline del lab son deliberadamente descriptivos
         run: |
-          ruff check legacy/ingestion/ legacy/query/ legacy/app/ legacy/scripts/ scripts/ \
+          ruff check labs/03-data-to-ai/ingestion/ labs/03-data-to-ai/query/ labs/03-data-to-ai/app/ labs/03-data-to-ai/scripts/ scripts/ \
             --ignore E501,F401 \
             --output-format=concise
 
@@ -70,9 +70,9 @@ jobs:
 
       - name: shellcheck — Lab 3 infrastructure scripts
         run: |
-          shellcheck legacy/infrastructure/setup.sh
-          shellcheck legacy/infrastructure/deploy-app.sh
-          shellcheck legacy/infrastructure/cleanup.sh
+          shellcheck labs/03-data-to-ai/infrastructure/setup.sh
+          shellcheck labs/03-data-to-ai/infrastructure/deploy-app.sh
+          shellcheck labs/03-data-to-ai/infrastructure/cleanup.sh
 
   # ── CloudFormation templates ─────────────────────────────────────────────────
   validate-cloudformation:
@@ -93,7 +93,7 @@ jobs:
         run: cfn-lint labs/02-transformation-quality-catalog/infrastructure/lab2-cfn.yaml --non-zero-exit-code error
 
       - name: cfn-lint — Lab 3 (infrastructure)
-        run: cfn-lint legacy/infrastructure/cloudformation.yaml --non-zero-exit-code error
+        run: cfn-lint labs/03-data-to-ai/infrastructure/cloudformation.yaml --non-zero-exit-code error
 
   # ── Datasets + corpus ────────────────────────────────────────────────────────
   validate-data:

@@ -124,20 +124,24 @@ aws-ug-databases-for-ia/
 │   │   ├── scripts/             ← setup.sh, run_job.sh, validate.sh, cleanup.sh
 │   │   └── README.md
 │   └── 03-data-to-ai/
+│       ├── ingestion/           ← Pipeline de embeddings
+│       ├── query/               ← RAG chain + 3 capas de memoria
+│       ├── app/                 ← Streamlit UI
+│       ├── data/                ← Corpus compliance/onboarding/policies
+│       ├── scripts/             ← init_db.py, ingest_documents.py
+│       ├── infrastructure/      ← Aurora + Redis + DynamoDB + EC2
+│       ├── .env.example         ← Template de variables de entorno
+│       ├── requirements.txt     ← Dependencias Lab 3
 │       └── README.md
 │
-├── legacy/                      ← Código Lab 3 completo (v1.0.0 "Databases for AI")
-│   ├── ingestion/               ← Pipeline de embeddings
-│   ├── query/                   ← RAG chain + 3 capas de memoria
-│   ├── app/                     ← Streamlit UI
-│   ├── data/                    ← Corpus compliance/onboarding/policies
-│   ├── scripts/                 ← init_db.py, ingest_documents.py
-│   ├── infrastructure/          ← Aurora + Redis + DynamoDB + EC2
-│   ├── .env.example             ← Template de variables de entorno (Lab 3)
-│   └── requirements.txt         ← Dependencias Lab 3
+├── scripts/
+│   └── validate_setup.py        ← Verificación pre-demo de los 3 labs
 │
 └── .github/workflows/           ← CI/CD para los 3 labs
 ```
+
+> El código del Lab 3 viene de la charla "Databases for AI" (2025). El
+> repositorio de aquella charla sigue accesible íntegro en el tag `v1.0.0`.
 
 ---
 
@@ -157,22 +161,25 @@ aws-ug-databases-for-ia/
 
 ```bash
 # 30 minutos antes del demo (en paralelo si es posible):
-cd labs/01-ingestion-data-lake/scripts && ./setup.sh    # ~15 min
-cd legacy/infrastructure && ./setup.sh                   # ~20 min (Lab 3)
+cd labs/01-ingestion-data-lake/scripts && ./setup.sh      # ~15 min
+cd labs/03-data-to-ai/infrastructure && ./setup.sh       # ~20 min (Lab 3)
 
 # Iniciar DMS task (Lab 1)
 aws dms start-replication-task --replication-task-arn $DMS_TASK_ARN \
   --start-replication-task-type start-replication
 
 # Pre-ingestar documentos (Lab 3)
-cd legacy
+cd labs/03-data-to-ai
 python scripts/init_db.py
 python scripts/ingest_documents.py --source data/
+
+# Verificar que todo está en pie antes de salir a escena
+python scripts/validate_setup.py
 
 # Durante el demo:
 cd labs/02-transformation-quality-catalog/scripts && ./setup.sh
 ./run_job.sh                                             # ~3 min visible
-cd legacy/infrastructure && ./deploy-app.sh              # Lab 3 app
+cd labs/03-data-to-ai/infrastructure && ./deploy-app.sh  # Lab 3 app
 ```
 
 ---
@@ -189,7 +196,7 @@ bash labs/02-transformation-quality-catalog/scripts/cleanup.sh
 bash labs/01-ingestion-data-lake/scripts/cleanup.sh
 
 # Lab 3 (Aurora + ElastiCache ~ $15-25/día)
-bash legacy/infrastructure/cleanup.sh
+bash labs/03-data-to-ai/infrastructure/cleanup.sh
 ```
 
 O desde GitHub Actions: `Actions → Cleanup → Run workflow → ELIMINAR`
@@ -198,8 +205,9 @@ O desde GitHub Actions: `Actions → Cleanup → Run workflow → ELIMINAR`
 
 ## Evolución desde la charla anterior
 
-Este repositorio es la evolución natural de [Databases for AI (2025)](legacy/).  
-El código del Lab 3 (RAG + 3 capas de memoria) es una continuación directa de esa charla — ahora posicionado como el **consumidor final** de una plataforma de datos completa.
+Este repositorio es la evolución natural de **Databases for AI** (AWS Community
+Day Perú 2025), cuyo código íntegro sigue accesible en el tag [`v1.0.0`](../../tree/v1.0.0).  
+El Lab 3 (RAG + 3 capas de memoria) es una continuación directa de esa charla — ahora posicionado como el **consumidor final** de una plataforma de datos completa.
 
 ---
 

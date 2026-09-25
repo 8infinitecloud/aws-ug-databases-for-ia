@@ -192,15 +192,15 @@ jobs:
       - name: Validate CFN template — Lab 3
         run: |
           aws cloudformation validate-template \
-            --template-body file://legacy/infrastructure/cloudformation.yaml \
+            --template-body file://labs/03-data-to-ai/infrastructure/cloudformation.yaml \
             --region ${{ secrets.AWS_REGION || env.AWS_REGION }}
-          echo "✓ legacy/infrastructure/cloudformation.yaml válido"
+          echo "✓ labs/03-data-to-ai/infrastructure/cloudformation.yaml válido"
 
       - name: Deploy CloudFormation — Lab 3
         run: |
           aws cloudformation deploy \
             --stack-name financial-compliance-rag-lab \
-            --template-file legacy/infrastructure/cloudformation.yaml \
+            --template-file labs/03-data-to-ai/infrastructure/cloudformation.yaml \
             --parameter-overrides \
               ProjectName=rag-lab \
               DBPassword="${{ inputs.db_password }}" \

@@ -6,12 +6,12 @@ on:
   push:
     branches: [main]
     paths:
-      - "legacy/app/**"
-      - "legacy/ingestion/**"
-      - "legacy/query/**"
-      - "legacy/data/**"
-      - "legacy/scripts/**"
-      - "legacy/requirements.txt"
+      - "labs/03-data-to-ai/app/**"
+      - "labs/03-data-to-ai/ingestion/**"
+      - "labs/03-data-to-ai/query/**"
+      - "labs/03-data-to-ai/data/**"
+      - "labs/03-data-to-ai/scripts/**"
+      - "labs/03-data-to-ai/requirements.txt"
 
   # También ejecutable manualmente desde la UI de GitHub Actions
   workflow_dispatch:
@@ -115,10 +115,10 @@ jobs:
 
       - name: Package app code
         run: |
-          # -C legacy: el codigo del Lab 3 vive en legacy/, pero el tar debe
-          # conservar el layout app/ ingestion/ query/ ... que espera el EC2.
+          # -C labs/03-data-to-ai: el tar debe conservar el layout app/ ingestion/ query/
+          # ... que espera el EC2, sin el prefijo de la carpeta del lab.
           tar -czf /tmp/rag-lab-app.tar.gz \
-            -C legacy \
+            -C labs/03-data-to-ai \
             --exclude='.git' \
             --exclude='.env' \
             --exclude='*.pptx' \
@@ -133,7 +133,7 @@ jobs:
           aws s3 cp /tmp/rag-lab-app.tar.gz \
             "s3://${{ steps.stack.outputs.s3_bucket }}/app-code.tar.gz"
 
-          aws s3 sync legacy/data/ \
+          aws s3 sync labs/03-data-to-ai/data/ \
             "s3://${{ steps.stack.outputs.s3_bucket }}/compliance-docs/" \
             --exclude "*.DS_Store"
 

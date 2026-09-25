@@ -163,7 +163,7 @@ Si no tienes acceso: **Bedrock Console → Model access → Request access**.
 ### Paso 1: Infraestructura (~20 min — preparar ANTES del demo)
 
 ```bash
-cd legacy/infrastructure
+cd labs/03-data-to-ai/infrastructure
 
 export DB_PASSWORD="FinCorp2026!"
 export AWS_REGION="us-east-1"
@@ -179,21 +179,25 @@ Crea: VPC, Aurora PostgreSQL Serverless v2 + pgvector, ElastiCache Redis, Dynamo
 ### Paso 2: Inicializar DB e ingestar documentos (~10 min)
 
 ```bash
-# Desde la raíz del repositorio
-cp legacy/.env.example .env
+cd labs/03-data-to-ai
+
+cp .env.example .env
 # Editar .env con AURORA_HOST, REDIS_HOST, etc.
 
 python -m venv .venv && source .venv/bin/activate
-pip install -r legacy/requirements.txt
+pip install -r requirements.txt
 
-python legacy/scripts/init_db.py
-python legacy/scripts/ingest_documents.py --source legacy/data/
+python scripts/init_db.py
+python scripts/ingest_documents.py --source data/
 ```
+
+> El `.env` va dentro de `labs/03-data-to-ai/`, no en la raíz: es donde
+> `cleanup.sh` lo busca para borrarlo al final.
 
 ### Paso 3: Desplegar la app (~5 min)
 
 ```bash
-./legacy/infrastructure/deploy-app.sh
+./infrastructure/deploy-app.sh
 ```
 
 Empaqueta el código, lo sube a S3, lo ejecuta en EC2 via SSM. Al terminar imprime la URL de Streamlit.
@@ -201,13 +205,15 @@ Empaqueta el código, lo sube a S3, lo ejecuta en EC2 via SSM. Al terminar impri
 ### Desarrollo local (sin EC2)
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r legacy/requirements.txt
-cp legacy/.env.example .env  # completar con outputs del stack Lab 3
+cd labs/03-data-to-ai
 
-python legacy/scripts/init_db.py
-python legacy/scripts/ingest_documents.py --source legacy/data/
-cd legacy && streamlit run app/app.py  # http://localhost:8501
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env  # completar con outputs del stack Lab 3
+
+python scripts/init_db.py
+python scripts/ingest_documents.py --source data/
+streamlit run app/app.py  # http://localhost:8501
 ```
 
 ---
@@ -240,12 +246,14 @@ cd infrastructure && ./cleanup.sh
 
 ---
 
-## Estructura de archivos (Lab 3 en legacy/)
+## Estructura de archivos
 
-El código del Lab 3 vive en `legacy/` — es el repositorio completo de la charla anterior "Databases for AI" (2025), preservado sin cambios funcionales.
+El código de este lab viene de la charla anterior, "Databases for AI" (AWS
+Community Day Perú 2025), y se conserva sin cambios funcionales. El repositorio
+de 2025 íntegro sigue accesible en el tag `v1.0.0`.
 
 ```
-legacy/
+labs/03-data-to-ai/
 ├── ingestion/              # Pipeline de embeddings
 │   ├── config.py          # Configuración centralizada
 │   ├── loader.py          # Carga de documentos Markdown
@@ -272,7 +280,8 @@ legacy/
 │   ├── setup.sh            # Provisiona infraestructura (~20 min)
 │   ├── deploy-app.sh       # Despliega solo la app (~5 min)
 │   └── cleanup.sh          # Elimina todos los recursos
-└── requirements.txt        # Dependencias del Lab 3
+├── requirements.txt        # Dependencias del Lab 3
+└── .env.example            # Template de variables de entorno
 ```
 
 ---
