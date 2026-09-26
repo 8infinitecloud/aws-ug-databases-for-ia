@@ -1,49 +1,28 @@
 # =============================================================================
-# requirements.txt — FinCorp Data Platform for AI
+# requirements.txt — herramientas del workshop (raiz del repositorio)
 # =============================================================================
-# Dependencias del Lab 3 (RAG + 3 capas de memoria).
-# Los Labs 1 y 2 usan servicios AWS administrados (DMS, Glue) que no
-# requieren dependencias Python locales para su ejecución en AWS.
+# Solo lo que necesitan los scripts de la RAIZ. No es el entorno del Lab 3.
 #
-# Instalación:
-#   python -m venv .venv
-#   source .venv/bin/activate    # Windows: .venv\Scripts\activate
+#   scripts/validate_setup.py   -> boto3
+#   labs/02-.../glue_job.py     -> pandas, pyarrow, numpy (si lo pruebas en local;
+#                                  en AWS lo ejecuta Glue con sus propias libs)
+#
+# Instalacion:
+#   python3 -m venv .venv && source .venv/bin/activate
 #   pip install -r requirements.txt
+#
+# El Lab 3 (RAG + Streamlit) tiene su propio entorno y sus propias versiones:
+#   pip install -r labs/03-data-to-ai/requirements.txt
+#
+# Versiones fijadas a proposito: un workshop tiene que dar el mismo resultado
+# dentro de seis meses.
 # =============================================================================
 
 # ── AWS SDK ───────────────────────────────────────────────────────────────────
 boto3==1.35.36
 botocore==1.35.36
 
-# ── LangChain ─────────────────────────────────────────────────────────────────
-langchain==0.3.7
-langchain-aws==0.2.6
-langchain-community==0.3.7
-langchain-core==0.3.15
-langchain-text-splitters==0.3.2
-
-# ── Vector Store — Aurora pgvector ────────────────────────────────────────────
-psycopg2-binary==2.9.9
-pgvector==0.3.5
-
-# ── Session Memory — ElastiCache Redis ────────────────────────────────────────
-redis==5.1.1
-
-# ── Streamlit UI ──────────────────────────────────────────────────────────────
-streamlit==1.40.0
-plotly==5.24.1
-
-# ── Data Processing (usado también por glue_job.py localmente) ────────────────
+# ── Data processing: para ejecutar glue_job.py en local ───────────────────────
 pandas==2.2.3
 numpy==1.26.4
 pyarrow==17.0.0
-
-# ── Utilities ─────────────────────────────────────────────────────────────────
-python-dotenv==1.0.1
-pydantic==2.9.2
-tenacity==9.0.0
-rich==13.9.2
-
-# ── Testing ───────────────────────────────────────────────────────────────────
-pytest==8.3.3
-pytest-asyncio==0.24.0

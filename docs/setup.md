@@ -177,7 +177,27 @@ Escribe `yes` cuando lo pida. Tarda ~30 segundos y crea:
 
 ---
 
-## 7. Fijar la contraseña de las bases de datos
+## 7. Entornos de Python (hay dos, a propósito)
+
+| Entorno | Para qué | Cuándo |
+|---------|----------|--------|
+| `requirements.txt` (raíz) | `scripts/validate_setup.py` y ejecutar `glue_job.py` en local | Opcional, útil desde el Lab 1 |
+| `labs/03-data-to-ai/requirements.txt` | La app RAG: LangChain, Streamlit, pgvector | Obligatorio en el Lab 3 |
+
+No se pisan: el de la raíz lleva pandas/pyarrow y el del Lab 3 lleva LangChain y
+Streamlit. Si quieres los dos, usa dos virtualenvs.
+
+```bash
+# Herramientas del workshop (raíz)
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+El del Lab 3 se instala cuando llegues a ese lab; su README lo indica.
+
+---
+
+## 8. Fijar la contraseña de las bases de datos
 
 Los Labs 1 y 3 crean bases de datos. La contraseña va por variable de entorno,
 nunca en un fichero:

@@ -80,6 +80,9 @@ Crea el bucket S3 del estado y la tabla de locks. ~30 segundos.
 export TF_VAR_db_password='CambiaEstaPassword2026!'
 ```
 
+Tenla en la misma terminal durante todo el workshop. Si abres otra, vuelve a
+exportarla.
+
 ### 4. Haz el Lab 1
 
 ```bash
