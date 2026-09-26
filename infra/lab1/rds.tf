@@ -14,9 +14,16 @@ resource "aws_db_subnet_group" "mysql" {
 # cambios, y estos parametros no se pueden fijar en la instancia: van en un
 # parameter group.
 resource "aws_db_parameter_group" "mysql" {
-  name        = "${var.project_name}-${var.environment}-mysql-pg"
+  # name_prefix y no name: si un cambio fuerza reemplazo (por ejemplo cambiar
+  # family al subir de version mayor), con nombre fijo Terraform intenta crear
+  # el nuevo antes de borrar el viejo y choca con "already exists".
+  name_prefix = "${var.project_name}-${var.environment}-mysql-pg-"
   family      = "mysql8.0"
   description = "Habilita binlog ROW para CDC de AWS DMS"
+
+  lifecycle {
+    create_before_destroy = true
+  }
 
   parameter {
     name  = "binlog_format"
@@ -49,6 +56,10 @@ resource "aws_db_instance" "mysql" {
   allocated_storage = 20
   storage_type      = "gp2"
   multi_az          = false
+
+  # Cifrado en reposo: no cuesta nada y Aurora en el Lab 3 ya lo tenia. Dejarlo
+  # fuera aqui era una incoherencia, no una decision.
+  storage_encrypted = true
 
   db_subnet_group_name   = aws_db_subnet_group.mysql.name
   vpc_security_group_ids = [aws_security_group.rds.id]

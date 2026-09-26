@@ -6,6 +6,14 @@
 
 data "aws_availability_zones" "available" {
   state = "available"
+
+  # Sin este filtro, names[0] puede devolver una Local Zone si la cuenta se ha
+  # dado de alta en alguna. us-east-1 tiene varias, incluida Lima
+  # (us-east-1-lim-1a), y RDS/Aurora/ElastiCache no se despliegan ahi igual.
+  filter {
+    name   = "opt-in-status"
+    values = ["opt-in-not-required"]
+  }
 }
 
 resource "aws_vpc" "main" {
@@ -64,6 +72,10 @@ resource "aws_security_group" "dms" {
   description = "DMS Replication Instance - salida a RDS y S3"
   vpc_id      = aws_vpc.main.id
 
+  lifecycle {
+    create_before_destroy = true
+  }
+
   egress {
     description = "MySQL RDS dentro de la VPC"
     from_port   = 3306
@@ -88,6 +100,10 @@ resource "aws_security_group" "rds" {
   description = "RDS MySQL - solo acepta conexiones desde DMS"
   vpc_id      = aws_vpc.main.id
 
+  lifecycle {
+    create_before_destroy = true
+  }
+
   ingress {
     description     = "DMS Replication Instance"
     from_port       = 3306
@@ -97,4 +113,13 @@ resource "aws_security_group" "rds" {
   }
 
   tags = { Name = "${var.project_name}-${var.environment}-rds-sg" }
+}
+
+# La VPC trae un security group por defecto que permite todo el trafico entre
+# sus miembros. No lo usamos, pero existe: dejarlo sin reglas es gratis y evita
+# que algo acabe ahi por descuido.
+resource "aws_default_security_group" "default" {
+  vpc_id = aws_vpc.main.id
+
+  tags = { Name = "${var.project_name}-${var.environment}-default-DO-NOT-USE" }
 }

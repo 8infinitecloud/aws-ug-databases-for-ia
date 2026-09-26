@@ -43,3 +43,15 @@ variable "dynamodb_table_name" {
   type        = string
   default     = "rag_user_memory"
 }
+
+variable "bedrock_model_ids" {
+  description = <<-DESC
+    Modelos de Bedrock que la app puede invocar. El rol del EC2 se acota a
+    estos: si cambias BEDROCK_LLM_MODEL en el .env, anade aqui su id tambien.
+  DESC
+  type        = list(string)
+  default = [
+    "amazon.titan-embed-text-v2:0",
+    "amazon.nova-pro-v1:0",
+  ]
+}

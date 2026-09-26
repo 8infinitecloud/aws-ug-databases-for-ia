@@ -124,6 +124,14 @@ resource "aws_s3_bucket" "documents" {
   tags = { Name = "${var.project_name}-documents" }
 }
 
+# El Lab 1 y el bootstrap ya versionaban sus buckets; aqui faltaba.
+resource "aws_s3_bucket_versioning" "documents" {
+  bucket = aws_s3_bucket.documents.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
 resource "aws_s3_bucket_server_side_encryption_configuration" "documents" {
   bucket = aws_s3_bucket.documents.id
 

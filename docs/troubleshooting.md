@@ -305,6 +305,30 @@ que cuestan.
 
 ---
 
+## Probar sin desplegar
+
+Antes de gastar 35 minutos y dinero en AWS, casi todo se puede verificar en local:
+
+```bash
+# El pipeline del Lab 2 contra el dataset real, sin AWS
+pip install -r requirements.txt pytest
+pytest tests/ -v
+
+# La infraestructura compila y el grafo resuelve
+for M in bootstrap lab1 lab2 lab3; do
+  terraform -chdir="infra/$M" init -backend=false
+  terraform -chdir="infra/$M" validate
+done
+
+# Qué se crearía en tu cuenta (solo lectura, no cuesta nada)
+terraform -chdir=infra/lab1 plan
+
+# Escaneo de seguridad
+pip install checkov && checkov -d infra --framework terraform --compact
+```
+
+---
+
 ## No está aquí
 
 Abre un issue con:

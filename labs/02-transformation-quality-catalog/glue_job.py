@@ -253,21 +253,93 @@ def transform_dataframe(raw_df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
 
 # ── PASO 3: Data Quality ──────────────────────────────────────────────────────
 
+def measure_rules(df: pd.DataFrame) -> dict:
+    """
+    Mide las 8 reglas del ruleset DQDL sobre CUALQUIER dataframe, sin modificarlo.
+
+    Se aplica dos veces en el job: una sobre los datos raw y otra sobre los
+    curados. Esa comparacion es el punto del lab — muestra que problemas traia
+    el origen y cuales quedaron resueltos. Medir solo al final dejaria las
+    reglas de transaction_type y status siempre en PASS, porque la
+    transformacion ya las habia normalizado, y no se veria nada.
+
+    Devuelve solo metricas: la decision de aceptar o rechazar filas vive en
+    apply_data_quality.
+    """
+    total = len(df)
+    if total == 0:
+        return {"rules": {}, "rules_passed": 0, "rules_failed": 0, "overall_score": 1.0}
+
+    null_amount    = df["amount"].isna()
+    null_txn_id    = df["transaction_id"].isna()
+    null_cust_id   = df["customer_id"].isna()
+    invalid_type   = ~df["transaction_type"].isin(VALID_TRANSACTION_TYPES)
+    invalid_status = ~df["status"].isin(VALID_STATUSES)
+    invalid_curr   = ~df["currency"].isin(VALID_CURRENCIES)
+
+    # ColumnLength del DQDL: entre 1 y 20 caracteres.
+    txn_id_len  = df["transaction_id"].astype(str).str.len()
+    bad_txn_len = (txn_id_len < 1) | (txn_id_len > 20) | null_txn_id
+
+    def rule(ok_mask, threshold: float, extra: dict | None = None) -> dict:
+        score = float(ok_mask.sum()) / total
+        out = {
+            "score":       round(score, 4),
+            "threshold":   threshold,
+            "passed":      score >= threshold,
+            "failed_rows": int((~ok_mask).sum()),
+        }
+        if extra:
+            out.update(extra)
+        return out
+
+    uniqueness = float(df["transaction_id"].nunique()) / total
+
+    rules = {
+        # R01 — Completeness "amount" >= 0.95
+        "completeness_amount": rule(~null_amount, 0.95),
+        # R02 — IsComplete "transaction_id"
+        "completeness_transaction_id": rule(~null_txn_id, 1.0),
+        # R03 — IsComplete "customer_id"
+        "completeness_customer_id": rule(~null_cust_id, 1.0),
+        # R04 — Uniqueness "transaction_id" = 1.0
+        "uniqueness_transaction_id": {
+            "score":       round(uniqueness, 4),
+            "threshold":   1.0,
+            "passed":      uniqueness >= 1.0,
+            "failed_rows": int(df.duplicated(subset=["transaction_id"], keep=False).sum()),
+        },
+        # R05 — ColumnValues "transaction_type"
+        "validity_transaction_type": rule(
+            ~invalid_type, 1.0,
+            {"invalid_values": df[invalid_type]["transaction_type"].value_counts().to_dict()},
+        ),
+        # R06 — ColumnValues "status"
+        "validity_status": rule(
+            ~invalid_status, 1.0,
+            {"invalid_values": df[invalid_status]["status"].value_counts().to_dict()},
+        ),
+        # R07 — ColumnValues "currency"
+        "validity_currency": rule(~invalid_curr, 1.0),
+        # R08 — ColumnLength "transaction_id" between 1 and 20
+        "length_transaction_id": rule(~bad_txn_len, 1.0),
+    }
+
+    passed = sum(1 for r in rules.values() if r["passed"])
+    return {
+        "rules":         rules,
+        "rules_passed":  passed,
+        "rules_failed":  len(rules) - passed,
+        "overall_score": round(passed / len(rules), 4),
+    }
+
+
 def apply_data_quality(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     """
     Evalúa las reglas de calidad y separa registros válidos de rechazados.
 
-    Reglas aplicadas (equivalentes al ruleset DQDL en quality_rules.dqdl):
-      R1: amount IS NOT NULL (Completeness >= 0.95 → rechazar individuales con NULL)
-      R2: transaction_id IS NOT NULL (IsComplete)
-      R3: customer_id IS NOT NULL (IsComplete)
-      R4: transaction_type IN VALID_TRANSACTION_TYPES (ColumnValues)
-      R5: status IN VALID_STATUSES (ColumnValues)
-      R6: currency IN VALID_CURRENCIES (ColumnValues)
-      R7: NO transaction_id duplicado (Uniqueness)
-
-    Un registro es rechazado si falla cualquier regla individual.
-    Las métricas de completeness/uniqueness se calculan sobre el dataset completo.
+    Un registro se rechaza si falla cualquiera de las reglas del ruleset DQDL.
+    Las metricas las calcula measure_rules sobre el mismo dataframe.
     """
     total = len(df)
 
@@ -307,69 +379,17 @@ def apply_data_quality(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, di
     reasons[dup_mask]             += "DUPLICATE_TXN_ID;"
     rejected_df["rejection_reason"] = reasons[reject_mask].values
 
-    # Métricas para el quality report
-    completeness_amount    = float((~mask_null_amount).sum()) / total if total > 0 else 1.0
-    completeness_txn_id    = float((~mask_null_txn_id).sum()) / total if total > 0 else 1.0
-    uniqueness_txn_id      = float(df["transaction_id"].nunique()) / total if total > 0 else 1.0
-    validity_type          = float((~mask_invalid_type).sum()) / total if total > 0 else 1.0
-    validity_status        = float((~mask_invalid_status).sum()) / total if total > 0 else 1.0
-    validity_currency      = float((~mask_invalid_curr).sum()) / total if total > 0 else 1.0
-
-    dq_metrics = {
-        "total_rows":              total,
-        "valid_rows":              len(valid_df),
-        "rejected_rows":           len(rejected_df),
-        "acceptance_rate":         round(len(valid_df) / total, 4) if total > 0 else 1.0,
-        "rules": {
-            "completeness_amount": {
-                "score":    round(completeness_amount, 4),
-                "threshold": 0.95,
-                "passed":   completeness_amount >= 0.95,
-                "failed_rows": int(mask_null_amount.sum()),
-            },
-            "completeness_transaction_id": {
-                "score":    round(completeness_txn_id, 4),
-                "threshold": 1.0,
-                "passed":   completeness_txn_id >= 1.0,
-                "failed_rows": int(mask_null_txn_id.sum()),
-            },
-            "uniqueness_transaction_id": {
-                "score":    round(uniqueness_txn_id, 4),
-                "threshold": 1.0,
-                "passed":   uniqueness_txn_id >= 1.0,
-                "failed_rows": int(dup_mask.sum()),
-            },
-            "validity_transaction_type": {
-                "score":    round(validity_type, 4),
-                "threshold": 1.0,
-                "passed":   validity_type >= 1.0,
-                "failed_rows": int(mask_invalid_type.sum()),
-                "invalid_values": df[mask_invalid_type]["transaction_type"].value_counts().to_dict(),
-            },
-            "validity_status": {
-                "score":    round(validity_status, 4),
-                "threshold": 1.0,
-                "passed":   validity_status >= 1.0,
-                "failed_rows": int(mask_invalid_status.sum()),
-            },
-            "validity_currency": {
-                "score":    round(validity_currency, 4),
-                "threshold": 1.0,
-                "passed":   validity_currency >= 1.0,
-                "failed_rows": int(mask_invalid_curr.sum()),
-            },
-        },
-    }
-
-    # rules_passed/failed/overall dependen de dq_metrics["rules"], por eso se
-    # calculan aqui y no dentro del literal de arriba.
-    dq_metrics["rules_passed"] = sum(
-        1 for r in dq_metrics["rules"].values() if r["passed"]
-    )
-    dq_metrics["rules_failed"] = len(dq_metrics["rules"]) - dq_metrics["rules_passed"]
-    dq_metrics["overall_score"] = round(
-        dq_metrics["rules_passed"] / len(dq_metrics["rules"]), 4
-    )
+    # Metricas sobre valid_df, no sobre df: lo que describe la calidad de la
+    # zona curated es lo que acaba escrito ahi, no lo que entro. Midiendo df
+    # (antes de apartar los rechazados) uniqueness seguia saliendo en FAIL
+    # aunque los duplicados ya no llegaran a curated.
+    dq_metrics = measure_rules(valid_df)
+    dq_metrics.update({
+        "total_rows":      total,
+        "valid_rows":      len(valid_df),
+        "rejected_rows":   len(rejected_df),
+        "acceptance_rate": round(len(valid_df) / total, 4) if total > 0 else 1.0,
+    })
 
     log.info(f"  Data Quality: {len(valid_df)} válidos, {len(rejected_df)} rechazados")
     log.info(f"  Score general: {dq_metrics['overall_score']:.1%}")
@@ -440,6 +460,8 @@ def write_rejected_data(
 def write_quality_report(
     s3_client,
     dq_metrics: dict,
+    raw_metrics: dict,
+    transformed_metrics: dict,
     transform_stats: dict,
     read_metadata: dict,
     bucket: str,
@@ -448,11 +470,44 @@ def write_quality_report(
     job_name: str,
 ) -> str:
     """Genera y escribe el reporte de calidad en S3."""
+    # Tres medidas, una por etapa del pipeline. Con solo dos (raw y curated) no
+    # se puede distinguir que arreglo la normalizacion de que se arreglo
+    # apartando filas, que es justo la leccion del lab.
+    comparison = {}
+    for name, curated_rule in dq_metrics["rules"].items():
+        raw_rule = raw_metrics.get("rules", {}).get(name, {})
+        tr_rule  = transformed_metrics.get("rules", {}).get(name, {})
+
+        if raw_rule.get("passed"):
+            resolved_by = None                    # no habia nada que arreglar
+        elif tr_rule.get("passed"):
+            resolved_by = "transformacion"        # se normalizo el valor
+        elif curated_rule["passed"]:
+            resolved_by = "rechazo"               # la fila se aparto a rejected/
+        else:
+            resolved_by = "sin resolver"
+
+        comparison[name] = {
+            "raw_score":           raw_rule.get("score"),
+            "raw_passed":          raw_rule.get("passed"),
+            "raw_failed_rows":     raw_rule.get("failed_rows"),
+            "transformed_score":   tr_rule.get("score"),
+            "transformed_passed":  tr_rule.get("passed"),
+            "curated_score":       curated_rule["score"],
+            "curated_passed":      curated_rule["passed"],
+            "curated_failed_rows": curated_rule["failed_rows"],
+            "resolved_by":         resolved_by,
+        }
+
     report = {
         "job_name":        job_name,
         "run_timestamp":   run_timestamp,
         "source":          read_metadata,
         "transform_stats": transform_stats,
+        "data_quality_raw":         raw_metrics,
+        "data_quality_transformed": transformed_metrics,
+        "data_quality_curated":     dq_metrics,
+        "rules_raw_vs_curated": comparison,
         "data_quality":    dq_metrics,
         "summary": {
             "total_rows_input":  dq_metrics["total_rows"],
@@ -496,9 +551,22 @@ def main() -> None:
     log.info("\n[PASO 1/5] Leyendo datos raw desde S3...")
     raw_df, read_metadata = read_raw_data(s3_client, args.S3_BUCKET, args.RAW_PREFIX)
 
+    # Medir las reglas ANTES de tocar nada: es la foto del problema real.
+    raw_metrics = measure_rules(raw_df)
+    log.info(
+        f"  Calidad en raw: {raw_metrics['rules_passed']}/{len(raw_metrics['rules'])} "
+        f"reglas pasan (score {raw_metrics['overall_score']:.1%})"
+    )
+    for name, r in raw_metrics["rules"].items():
+        if not r["passed"]:
+            log.info(f"    FALLA en origen: {name} = {r['score']:.4f} ({r['failed_rows']} filas)")
+
     # ── Paso 2: Transformar ──────────────────────────────────────────────────
     log.info("\n[PASO 2/5] Aplicando transformaciones...")
     transformed_df, transform_stats = transform_dataframe(raw_df)
+
+    # Segunda medida: ya normalizado, pero sin apartar nada todavia.
+    transformed_metrics = measure_rules(transformed_df)
 
     # ── Paso 3: Data Quality ─────────────────────────────────────────────────
     log.info("\n[PASO 3/5] Evaluando Data Quality...")
@@ -516,7 +584,7 @@ def main() -> None:
         s3_client, rejected_df, args.S3_BUCKET, args.REJECTED_PREFIX, run_timestamp
     )
     report_key = write_quality_report(
-        s3_client, dq_metrics, transform_stats, read_metadata,
+        s3_client, dq_metrics, raw_metrics, transformed_metrics, transform_stats, read_metadata,
         args.S3_BUCKET, args.REPORTS_PREFIX, run_timestamp, args.JOB_NAME
     )
 
@@ -528,7 +596,9 @@ def main() -> None:
     log.info(f"  Filas válidas   : {dq_metrics['valid_rows']}")
     log.info(f"  Filas rechazadas: {dq_metrics['rejected_rows']}")
     log.info(f"  Score DQ        : {dq_metrics['overall_score']:.1%}")
-    log.info(f"  Reglas pasadas  : {dq_metrics['rules_passed']}/{len(dq_metrics['rules'])}")
+    log.info(f"  Reglas en raw        : {raw_metrics['rules_passed']}/{len(raw_metrics['rules'])} pasan")
+    log.info(f"  Reglas tras transformar: {transformed_metrics['rules_passed']}/{len(transformed_metrics['rules'])} pasan")
+    log.info(f"  Reglas en curated    : {dq_metrics['rules_passed']}/{len(dq_metrics['rules'])} pasan")
     log.info(f"  Particiones     : {len(curated_keys)}")
     log.info(f"  Quality report  : s3://{args.S3_BUCKET}/{report_key}")
     log.info("=" * 60)

@@ -39,8 +39,9 @@ CATALOG → CURATED DATA → ANALYTICS + IA → RAG → AGENTES
 Al terminar tendrás corriendo en tu cuenta:
 
 - Una base de datos MySQL replicándose a un **data lake en S3** con AWS DMS
-- Un pipeline de **AWS Glue** que transforma esos datos, les aplica **8 reglas
-  de calidad**, aparta los registros malos y escribe Parquet particionado
+- Un pipeline de **AWS Glue** que transforma esos datos y mide **8 reglas de
+  calidad en tres etapas** (raw → transformado → curado), para ver qué arregló
+  la normalización y qué hubo que apartar: 100 de 1000 filas van a `rejected/`
 - Un **catálogo de datos** con esquema y metadata de negocio, consultable con SQL
 - Un **asistente de compliance** con RAG sobre Amazon Bedrock, con tres capas de
   memoria (sesión, persistente y semántica)
@@ -140,7 +141,7 @@ enseñaría nada.
                          ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  TRANSFORMATION + DATA QUALITY + CATALOG                                  │
-│  Glue Data Quality → 8 reglas DQDL → ~180 registros rechazados           │
+│  Glue Data Quality → 8 reglas × 3 etapas → 100 registros rechazados      │
 │  Glue Data Catalog → financial_platform.transactions_curated             │
 └────────────────────────┬─────────────────────────────────────────────────┘
                          │
@@ -193,6 +194,8 @@ aws-ug-databases-for-ia/
 │   ├── preflight.sh             ← ¿Tengo todo? (antes de desplegar)
 │   ├── validate_setup.py        ← ¿Está todo en pie? (después)
 │   └── lib/tf.sh                ← Helpers de Terraform para los scripts
+│
+├── tests/                       ← Tests del pipeline del Lab 2, sin AWS
 │
 ├── infra/                       ← TODA la infraestructura (Terraform)
 │   ├── README.md                ← Cómo funciona el backend y los módulos
@@ -270,6 +273,7 @@ También desde GitHub Actions: `Actions → Cleanup → Run workflow → ELIMINA
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Cuando algo falla |
 | [COST_ESTIMATE.md](COST_ESTIMATE.md) | Costes por lab y cómo poner un presupuesto |
 | [infra/README.md](infra/README.md) | Cómo están organizados los módulos de Terraform |
+| [docs/well-architected.md](docs/well-architected.md) | Qué cumple, qué se concede a propósito, y qué cambiar en producción |
 | [docs/architecture.md](docs/architecture.md) | Diagramas de arquitectura completos |
 | [DECISIONS.md](DECISIONS.md) | Por qué Glue Python Shell y no PySpark, etc. |
 | [docs/github-actions-setup.md](docs/github-actions-setup.md) | Desplegar desde CI con OIDC |

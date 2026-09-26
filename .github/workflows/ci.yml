@@ -77,6 +77,54 @@ jobs:
           shellcheck -x --severity=warning labs/03-data-to-ai/infrastructure/cleanup.sh
 
   # ── CloudFormation templates ─────────────────────────────────────────────────
+  # ── Tests del pipeline del Lab 2 (sin AWS) ──────────────────────────────────
+  test-pipeline:
+    name: Tests del pipeline (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest --quiet
+
+      # Ejecutan glue_job.py contra el dataset real. Si alguien recalibra el
+      # dataset o toca las reglas, los numeros de los README dejan de cuadrar y
+      # estos tests lo dicen.
+      - name: pytest
+        run: pytest tests/ -v
+
+  # ── Escaneo de seguridad de la infraestructura ───────────────────────────────
+  security-scan:
+    name: Seguridad IaC (checkov)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install checkov
+        run: pip install checkov==3.3.19 --quiet
+
+      # soft-fail: los hallazgos que quedan abiertos son concesiones
+      # deliberadas de un lab, revisadas una por una en docs/well-architected.md.
+      # El job informa, no bloquea; lo que importa es que no aparezcan NUEVOS.
+      - name: checkov
+        run: checkov -d infra --framework terraform --compact --soft-fail
+
+      - name: Resumen
+        if: always()
+        run: |
+          echo "### Escaneo de seguridad de la infraestructura" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Los hallazgos abiertos son concesiones deliberadas de laboratorio." >> "$GITHUB_STEP_SUMMARY"
+          echo "Estan revisadas una por una en \`docs/well-architected.md\`." >> "$GITHUB_STEP_SUMMARY"
+
   validate-terraform:
     name: Terraform (fmt + validate)
     runs-on: ubuntu-latest

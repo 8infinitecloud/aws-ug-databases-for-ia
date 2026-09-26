@@ -1,7 +1,9 @@
 Rules = [
     # ── Completeness ─────────────────────────────────────────────────────────
     # Al menos el 95% de transacciones deben tener amount.
-    # El dataset del Lab 1 tiene ~5% NULLs deliberados → esta regla FALLARÁ.
+    # El dataset del Lab 1 tiene 50 NULLs sobre 1000 filas = exactamente 0.9500,
+    # asi que esta regla PASA por los pelos: con un NULL mas fallaria. Esta
+    # calibrado asi a proposito, para ver lo cerca que se esta del umbral.
     Completeness "amount" >= 0.95,
 
     # transaction_id y customer_id son obligatorios en todos los registros.

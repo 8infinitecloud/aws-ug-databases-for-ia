@@ -5,6 +5,14 @@
 
 data "aws_availability_zones" "available" {
   state = "available"
+
+  # Sin este filtro, names[0] puede devolver una Local Zone si la cuenta se ha
+  # dado de alta en alguna. us-east-1 tiene varias, incluida Lima
+  # (us-east-1-lim-1a), y RDS/Aurora/ElastiCache no se despliegan ahi igual.
+  filter {
+    name   = "opt-in-status"
+    values = ["opt-in-not-required"]
+  }
 }
 
 data "aws_caller_identity" "current" {}
@@ -66,6 +74,10 @@ resource "aws_security_group" "app" {
   description = "Security group para la aplicacion RAG"
   vpc_id      = aws_vpc.main.id
 
+  lifecycle {
+    create_before_destroy = true
+  }
+
   egress {
     description = "Salida a Bedrock, S3, DynamoDB y paquetes"
     from_port   = 0
@@ -82,6 +94,10 @@ resource "aws_security_group" "aurora" {
   description = "Security group para Aurora PostgreSQL"
   vpc_id      = aws_vpc.main.id
 
+  lifecycle {
+    create_before_destroy = true
+  }
+
   ingress {
     description     = "PostgreSQL desde la app"
     from_port       = 5432
@@ -97,6 +113,10 @@ resource "aws_security_group" "redis" {
   name        = "${var.project_name}-redis-sg"
   description = "Security group para ElastiCache Redis"
   vpc_id      = aws_vpc.main.id
+
+  lifecycle {
+    create_before_destroy = true
+  }
 
   ingress {
     description     = "Redis desde la app"
@@ -116,6 +136,10 @@ resource "aws_security_group" "streamlit" {
   description = "Permite acceso a la UI de Streamlit desde el navegador"
   vpc_id      = aws_vpc.main.id
 
+  lifecycle {
+    create_before_destroy = true
+  }
+
   ingress {
     description = "Streamlit UI"
     from_port   = 8501
@@ -125,4 +149,13 @@ resource "aws_security_group" "streamlit" {
   }
 
   tags = { Name = "${var.project_name}-streamlit-sg" }
+}
+
+# La VPC trae un security group por defecto que permite todo el trafico entre
+# sus miembros. No lo usamos, pero existe: dejarlo sin reglas es gratis y evita
+# que algo acabe ahi por descuido.
+resource "aws_default_security_group" "default" {
+  vpc_id = aws_vpc.main.id
+
+  tags = { Name = "${var.project_name}-default-DO-NOT-USE" }
 }

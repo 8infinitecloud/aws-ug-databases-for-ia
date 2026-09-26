@@ -115,18 +115,40 @@ S3 raw/transactions/        ← Output del Lab 1 (DMS)
 
 ## Reglas de Calidad (DQDL)
 
-| ID | Regla | Columna | Condición | Resultado en raw | Resultado en curated |
-|----|-------|---------|-----------|-----------------|---------------------|
-| R01 | Completeness | `amount` | >= 0.95 | ❌ FAIL (~5% NULL) | ❌ FAIL (NULLs rechazados) |
-| R02 | IsComplete | `transaction_id` | = 1.0 | ✅ PASS | ✅ PASS |
-| R03 | IsComplete | `customer_id` | = 1.0 | ✅ PASS | ✅ PASS |
-| R04 | Uniqueness | `transaction_id` | = 1.0 | ❌ FAIL (~3% dup) | ✅ PASS (dups rechazados) |
-| R05 | ColumnValues | `transaction_type` | in ['DEPOSIT'...] | ❌ FAIL (~2% español) | ✅ PASS (normalizado) |
-| R06 | ColumnValues | `status` | in ['PENDING'...] | ❌ FAIL (~8% mixed) | ✅ PASS (upper case) |
-| R07 | ColumnValues | `currency` | in ['USD','PEN','EUR'] | ✅ PASS | ✅ PASS |
-| R08 | ColumnLength | `transaction_id` | between 1 and 20 | ✅ PASS | ✅ PASS |
+El job mide las 8 reglas **tres veces**, una por etapa del pipeline. Sin las tres
+no se puede distinguir qué arregló la normalización de qué se arregló apartando
+filas, y esa distinción es la lección del lab.
 
-**Nota pedagógica:** las reglas R01 y R04 fallan en el curated también porque los registros con esos problemas son *rechazados* al rejected/ zone — el quality score del curated es alto precisamente porque los problemas fueron removidos.
+| ID | Regla | Columna | Condición | raw | transformado | curated | resuelto por |
+|----|-------|---------|-----------|-----|--------------|---------|--------------|
+| R01 | Completeness | `amount` | >= 0.95 | ✅ 0.9500 | ✅ 0.9500 | ✅ 1.0000 | — |
+| R02 | IsComplete | `transaction_id` | = 1.0 | ✅ | ✅ | ✅ | — |
+| R03 | IsComplete | `customer_id` | = 1.0 | ✅ | ✅ | ✅ | — |
+| R04 | Uniqueness | `transaction_id` | = 1.0 | ❌ 0.9720 | ❌ 0.9720 | ✅ 1.0000 | **rechazo** |
+| R05 | ColumnValues | `transaction_type` | in `[DEPOSIT…]` | ❌ 0.9800 | ✅ 1.0000 | ✅ | **transformación** |
+| R06 | ColumnValues | `status` | in `[PENDING…]` | ❌ 0.9200 | ✅ 1.0000 | ✅ | **transformación** |
+| R07 | ColumnValues | `currency` | in `[USD,PEN,EUR]` | ✅ | ✅ | ✅ | — |
+| R08 | ColumnLength | `transaction_id` | between 1 and 20 | ✅ | ✅ | ✅ | — |
+
+**Total: 5/8 en raw → 7/8 tras transformar → 8/8 en curated.**
+
+Las dos formas de resolver un problema de calidad, y cuándo usar cada una:
+
+- **Transformación** (R05, R06) — el dato es recuperable. `DEPOSITO` en español
+  es claramente un `DEPOSIT`; `completed` en minúsculas es `COMPLETED`. Se
+  normaliza y la fila se conserva.
+- **Rechazo** (R04) — el dato no es recuperable sin decidir por el negocio. Ante
+  dos transacciones con el mismo `transaction_id`, ¿cuál es la buena? El job no
+  lo inventa: aparta **todas** las ocurrencias a `rejected/` con su motivo.
+
+> **R01 pasa por los pelos.** 50 nulos sobre 1000 filas dan exactamente 0.9500,
+> y el umbral es `>= 0.95`. Con un nulo más fallaría. Está calibrado así a
+> propósito: un umbral no es una verdad, es una decisión de negocio, y conviene
+> ver lo cerca que se está del borde.
+
+**Lo que no se debe leer mal:** que curated pase 8/8 no significa que los datos
+estuvieran bien. Significa que 100 filas problemáticas están en `rejected/`,
+fuera de curated pero **sin borrarse**. Eso es auditable; un `DELETE` no lo es.
 
 ---
 
@@ -233,7 +255,7 @@ ORDER BY n DESC;
 
   Filas procesadas : 1000
   Filas válidas    : ~820
-  Filas rechazadas : ~180
+  Filas rechazadas : 100
   Score DQ         : 62.5%
   Reglas pasadas   : 5/8
   Recomendación    : REVIEW: Se recomienda revisar los registros rechazados

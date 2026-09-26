@@ -32,13 +32,19 @@ resource "aws_iam_role_policy" "app" {
     Version = "2012-10-17"
     Statement = [
       {
+        # Acotado a los modelos que el lab usa, en vez de Resource = "*".
+        # Si cambias BEDROCK_LLM_MODEL en el .env, anade su id a la variable
+        # bedrock_model_ids o la llamada fallara con AccessDenied.
         Sid    = "BedrockInvoke"
         Effect = "Allow"
         Action = [
           "bedrock:InvokeModel",
           "bedrock:InvokeModelWithResponseStream",
         ]
-        Resource = "*"
+        Resource = [
+          for id in var.bedrock_model_ids :
+          "arn:aws:bedrock:${var.aws_region}::foundation-model/${id}"
+        ]
       },
       {
         Sid    = "UserMemoryTable"
@@ -95,6 +101,21 @@ resource "aws_instance" "app" {
   ]
 
   iam_instance_profile = aws_iam_instance_profile.app.name
+
+  # IMDSv2 obligatorio. Esta instancia lleva un rol con acceso a Bedrock, S3 y
+  # Secrets Manager: con IMDSv1 basta una SSRF en la app para robar esas
+  # credenciales. Exigir token lo corta y no cuesta nada.
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
+  }
+
+  root_block_device {
+    encrypted   = true
+    volume_size = 20
+    volume_type = "gp3"
+  }
 
   # El UserData solo prepara el entorno y escribe el .env con los endpoints.
   # El codigo de la app lo sube deploy-app.sh via SSM.
