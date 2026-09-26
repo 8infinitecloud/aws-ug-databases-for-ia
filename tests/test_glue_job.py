@@ -166,3 +166,64 @@ def test_normalize_transaction_date_acepta_los_formatos_del_dataset():
     assert gj.normalize_transaction_date("06/10/2024") is not None
     assert gj.normalize_transaction_date(None) is None
     assert gj.normalize_transaction_date("no es una fecha") is None
+
+
+# ── Generador del dataset: la calibracion tiene que seguir siendo la documentada ──
+
+def test_el_generador_reproduce_la_calibracion():
+    """
+    El generador no reproduce los CSV byte a byte, pero si sus porcentajes.
+    Si alguien cambia una fraccion, este test lo dice.
+    """
+    gen_path = REPO / "labs/01-ingestion-data-lake/dataset/generate_dataset.py"
+    spec = importlib.util.spec_from_file_location("generate_dataset", gen_path)
+    gen = importlib.util.module_from_spec(spec)
+    sys.modules["generate_dataset"] = gen
+    spec.loader.exec_module(gen)
+
+    assert gen.FRACTION_NULL_AMOUNT == 0.050
+    assert gen.FRACTION_SPANISH_TYPE == 0.020
+    assert gen.FRACTION_WEIRD_STATUS == 0.080
+    assert gen.FRACTION_NON_ISO_DATE == 0.100
+
+    # La fraccion de nulos es la que pone completeness justo en el umbral.
+    completeness = 1 - gen.FRACTION_NULL_AMOUNT
+    assert completeness == pytest.approx(0.95), (
+        "cambiar FRACTION_NULL_AMOUNT mueve la regla R01 fuera del borde del umbral, "
+        "que es donde el Lab 2 la quiere"
+    )
+
+
+def test_el_csv_del_repo_coincide_con_la_calibracion(raw):
+    """Los CSV commiteados son la referencia: deben tener las cantidades documentadas."""
+    assert raw["amount"].isna().sum() == 50
+    assert (~raw["transaction_type"].isin(gj.VALID_TRANSACTION_TYPES)).sum() == 20
+    assert (~raw["status"].isin(gj.VALID_STATUSES)).sum() == 80
+    assert raw["transaction_date"].str.contains("/").sum() == 100
+    assert raw["transaction_id"].duplicated(keep=False).sum() == 55
+
+
+# ── Lab 2 -> Lab 3: los documentos derivados ─────────────────────────────────
+
+def test_los_documentos_derivados_son_citables(stages):
+    """
+    Un vector store con filas de CSV no responde preguntas de negocio.
+    ingest_from_curated.py convierte los datos curados en hechos agregados.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "ingest_from_curated", REPO / "scripts/ingest_from_curated.py"
+    )
+    ifc = importlib.util.module_from_spec(spec)
+    sys.modules["ingest_from_curated"] = ifc
+    spec.loader.exec_module(ifc)
+
+    valid = stages["valid"]
+    documentos = {
+        "mensual": ifc.doc_monthly_summary(valid),
+        "riesgo": ifc.doc_risk_profile(valid),
+    }
+    for nombre, texto in documentos.items():
+        assert len(texto.splitlines()) > 10, f"{nombre} sale demasiado corto"
+        # Un 'nan' o un 'None' en el corpus se convierte en una cita absurda.
+        assert "nan" not in texto.lower().replace("financ", "")
+        assert "None" not in texto

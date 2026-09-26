@@ -108,6 +108,10 @@ el Lab 2 necesita el Lab 1 desplegado, porque lee su bucket.
 > Puedes hacerlos en días distintos y destruir cada uno al acabar. Es más
 > barato que dejarlos encendidos.
 
+Si quieres que la conexión Lab 2 → Lab 3 sea técnica y no solo narrativa,
+`scripts/ingest_from_curated.py` convierte los datos curados en hechos agregados
+y los ingesta al vector store. Ver [ADR-013](DECISIONS.md).
+
 ---
 
 ## La historia: FinCorp
@@ -193,6 +197,7 @@ aws-ug-databases-for-ia/
 ├── scripts/
 │   ├── preflight.sh             ← ¿Tengo todo? (antes de desplegar)
 │   ├── validate_setup.py        ← ¿Está todo en pie? (después)
+│   ├── ingest_from_curated.py   ← Conecta el Lab 2 con el Lab 3 de verdad
 │   └── lib/tf.sh                ← Helpers de Terraform para los scripts
 │
 ├── tests/                       ← Tests del pipeline del Lab 2, sin AWS
@@ -207,7 +212,7 @@ aws-ug-databases-for-ia/
 ├── labs/                        ← La guía y el código de cada lab
 │   ├── 01-ingestion-data-lake/
 │   │   ├── README.md            ← Guía paso a paso
-│   │   ├── dataset/             ← transactions.csv, customers.csv, seed.sql
+│   │   ├── dataset/             ← CSV, seed.sql y generate_dataset.py
 │   │   └── scripts/             ← setup.sh, validate.sh, cleanup.sh
 │   ├── 02-transformation-quality-catalog/
 │   │   ├── README.md
@@ -273,6 +278,9 @@ También desde GitHub Actions: `Actions → Cleanup → Run workflow → ELIMINA
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Cuando algo falla |
 | [COST_ESTIMATE.md](COST_ESTIMATE.md) | Costes por lab y cómo poner un presupuesto |
 | [infra/README.md](infra/README.md) | Cómo están organizados los módulos de Terraform |
+| [docs/datasets.md](docs/datasets.md) | Por qué el dataset es sintético, y alternativas reales (PaySim, NYC TLC, datos abiertos del Perú) |
+| [docs/cases.md](docs/cases.md) | AJE, BMW y United: los tres casos reales, con cifras verificadas |
+| [docs/frameworks.md](docs/frameworks.md) | Los frameworks de AWS detrás de cada decisión |
 | [docs/well-architected.md](docs/well-architected.md) | Qué cumple, qué se concede a propósito, y qué cambiar en producción |
 | [docs/architecture.md](docs/architecture.md) | Diagramas de arquitectura completos |
 | [DECISIONS.md](DECISIONS.md) | Por qué Glue Python Shell y no PySpark, etc. |
