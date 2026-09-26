@@ -6,7 +6,7 @@ Este archivo es el "director de orquesta" del sistema. Lo que hace:
   2. Busca chunks similares en pgvector
   3. Recopila las tres capas de memoria
   4. Construye el prompt
-  5. Llama a Claude en Bedrock
+  5. Llama al LLM en Bedrock (Nova Pro por defecto)
   6. Persiste la respuesta en las capas de memoria correspondientes
 
 Retorna datos enriquecidos (chunks, scores, estado de memoria) para que
@@ -116,7 +116,7 @@ def answer_question(
         memory_context=memory_context,
     )
 
-    # Paso 5: Llamar a Claude
+    # Paso 5: Llamar al LLM
     llm = get_llm()
     messages = [
         SystemMessage(content=system_prompt),
@@ -156,7 +156,7 @@ def summarize_and_store_session(
     session_messages: list[Any],
 ) -> None:
     """
-    Al cerrar la sesión, genera un resumen con Claude y lo almacena en:
+    Al cerrar la sesión, genera un resumen con el LLM y lo almacena en:
     - DynamoDB (Capa 2): resumen en texto para el perfil del usuario
     - pgvector (Capa 3): embedding del resumen para búsqueda semántica futura
 

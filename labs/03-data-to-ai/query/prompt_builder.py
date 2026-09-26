@@ -37,10 +37,10 @@ def build_prompt(
     memory_context: MemoryContext,
 ) -> tuple[str, str]:
     """
-    Construye el system prompt y el human message para Claude.
+    Construye el system prompt y el human message.
 
-    Retorna (system_prompt, human_message) por separado porque la API de Claude
-    separa el system prompt del mensaje del usuario — esta separación mejora
+    Retorna (system_prompt, human_message) por separado porque la Converse API de
+    Bedrock separa el system prompt del mensaje del usuario — esta separación mejora
     la adherencia a las instrucciones del sistema.
 
     Estructura del human_message:

@@ -95,8 +95,11 @@ class ChunkingConfig:
 @dataclass(frozen=True)
 class RetrievalConfig:
     top_k: int = field(default_factory=lambda: int(os.getenv("RETRIEVAL_TOP_K", "5")))
-    # Score mínimo de similitud coseno. 0.70 elimina chunks no relacionados
-    # sin ser tan estricto que devuelva resultados vacíos.
+    # OJO: no es similitud coseno directa. El retriever calcula
+    #   score = 1 - (distancia_coseno / 2)
+    # que reescala el coseno de [-1,1] a [0,1] para que se lea como porcentaje.
+    # Un score de 0.70 equivale a una similitud coseno real de 0.40.
+    # Si ajustas este umbral, razona sobre el score reescalado, no sobre el coseno.
     min_score: float = field(
         default_factory=lambda: float(os.getenv("RETRIEVAL_MIN_SCORE", "0.70"))
     )
