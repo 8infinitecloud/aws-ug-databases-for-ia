@@ -1,4 +1,102 @@
-# Python
+# =============================================================================
+# .gitignore — Workshop "De los Datos a la IA"
+# =============================================================================
+# Regla de oro de este repositorio: aqui no entra nada que (a) contenga
+# credenciales, (b) describa la infraestructura de una cuenta concreta, o
+# (c) se regenere solo.
+#
+# Lo que SI se commitea aunque parezca artefacto, y por que:
+#   infra/*/.terraform.lock.hcl          fija las versiones de los providers
+#   labs/01-*/dataset/*.csv              es el dataset del workshop
+#   labs/02-*/quality_rules.json         es configuracion, no un reporte
+#   labs/03-data-to-ai/.env.example      es la plantilla, no el .env real
+# =============================================================================
+
+
+# ── SECRETOS Y CREDENCIALES ──────────────────────────────────────────────────
+# Nada de esto debe salir de tu maquina. Si algo de aqui llega a GitHub,
+# rota la credencial: borrarla del historial no la invalida.
+
+# Variables de entorno reales (la plantilla .env.example si se versiona)
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+# Credenciales de AWS
+.aws/
+credentials
+aws_credentials.json
+*_accessKeys.csv
+accessKeys.csv
+
+# Claves privadas y certificados
+*.pem
+*.key
+*.ppk
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+*.gpg
+*.asc
+
+# Secretos de Streamlit
+.streamlit/secrets.toml
+
+
+# ── TERRAFORM ────────────────────────────────────────────────────────────────
+# El state describe toda tu infraestructura y guarda las contrasenas de RDS y
+# Aurora EN CLARO. Nunca se commitea, ni siquiera "solo para probar".
+
+.terraform/
+.terraform.lock.hcl.bak
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+
+# Ficheros de variables: suelen llevar contrasenas
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Planes: contienen valores resueltos, incluidos los sensibles
+*.tfplan
+*.tfplan.*
+plan.out
+tfplan
+
+# Overrides locales (Terraform los carga automaticamente)
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Configuracion y logs locales de Terraform
+.terraformrc
+terraform.rc
+crash.log
+crash.*.log
+
+# Generado por infra/bootstrap: lleva el account id de quien lo ejecuta
+infra/backend.hcl
+
+
+# ── OTRAS HERRAMIENTAS DE INFRAESTRUCTURA ────────────────────────────────────
+cdk.out/
+.cdk.staging/
+.serverless/
+.aws-sam/
+samconfig.toml
+node_modules/
+.pulumi/
+
+
+# ── PYTHON ───────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
@@ -9,75 +107,154 @@ dist/
 *.egg-info/
 .eggs/
 *.egg
-.env
-.venv
-env/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Entornos virtuales, en todas sus variantes
+.venv/
+.venv*/
 venv/
+venv*/
+env/
 ENV/
+.python-version
 
-# AWS credentials — NEVER commit these
-.aws/
-*.pem
-*.key
-credentials
-aws_credentials.json
+# Cachés de linters y type checkers
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+.pyre/
+.pytype/
 
-# Streamlit
-.streamlit/secrets.toml
+# Tests y cobertura
+.pytest_cache/
+.tox/
+.nox/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+nosetests.xml
+junit*.xml
 
-# Environment variables
-.env
-.env.local
-.env.*.local
 
-# OS
-.DS_Store
-Thumbs.db
+# ── ARTEFACTOS DEL WORKSHOP ──────────────────────────────────────────────────
+# Cosas que se descargan de S3 o se generan al seguir los labs, y que no
+# aportan nada en el repositorio porque cada quien produce las suyas.
 
-# IDE
+# Reportes de calidad bajados del Lab 2 para inspeccionarlos
+quality_report.json
+quality-reports/
+rejected/
+
+# Datos bajados de S3 (el dataset de origen SI se versiona; esto es lo curado)
+*.parquet
+curated/
+
+# Instaladores que docs/setup.md manda descargar
+awscliv2.zip
+/aws/
+terraform_*.zip
+shellcheck-*.tar.xz
+shellcheck-*/
+
+# Empaquetados de deploy-app.sh
+rag-lab-app.tar.gz
+*.tar.gz
+*.tar.xz
+*.zip
+!labs/**/dataset/*.zip
+
+
+# ── CACHÉ DE VECTOR STORES LOCALES ───────────────────────────────────────────
+*.faiss
+*.pkl
+*.npy
+chroma_db/
+.chroma/
+
+
+# ── LOGS ─────────────────────────────────────────────────────────────────────
+# Sin negaciones aqui: un '!crash.log' anularia la regla de la seccion de
+# Terraform, y ese fichero puede contener fragmentos del state (contrasenas).
+*.log
+logs/
+
+
+# ── EDITORES E IDES ──────────────────────────────────────────────────────────
 .idea/
 .vscode/
 *.swp
 *.swo
+*~
+.history/
+*.sublime-project
+*.sublime-workspace
+.project
+.settings/
+.classpath
 
-# Logs
-*.log
-logs/
 
-# Vector store local cache
-*.faiss
-*.pkl
-chroma_db/
+# ── HERRAMIENTAS DE IA ───────────────────────────────────────────────────────
+# Ajustes locales de Claude Code: rutas y permisos de UNA maquina concreta.
+# Hasta ahora solo los ignoraba el gitignore personal de un equipo, asi que
+# cualquier otro colaborador los habria commiteado.
+.claude/settings.local.json
+.claude/local/
+.cursor/
+.aider*
+.continue/
 
-# Terraform
-# El state guarda las contrasenas de RDS y Aurora EN CLARO. Nunca se commitea.
-.terraform/
-.terraform.lock.hcl.bak
-*.tfstate
-*.tfstate.*
-*.tfvars
-!*.tfvars.example
-crash.log
-crash.*.log
-# Generado por infra/bootstrap: lleva el account id.
-infra/backend.hcl
-# .terraform.lock.hcl SI se commitea: fija las versiones de los providers.
 
-# CDK
-cdk.out/
-node_modules/
+# ── SISTEMA OPERATIVO ────────────────────────────────────────────────────────
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+.AppleDouble
+.LSOverride
+.fseventsd
+.TemporaryItems
+.VolumeIcon.icns
 
-# Jupyter
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux
+.directory
+.Trash-*
+.nfs*
+
+
+# ── SINCRONIZACIÓN EN LA NUBE ────────────────────────────────────────────────
+# Este repositorio vive dentro de OneDrive: los ficheros de conflicto aparecen
+# solos cuando se edita desde dos equipos.
+*[Cc]onflicted*copy*
+*-conflicto-*
+.~*
+~$*
+
+
+# ── JUPYTER ──────────────────────────────────────────────────────────────────
 .ipynb_checkpoints/
 *.ipynb
 
-# Test artifacts
-.pytest_cache/
-htmlcov/
-.coverage
 
-# Planificacion interna y fuentes de la presentacion.
-# OJO: docs/ es publico a proposito — es la guia del workshop y sin ella el
-# repositorio no es reproducible. Solo docs/internal/ queda fuera.
+# ── DOCUMENTACIÓN INTERNA Y PRESENTACIÓN ─────────────────────────────────────
+# OJO: docs/ es PUBLICO a proposito — es la guia del workshop y sin ella el
+# repositorio no es reproducible. Solo lo interno del ponente queda fuera.
 docs/internal/
+
+# Fuentes de la presentacion
+# (*.key de Keynote ya esta cubierto arriba, en la seccion de claves privadas)
 *.pptx
+*.potx
+*.odp
