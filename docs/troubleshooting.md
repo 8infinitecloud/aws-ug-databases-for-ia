@@ -310,8 +310,12 @@ que cuestan.
 Antes de gastar 35 minutos y dinero en AWS, casi todo se puede verificar en local:
 
 ```bash
-# El pipeline del Lab 2 contra el dataset real, sin AWS
-pip install -r requirements.txt pytest
+pip install -r requirements.txt
+
+# El pipeline COMPLETO del Lab 2 sin AWS: Parquet, rejected/ y quality report
+python scripts/run_pipeline_local.py --keep
+
+# Los 20 tests
 pytest tests/ -v
 
 # La infraestructura compila y el grafo resuelve
@@ -326,6 +330,8 @@ terraform -chdir=infra/lab1 plan
 # Escaneo de seguridad
 pip install checkov && checkov -d infra --framework terraform --compact
 ```
+
+Detalle completo de qué es local y qué no: [local-development.md](local-development.md).
 
 ---
 

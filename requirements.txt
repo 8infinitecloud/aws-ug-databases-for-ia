@@ -3,26 +3,39 @@
 # =============================================================================
 # Solo lo que necesitan los scripts de la RAIZ. No es el entorno del Lab 3.
 #
-#   scripts/validate_setup.py   -> boto3
-#   labs/02-.../glue_job.py     -> pandas, pyarrow, numpy (si lo pruebas en local;
-#                                  en AWS lo ejecuta Glue con sus propias libs)
+#   scripts/validate_setup.py     -> boto3
+#   scripts/ingest_from_curated.py-> boto3, pandas, pyarrow
+#   labs/02-.../glue_job.py       -> pandas, pyarrow, numpy (si lo pruebas en
+#                                    local; en AWS lo ejecuta Glue con las suyas)
+#   scripts/run_pipeline_local.py -> pandas, pyarrow (ejecuta el Lab 2 sin AWS)
+#   tests/                        -> pandas, pytest
 #
 # Instalacion:
 #   python3 -m venv .venv && source .venv/bin/activate
 #   pip install -r requirements.txt
 #
-# El Lab 3 (RAG + Streamlit) tiene su propio entorno y sus propias versiones:
+# El Lab 3 (RAG + Streamlit) tiene su propio entorno:
 #   pip install -r labs/03-data-to-ai/requirements.txt
 #
-# Versiones fijadas a proposito: un workshop tiene que dar el mismo resultado
-# dentro de seis meses.
+# ── Por que rangos y no versiones exactas ────────────────────────────────────
+# pandas, numpy y pyarrow traen binarios compilados, y la wheel disponible
+# depende de tu version de Python. Fijar pyarrow==17.0.0 rompia la instalacion
+# en Python 3.13: no existe wheel cp313, pip intentaba compilar desde fuente y
+# el build fallaba por falta de setuptools en un venv nuevo. CI usa 3.11, donde
+# si hay wheel, asi que el fallo solo aparecia en local.
+#
+# El tope de version mayor mantiene la reproducibilidad sin atarse a una wheel
+# concreta. Probado en Python 3.11 y 3.13.
 # =============================================================================
 
 # ── AWS SDK ───────────────────────────────────────────────────────────────────
-boto3==1.35.36
-botocore==1.35.36
+boto3>=1.35.0,<2.0.0
+botocore>=1.35.0,<2.0.0
 
-# ── Data processing: para ejecutar glue_job.py en local ───────────────────────
-pandas==2.2.3
-numpy==1.26.4
-pyarrow==17.0.0
+# ── Data processing: para ejecutar el pipeline del Lab 2 en local ─────────────
+pandas>=2.2.0,<3.0.0
+numpy>=1.26.0,<3.0.0
+pyarrow>=18.1.0,<26.0.0
+
+# ── Tests ─────────────────────────────────────────────────────────────────────
+pytest>=8.3.0,<9.0.0

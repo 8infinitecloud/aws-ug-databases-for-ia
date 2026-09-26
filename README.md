@@ -93,6 +93,33 @@ cat README.md
 
 ---
 
+## Antes de gastar en AWS: casi todo se prueba en local
+
+No necesitas una cuenta AWS para entender el workshop ni para trabajar en él.
+
+```bash
+pip install -r requirements.txt
+
+# El pipeline COMPLETO del Lab 2 contra el dataset real, sin AWS.
+# Produce Parquet particionado, el quality report y la zona rejected/.
+python scripts/run_pipeline_local.py --keep
+
+# 19 tests del pipeline
+pytest tests/ -v
+
+# La infraestructura compila y el grafo resuelve
+for M in bootstrap lab1 lab2 lab3; do
+  terraform -chdir="infra/$M" init -backend=false && terraform -chdir="infra/$M" validate
+done
+```
+
+Nada de eso toca AWS ni cuesta dinero. Lo único que sí necesita credenciales
+(de solo lectura, y gratis) es `terraform plan`, para ver qué se crearía.
+
+Detalle de qué es local y qué no: [docs/local-development.md](docs/local-development.md).
+
+---
+
 ## El recorrido
 
 | Lab | Pregunta que responde | Qué despliegas | Tiempo | Coste |
@@ -197,6 +224,7 @@ aws-ug-databases-for-ia/
 ├── scripts/
 │   ├── preflight.sh             ← ¿Tengo todo? (antes de desplegar)
 │   ├── validate_setup.py        ← ¿Está todo en pie? (después)
+│   ├── run_pipeline_local.py    ← El Lab 2 completo, sin AWS
 │   ├── ingest_from_curated.py   ← Conecta el Lab 2 con el Lab 3 de verdad
 │   └── lib/tf.sh                ← Helpers de Terraform para los scripts
 │
@@ -278,6 +306,7 @@ También desde GitHub Actions: `Actions → Cleanup → Run workflow → ELIMINA
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Cuando algo falla |
 | [COST_ESTIMATE.md](COST_ESTIMATE.md) | Costes por lab y cómo poner un presupuesto |
 | [infra/README.md](infra/README.md) | Cómo están organizados los módulos de Terraform |
+| [docs/local-development.md](docs/local-development.md) | Qué se puede hacer sin AWS, y cómo |
 | [docs/datasets.md](docs/datasets.md) | Por qué el dataset es sintético, y alternativas reales (PaySim, NYC TLC, datos abiertos del Perú) |
 | [docs/cases.md](docs/cases.md) | AJE, BMW y United: los tres casos reales, con cifras verificadas |
 | [docs/frameworks.md](docs/frameworks.md) | Los frameworks de AWS detrás de cada decisión |

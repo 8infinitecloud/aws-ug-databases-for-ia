@@ -89,7 +89,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt pytest --quiet
+        run: pip install -r requirements.txt --quiet
 
       # Ejecutan glue_job.py contra el dataset real. Si alguien recalibra el
       # dataset o toca las reglas, los numeros de los README dejan de cuadrar y

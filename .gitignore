@@ -143,6 +143,9 @@ junit*.xml
 # Cosas que se descargan de S3 o se generan al seguir los labs, y que no
 # aportan nada en el repositorio porque cada quien produce las suyas.
 
+# Bucket simulado de scripts/run_pipeline_local.py
+.local-lake/
+
 # Reportes de calidad bajados del Lab 2 para inspeccionarlos
 quality_report.json
 quality-reports/

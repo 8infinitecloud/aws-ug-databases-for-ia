@@ -12,6 +12,7 @@ reglas, estos tests dicen que los numeros de los README dejaron de ser ciertos.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -227,3 +228,58 @@ def test_los_documentos_derivados_son_citables(stages):
         # Un 'nan' o un 'None' en el corpus se convierte en una cita absurda.
         assert "nan" not in texto.lower().replace("financ", "")
         assert "None" not in texto
+
+
+# ── El runner local: que el job entero siga corriendo sin AWS ────────────────
+
+def test_el_pipeline_completo_corre_en_local(tmp_path):
+    """
+    Ejecuta glue_job.main() de punta a punta con el doble de S3.
+
+    Cubre lo que los tests de funciones puras no ven: parse_args, el orden de
+    los pasos en main(), la escritura de Parquet particionado, y que el reporte
+    se serialice a JSON sin reventar.
+    """
+    import shutil
+
+    spec = importlib.util.spec_from_file_location(
+        "run_pipeline_local", REPO / "scripts/run_pipeline_local.py"
+    )
+    runner = importlib.util.module_from_spec(spec)
+    sys.modules["run_pipeline_local"] = runner
+    spec.loader.exec_module(runner)
+
+    root = tmp_path / "lake"
+    root.mkdir()
+    for tabla in ("transactions", "customers"):
+        destino = root / "raw" / tabla / "LOAD00000001.csv"
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(REPO / f"labs/01-ingestion-data-lake/dataset/{tabla}.csv", destino)
+
+    fake_s3 = runner.LocalS3(root)
+    job = _load_glue_job()
+    job.boto3.client = lambda *a, **k: fake_s3
+
+    argv = sys.argv
+    sys.argv = ["glue_job.py", "--S3_BUCKET", "local", "--JOB_NAME", "test-etl"]
+    try:
+        job.main()
+    finally:
+        sys.argv = argv
+
+    # Parquet particionado por year/month, como espera el Crawler
+    parquets = list((root / "curated").rglob("*.parquet"))
+    assert parquets, "el job no escribio ningun Parquet"
+    assert any("year=" in str(p) and "month=" in str(p) for p in parquets)
+
+    # Los rechazados se apartan con su motivo, no se borran
+    rejected = list((root / "rejected").rglob("*.csv"))
+    assert rejected, "el job no escribio los rechazados"
+    assert "rejection_reason" in rejected[0].read_text(encoding="utf-8")
+
+    # El reporte publica la comparacion por etapas
+    report = json.loads((root / "quality-reports/latest/quality_report.json").read_text())
+    assert report["summary"]["total_rows_rejected"] == 100
+    comparacion = report["rules_raw_vs_curated"]
+    assert comparacion["validity_status"]["resolved_by"] == "transformacion"
+    assert comparacion["uniqueness_transaction_id"]["resolved_by"] == "rechazo"
