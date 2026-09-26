@@ -1,7 +1,20 @@
 # Lab 2 — Transformation + Data Quality + Catalog
 
-> **Parte 2 de 3** | Entrada: output del Lab 1 (S3 raw zone)  
-> Charla "De los Datos a la IA" · AWS Community Day Perú 2026
+> **Lab 2 de 3** · [← Lab 1](../01-ingestion-data-lake/README.md) · [Índice](../../README.md)
+
+| | |
+|---|---|
+| **Tiempo** | ~15 min (el job tarda ~3) |
+| **Coste** | ~$0.01 en total · **$0 en reposo** (Glue solo cobra cuando corre) |
+| **Qué despliegas** | Glue Job, Glue Crawler, Glue Data Catalog, DQ Ruleset |
+| **Requisitos** | **El Lab 1 desplegado** — este lab lee su bucket |
+
+**Objetivo:** convertir los CSV sucios de `raw/` en Parquet confiable y
+catalogado, apartando los registros que no pasan las reglas de calidad.
+
+**Qué te llevas:** que "calidad de datos" no es limpiar y callar, sino medir,
+documentar y **conservar lo que se rechazó**. Y que un catálogo es lo que hace
+que un fichero en S3 sea un dato con significado.
 
 ---
 
@@ -176,6 +189,42 @@ El script:
 
 ---
 
+## ✅ Checkpoint — ¿funcionó?
+
+```bash
+BUCKET=$(terraform -chdir=../../../infra/lab1 output -raw s3_bucket_name)
+
+# 1. Parquet particionado en curated/
+aws s3 ls "s3://$BUCKET/curated/transactions/" --recursive   # ficheros .parquet
+
+# 2. Registros rechazados apartados, NO borrados
+aws s3 ls "s3://$BUCKET/rejected/" --recursive               # al menos 1 fichero
+
+# 3. La tabla existe en el catálogo
+aws glue get-table --database-name financial_platform \
+  --name transactions_curated --query "Table.StorageDescriptor.Columns[].Name"
+
+# 4. El reporte de calidad
+aws s3 cp "s3://$BUCKET/quality-reports/latest/quality_report.json" - | jq .
+```
+
+**El reporte debe mostrar reglas que fallan.** Eso es correcto: el dataset trae
+problemas deliberados. Si todo saliera en verde, la validación no estaría
+mirando de verdad.
+
+Y si quieres verlo como SQL, ya puedes consultarlo en Athena:
+
+```sql
+SELECT transaction_type, status, COUNT(*) AS n
+FROM "financial_platform"."transactions_curated"
+GROUP BY transaction_type, status
+ORDER BY n DESC;
+```
+
+¿Algo no cuadra? → [docs/troubleshooting.md](../../docs/troubleshooting.md#lab-2--transformation--quality--catalog)
+
+---
+
 ## Outputs esperados
 
 ```bash
@@ -273,3 +322,19 @@ El Glue Catalog no es solo un registro de tablas. Puede ser el índice unificado
 **Referencia:** United Airlines, AWS re:Invent 2023 (sesión ANT335)
 
 > *"La diferencia entre 'tengo datos' y 'confío en mis datos' es exactamente lo que construimos en este lab. BMW y United llegaron a esta conclusión a escala de petabytes. Nosotros lo demostramos con 1,000 transacciones de FinCorp."*
+
+
+---
+
+## Siguiente paso
+
+Los datos ya son confiables y están catalogados. Ahora se pueden usar para algo
+que de verdad dependa de ellos: una IA que responda preguntas.
+
+**→ [Lab 3 — Data to AI](../03-data-to-ai/README.md)**
+
+> ¿Paras aquí por hoy? El Lab 2 en reposo cuesta $0, pero el Lab 1 no:
+> `bash scripts/cleanup.sh && bash ../01-ingestion-data-lake/scripts/cleanup.sh`
+
+| [← Lab 1](../01-ingestion-data-lake/README.md) | [Índice](../../README.md) | [Troubleshooting](../../docs/troubleshooting.md) |
+|---|---|---|

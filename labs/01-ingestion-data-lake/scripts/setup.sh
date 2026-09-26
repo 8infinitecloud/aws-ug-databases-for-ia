@@ -9,7 +9,7 @@
 # Costo estimado:  ~$0.09/hr mientras los recursos están activos
 #
 # Uso:
-#   export DB_PASSWORD="TuPassword123!"
+#   export TF_VAR_db_password="TuPassword123!"
 #   ./setup.sh
 #
 #   O con todas las variables:
@@ -66,10 +66,13 @@ AWS_ACCOUNT=$(aws sts get-caller-identity --query Account --output text 2>/dev/n
 
 success "AWS Account: ${AWS_ACCOUNT} | Región: ${REGION}"
 
-# Verificar/solicitar DB_PASSWORD
-if [ -z "${DB_PASSWORD:-}" ]; then
+# La guia del workshop pide exportar TF_VAR_db_password, que es lo que Terraform
+# lee directamente. DB_PASSWORD se acepta por compatibilidad.
+DB_PASSWORD="${DB_PASSWORD:-${TF_VAR_db_password:-}}"
+
+if [ -z "${DB_PASSWORD}" ]; then
   echo ""
-  warn "DB_PASSWORD no definida como variable de entorno."
+  warn "Ni TF_VAR_db_password ni DB_PASSWORD estan definidas."
   read -r -s -p "  Ingresa la contraseña para RDS MySQL (mín. 8 caracteres): " DB_PASSWORD
   echo ""
   [ ${#DB_PASSWORD} -ge 8 ] || error "La contraseña debe tener al menos 8 caracteres."

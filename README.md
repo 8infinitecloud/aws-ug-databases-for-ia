@@ -1,49 +1,124 @@
-# De los Datos a la IA: Construyendo una Plataforma de Datos para IA en AWS
+# De los Datos a la IA — Workshop de Plataforma de Datos en AWS
 
-> **AWS Community Day Perú 2026** · Charla técnica de 30 minutos · Nivel: básico-intermedio
+> Construye, paso a paso, la plataforma de datos que hace posible un asistente
+> de IA. Tres laboratorios, ~2 horas, menos de $1 en tu cuenta AWS.
+>
+> Presentado en **AWS Community Day Perú 2026**. El repositorio está pensado
+> para seguirlo por tu cuenta, no solo para verlo en la charla.
+
+| | |
+|---|---|
+| **Duración** | ~2 h en total (Lab 1: 25 min · Lab 2: 15 min · Lab 3: 40 min) |
+| **Coste** | ~$0.50 si haces cleanup al terminar ([desglose](COST_ESTIMATE.md)) |
+| **Nivel** | Básico-intermedio. Necesitas soltura con la terminal y nociones de SQL. |
+| **Requisitos** | Cuenta AWS con permisos de admin, AWS CLI v2, Terraform ≥ 1.6 |
+| **Región** | `us-east-1` |
 
 ---
 
-## La Idea Central
+## La idea central
 
-> *"Una aplicación de IA no comienza con el modelo. Comienza con datos que pueden ser ingeridos, transformados, validados, entendidos, gobernados y finalmente entregados a la IA."*
+> *"Una aplicación de IA no comienza con el modelo. Comienza con datos que
+> pueden ser ingeridos, transformados, validados, entendidos, gobernados y
+> finalmente entregados a la IA."*
 
-Esta charla es la evolución de **Databases for AI** (AWS Community Day Perú 2025):
+La mayoría de los tutoriales de RAG empiezan con documentos ya limpios en una
+carpeta. En la vida real los datos están en una base de datos de producción,
+vienen sucios y nadie sabe qué significan. **Este workshop empieza ahí.**
 
 ```
-ANTES (Databases for AI):
-  DATABASE → RAG → AI Application
-
-AHORA (Data Platform for AI):
-  DATA SOURCES → INGESTION → STORAGE → TRANSFORMATION →
-  DATA QUALITY → CATALOG → GOVERNANCE → CURATED DATA →
-  ANALYTICS + AI → RAG → AGENTS
+DATA SOURCES → INGESTION → STORAGE → TRANSFORMATION → DATA QUALITY →
+CATALOG → CURATED DATA → ANALYTICS + IA → RAG → AGENTES
+   └── Lab 1 ──────────┘   └──────── Lab 2 ────────┘   └─── Lab 3 ───┘
 ```
 
-La arquitectura RAG del repositorio anterior se convierte en la **última etapa** de una plataforma de datos más amplia.
+---
+
+## Qué vas a construir
+
+Al terminar tendrás corriendo en tu cuenta:
+
+- Una base de datos MySQL replicándose a un **data lake en S3** con AWS DMS
+- Un pipeline de **AWS Glue** que transforma esos datos, les aplica **8 reglas
+  de calidad**, aparta los registros malos y escribe Parquet particionado
+- Un **catálogo de datos** con esquema y metadata de negocio, consultable con SQL
+- Un **asistente de compliance** con RAG sobre Amazon Bedrock, con tres capas de
+  memoria (sesión, persistente y semántica)
 
 ---
 
-## La Historia: FinCorp
+## Empezar
 
-FinCorp es una empresa ficticia de servicios financieros con datos transaccionales distribuidos, problemas de calidad de datos y necesidad de un asistente de compliance para su equipo.
+### 1. Comprueba que tienes todo
 
-A través de tres laboratorios, construimos la plataforma de datos que hace posible ese asistente.
+```bash
+git clone <url-del-repo>
+cd aws-ug-databases-for-ia
+
+./scripts/preflight.sh
+```
+
+Verifica herramientas, credenciales, región y acceso a los modelos de Bedrock.
+**No crea nada y no cuesta dinero.** Si algo falta, te dice exactamente qué
+hacer.
+
+¿Errores? → [docs/setup.md](docs/setup.md) tiene la instalación detallada por
+sistema operativo.
+
+### 2. Crea el backend de Terraform (una sola vez)
+
+```bash
+cd infra/bootstrap
+terraform init && terraform apply
+```
+
+Crea el bucket S3 del estado y la tabla de locks. ~30 segundos.
+
+### 3. Fija la contraseña de las bases de datos
+
+```bash
+export TF_VAR_db_password='CambiaEstaPassword2026!'
+```
+
+### 4. Haz el Lab 1
+
+```bash
+cd labs/01-ingestion-data-lake
+cat README.md
+```
 
 ---
 
-## Los Tres Laboratorios
+## El recorrido
 
-| Lab | Pregunta central | Servicios revelados | Setup |
-|-----|-----------------|---------------------|-------|
-| [Lab 1 — Ingestion + Data Lake](labs/01-ingestion-data-lake/) | ¿Cómo llevamos datos distribuidos a una plataforma? | AWS DMS + Amazon S3 | ~15 min |
-| [Lab 2 — Transformation + Quality + Catalog](labs/02-transformation-quality-catalog/) | ¿Podemos confiar en esos datos? | AWS Glue + Glue Data Quality + Glue Catalog | ~5 min + 3 min job |
-| [Lab 3 — Data to AI](labs/03-data-to-ai/) | ¿Cómo usamos esos datos para IA? | Bedrock + Aurora pgvector + DynamoDB + Redis | ~20 min |
+| Lab | Pregunta que responde | Qué despliegas | Tiempo | Coste |
+|-----|----------------------|----------------|--------|-------|
+| **[1 — Ingestion + Data Lake](labs/01-ingestion-data-lake/)** | ¿Cómo llevo datos de producción a una plataforma sin tocar el origen? | RDS MySQL, AWS DMS, S3 | ~25 min | ~$0.09/h |
+| **[2 — Transformation + Quality + Catalog](labs/02-transformation-quality-catalog/)** | ¿Puedo confiar en esos datos? ¿Alguien sabe qué significan? | Glue Job, Glue Data Quality, Glue Catalog | ~15 min | ~$0.01 total |
+| **[3 — Data to AI](labs/03-data-to-ai/)** | ¿Cómo alimento una IA con datos en los que confío? | Bedrock, Aurora pgvector, DynamoDB, Redis, Streamlit | ~40 min | ~$0.12/h |
 
-Los tres labs forman **una sola historia progresiva**. No son demos independientes.
+**Los tres forman una historia progresiva**, pero son técnicamente
+independientes: el Lab 3 se puede hacer solo. La única dependencia real es que
+el Lab 2 necesita el Lab 1 desplegado, porque lee su bucket.
+
+> Puedes hacerlos en días distintos y destruir cada uno al acabar. Es más
+> barato que dejarlos encendidos.
 
 ---
 
+## La historia: FinCorp
+
+FinCorp es una empresa ficticia de servicios financieros. Tiene sus
+transacciones en un MySQL de producción, los datos vienen con problemas reales
+(importes nulos, IDs duplicados, estados en minúsculas, tipos inválidos), y su
+equipo de compliance necesita un asistente que responda preguntas sobre
+políticas internas.
+
+El dataset trae **problemas deliberados**. No es un descuido: son lo que hace
+que el Lab 2 tenga algo que detectar. Un reporte de calidad todo en verde no
+enseñaría nada.
+
+---
 ## Arquitectura Completa
 
 ```
@@ -102,110 +177,116 @@ Los tres labs forman **una sola historia progresiva**. No son demos independient
 
 ---
 
-## Estructura del Repositorio
+## Estructura del repositorio
 
 ```
 aws-ug-databases-for-ia/
 │
-├── README.md                    ← Este archivo
-├── requirements.txt             ← Dependencias Python para desarrollo local
-│
-├── labs/
-│   ├── 01-ingestion-data-lake/
-│   │   ├── dataset/             ← transactions.csv, customers.csv, seed.sql
-│   │   ├── scripts/             ← setup.sh, validate.sh, cleanup.sh
-│   │   └── README.md
-│   ├── 02-transformation-quality-catalog/
-│   │   ├── glue_job.py          ← Glue Python Shell job
-│   │   ├── quality_rules.dqdl   ← Ruleset DQDL (8 reglas)
-│   │   ├── quality_rules.json   ← Ruleset en JSON (referencia)
-│   │   ├── scripts/             ← setup.sh, run_job.sh, validate.sh, cleanup.sh
-│   │   └── README.md
-│   └── 03-data-to-ai/
-│       ├── ingestion/           ← Pipeline de embeddings
-│       ├── query/               ← RAG chain + 3 capas de memoria
-│       ├── app/                 ← Streamlit UI
-│       ├── data/                ← Corpus compliance/onboarding/policies
-│       ├── scripts/             ← init_db.py, ingest_documents.py
-│       ├── infrastructure/      ← Aurora + Redis + DynamoDB + EC2
-│       ├── .env.example         ← Template de variables de entorno
-│       ├── requirements.txt     ← Dependencias Lab 3
-│       └── README.md
+├── README.md                    ← Empieza aquí
+├── COST_ESTIMATE.md             ← Cuánto cuesta y cómo no gastar
+├── DECISIONS.md                 ← Por qué cada decisión técnica
 │
 ├── scripts/
-│   └── validate_setup.py        ← Verificación pre-demo de los 3 labs
+│   ├── preflight.sh             ← ¿Tengo todo? (antes de desplegar)
+│   ├── validate_setup.py        ← ¿Está todo en pie? (después)
+│   └── lib/tf.sh                ← Helpers de Terraform para los scripts
 │
-└── .github/workflows/           ← CI/CD para los 3 labs
+├── infra/                       ← TODA la infraestructura (Terraform)
+│   ├── README.md                ← Cómo funciona el backend y los módulos
+│   ├── bootstrap/               ← Bucket de estado + tabla de locks (1 vez)
+│   ├── lab1/                    ← VPC, RDS MySQL, DMS, S3 data lake
+│   ├── lab2/                    ← Glue Job, Crawler, Catalog, DQ Ruleset
+│   └── lab3/                    ← Aurora pgvector, Redis, DynamoDB, EC2
+│
+├── labs/                        ← La guía y el código de cada lab
+│   ├── 01-ingestion-data-lake/
+│   │   ├── README.md            ← Guía paso a paso
+│   │   ├── dataset/             ← transactions.csv, customers.csv, seed.sql
+│   │   └── scripts/             ← setup.sh, validate.sh, cleanup.sh
+│   ├── 02-transformation-quality-catalog/
+│   │   ├── README.md
+│   │   ├── glue_job.py          ← El ETL que corre en Glue
+│   │   ├── quality_rules.dqdl   ← Las 8 reglas de calidad
+│   │   └── scripts/             ← setup.sh, run_job.sh, validate.sh, cleanup.sh
+│   └── 03-data-to-ai/
+│       ├── README.md
+│       ├── ingestion/           ← Pipeline de embeddings
+│       ├── query/               ← RAG chain + 3 capas de memoria
+│       ├── app/                 ← UI en Streamlit
+│       ├── data/                ← Corpus de compliance (7 documentos)
+│       └── infrastructure/      ← setup.sh, deploy-app.sh, cleanup.sh
+│
+├── docs/
+│   ├── setup.md                 ← Instalación detallada por SO
+│   ├── troubleshooting.md       ← Errores reales → causa → arreglo
+│   ├── architecture.md          ← Diagramas completos
+│   └── github-actions-setup.md  ← Desplegar desde CI
+│
+└── .github/workflows/           ← CI + deploy + cleanup
 ```
 
-> El código del Lab 3 viene de la charla "Databases for AI" (2025). El
-> repositorio de aquella charla sigue accesible íntegro en el tag `v1.0.0`.
+La infraestructura vive en `infra/` y no dentro de cada lab: así se ve de un
+vistazo todo lo que se crea en tu cuenta, y el `terraform destroy` es evidente.
 
 ---
 
-## Prerrequisitos
+## Cleanup — importante
 
-- Cuenta AWS con acceso a `us-east-1`
-- AWS CLI v2 configurado (`aws configure`)
-- Python 3.11+
-- `jq` instalado
-- Amazon Bedrock habilitado:
-  - `amazon.titan-embed-text-v2:0`
-  - `amazon.nova-pro-v1:0`
-
----
-
-## Orden de ejecución para el demo
+**Hazlo al terminar.** Si lo olvidas son ~$5/día, casi todo de Aurora, DMS y
+ElastiCache, que no escalan a cero.
 
 ```bash
-# 30 minutos antes del demo (en paralelo si es posible):
-cd labs/01-ingestion-data-lake/scripts && ./setup.sh      # ~15 min
-cd labs/03-data-to-ai/infrastructure && ./setup.sh       # ~20 min (Lab 3)
-
-# Iniciar DMS task (Lab 1)
-aws dms start-replication-task --replication-task-arn $DMS_TASK_ARN \
-  --start-replication-task-type start-replication
-
-# Pre-ingestar documentos (Lab 3)
-cd labs/03-data-to-ai
-python scripts/init_db.py
-python scripts/ingest_documents.py --source data/
-
-# Verificar que todo está en pie antes de salir a escena
-python scripts/validate_setup.py
-
-# Durante el demo:
-cd labs/02-transformation-quality-catalog/scripts && ./setup.sh
-./run_job.sh                                             # ~3 min visible
-cd labs/03-data-to-ai/infrastructure && ./deploy-app.sh  # Lab 3 app
-```
-
----
-
-## Cleanup — Evitar Costos
-
-Siempre ejecutar al terminar. Costo estimado si se olvida: ~$25-35 USD/día.
-
-```bash
-# Lab 2 (Glue — costo $0 en idle, pero limpiar igual)
+# En este orden: el Lab 2 escribe en el bucket que crea el Lab 1
 bash labs/02-transformation-quality-catalog/scripts/cleanup.sh
-
-# Lab 1 (RDS + DMS ~ $0.09/hr)
 bash labs/01-ingestion-data-lake/scripts/cleanup.sh
-
-# Lab 3 (Aurora + ElastiCache ~ $15-25/día)
 bash labs/03-data-to-ai/infrastructure/cleanup.sh
 ```
 
-O desde GitHub Actions: `Actions → Cleanup → Run workflow → ELIMINAR`
+Comprueba que no queda nada:
+
+```bash
+for M in lab1 lab2 lab3; do
+  echo -n "infra/$M: "
+  terraform -chdir="infra/$M" state list 2>/dev/null | wc -l
+done
+# Los tres deben dar 0
+```
+
+También desde GitHub Actions: `Actions → Cleanup → Run workflow → ELIMINAR`.
+
+> Se quedan a propósito el bucket del estado de Terraform y la tabla de locks:
+> cuestan céntimos al mes y son donde vive el estado de todo lo demás.
 
 ---
 
-## Evolución desde la charla anterior
+## Documentación
 
-Este repositorio es la evolución natural de **Databases for AI** (AWS Community
-Day Perú 2025), cuyo código íntegro sigue accesible en el tag [`v1.0.0`](../../tree/v1.0.0).  
-El Lab 3 (RAG + 3 capas de memoria) es una continuación directa de esa charla — ahora posicionado como el **consumidor final** de una plataforma de datos completa.
+| Documento | Para qué |
+|-----------|----------|
+| [docs/setup.md](docs/setup.md) | Instalar herramientas y habilitar Bedrock |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Cuando algo falla |
+| [COST_ESTIMATE.md](COST_ESTIMATE.md) | Costes por lab y cómo poner un presupuesto |
+| [infra/README.md](infra/README.md) | Cómo están organizados los módulos de Terraform |
+| [docs/architecture.md](docs/architecture.md) | Diagramas de arquitectura completos |
+| [DECISIONS.md](DECISIONS.md) | Por qué Glue Python Shell y no PySpark, etc. |
+| [docs/github-actions-setup.md](docs/github-actions-setup.md) | Desplegar desde CI con OIDC |
+
+---
+
+## Origen
+
+Este workshop es la evolución de **Databases for AI** (AWS Community Day Perú
+2025), cuyo repositorio sigue accesible íntegro en el tag
+[`v1.0.0`](../../tree/v1.0.0). El Lab 3 viene de aquella charla — ahora situado
+donde le corresponde: como el **consumidor final** de una plataforma de datos,
+no como el punto de partida.
+
+---
+
+## Contribuir
+
+Si encuentras un error, algo que no se entiende o un paso que no funciona en tu
+entorno, abre un issue. Ver [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 

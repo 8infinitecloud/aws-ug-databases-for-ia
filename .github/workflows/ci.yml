@@ -70,6 +70,7 @@ jobs:
 
       - name: shellcheck — Lab 3 infrastructure scripts
         run: |
+          shellcheck -x --severity=warning scripts/preflight.sh
           shellcheck -x --severity=warning scripts/lib/tf.sh
           shellcheck -x --severity=warning labs/03-data-to-ai/infrastructure/setup.sh
           shellcheck -x --severity=warning labs/03-data-to-ai/infrastructure/deploy-app.sh

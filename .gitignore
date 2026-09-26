@@ -76,6 +76,8 @@ node_modules/
 htmlcov/
 .coverage
 
-# Internal planning docs and presentation source files
-docs/
+# Planificacion interna y fuentes de la presentacion.
+# OJO: docs/ es publico a proposito — es la guia del workshop y sin ella el
+# repositorio no es reproducible. Solo docs/internal/ queda fuera.
+docs/internal/
 *.pptx

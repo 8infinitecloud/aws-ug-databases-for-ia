@@ -1,6 +1,20 @@
 # Lab 1 — Ingestion + Data Lake
 
-> **Parte 1 de 3** | Charla "De los Datos a la IA" · AWS Community Day Perú 2026
+> **Lab 1 de 3** · [← Índice del workshop](../../README.md)
+
+| | |
+|---|---|
+| **Tiempo** | ~25 min (de los cuales ~15 son espera de AWS) |
+| **Coste** | ~$0.09/hora mientras está desplegado · ~$0.18 por una sesión de 2 h |
+| **Qué despliegas** | VPC, RDS MySQL, AWS DMS, bucket S3 del data lake |
+| **Requisitos** | `./scripts/preflight.sh` en verde y el backend de Terraform creado |
+
+**Objetivo:** llevar datos de una base de datos de producción a un data lake en
+S3, sin escribir un ETL y sin tocar la base de datos origen.
+
+**Qué te llevas:** entender por qué la ingesta es un problema aparte del
+análisis, y por qué un data lake tiene zonas (`raw/`, `curated/`) en lugar de
+una sola carpeta.
 
 ---
 
@@ -169,11 +183,13 @@ Tabla de referencia limpia. Sin problemas deliberados. Campos: `customer_id`, `n
 ```bash
 cd labs/01-ingestion-data-lake/scripts
 
-export DB_PASSWORD="FinCorp2026!"   # Mínimo 8 caracteres
+export TF_VAR_db_password='CambiaEstaPassword2026!'   # mínimo 8 caracteres
 export AWS_REGION="us-east-1"
 
 ./setup.sh
 ```
+
+Si no exportas la contraseña, el script te la pide por teclado.
 
 El script hace:
 1. Inicializa Terraform contra el backend remoto
@@ -210,13 +226,39 @@ aws dms start-replication-task \
 Salida esperada:
 
 ```
-[PASS] Stack fincorp-datalake-lab-lab1: CREATE_COMPLETE
+[PASS] Modulo infra/lab1 desplegado
 [PASS] DMS Task status: load-complete | Full Load: 100%
 [PASS] Archivos transactions encontrados: 1 CSV(s)
 [PASS] Archivos customers encontrados: 1 CSV(s)
 [PASS] transactions: ~1000 filas (esperado: ~1000)
 ✅ Validación: PASS (0 fallos)
 ```
+
+---
+
+## ✅ Checkpoint — ¿funcionó?
+
+Antes de pasar al Lab 2, estas tres cosas tienen que ser ciertas:
+
+```bash
+# 1. El módulo tiene recursos
+terraform -chdir=../../../infra/lab1 state list | wc -l      # > 20
+
+# 2. Hay CSV en la zona raw del data lake
+BUCKET=$(terraform -chdir=../../../infra/lab1 output -raw s3_bucket_name)
+aws s3 ls "s3://$BUCKET/raw/" --recursive                     # al menos 2 ficheros
+
+# 3. La tarea DMS terminó el full load
+aws dms describe-replication-tasks \
+  --query "ReplicationTasks[0].[Status,ReplicationTaskStats.FullLoadProgressPercent]" \
+  --output text                                               # running|stopped  100
+```
+
+**Abre un CSV de `raw/` y míralo.** Vas a ver importes vacíos, estados en
+minúsculas y tipos de transacción que no existen. Eso es el punto de partida del
+Lab 2 — no lo arregles ahora.
+
+¿Algo no cuadra? → [docs/troubleshooting.md](../../docs/troubleshooting.md#lab-1--ingestion--data-lake)
 
 ---
 
@@ -303,3 +345,19 @@ Glue + Redshift + SageMaker
 **Referencia oficial:** [AWS Case Study — BMW Group](https://aws.amazon.com/solutions/case-studies/bmw-group/)
 
 > *"Implementamos una versión simplificada de los mismos patrones arquitectónicos. El problema que resolvemos en este lab — centralizar datos distribuidos en una zona de aterrizaje confiable — es exactamente el punto de partida de BMW y AJE."*
+
+
+---
+
+## Siguiente paso
+
+Ya tienes datos crudos en el data lake. Están sucios y nadie sabe qué
+significan — eso es exactamente lo que resuelve el Lab 2.
+
+**→ [Lab 2 — Transformation + Quality + Catalog](../02-transformation-quality-catalog/README.md)**
+
+> ¿Paras aquí por hoy? Haz cleanup para no pagar de más:
+> `bash scripts/cleanup.sh`
+
+| [← Índice](../../README.md) | [Costes](../../COST_ESTIMATE.md) | [Troubleshooting](../../docs/troubleshooting.md) |
+|---|---|---|

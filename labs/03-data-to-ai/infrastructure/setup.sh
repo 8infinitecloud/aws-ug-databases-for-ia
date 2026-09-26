@@ -11,7 +11,10 @@ set -euo pipefail
 
 REGION="${AWS_REGION:-us-east-1}"
 PROJECT_NAME="rag-lab"
-DB_PASSWORD="${DB_PASSWORD:-RagLab2024!}"
+# Precedencia: TF_VAR_db_password (lo que pide la guia) > DB_PASSWORD > default.
+# Antes se exportaba TF_VAR_db_password desde DB_PASSWORD sin mirar si el usuario
+# ya la habia definido, pisandola silenciosamente con el valor por defecto.
+DB_PASSWORD="${TF_VAR_db_password:-${DB_PASSWORD:-RagLab2024!}}"
 ENVIRONMENT="${ENVIRONMENT:-lab}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

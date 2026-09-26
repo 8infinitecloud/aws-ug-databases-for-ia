@@ -1,83 +1,172 @@
-# Estimación de Costos
+# Costos del workshop
 
-> Precios en USD. Región: `us-east-1`. Actualizado: 2024-11.  
-> Los precios pueden variar. Verificar en [AWS Pricing Calculator](https://calculator.aws/).
+> Precios de referencia en USD, región `us-east-1`, revisados 2026-09.
+> Los precios de AWS cambian: verifica en la
+> [calculadora oficial](https://calculator.aws/) antes de asumir nada.
 
----
-
-## Escenario 1: Laboratorio (Demo en Vivo — 2 horas)
-
-| Servicio | Configuración | Costo Estimado |
-|----------|--------------|----------------|
-| **Amazon Bedrock** | Titan Embeddings: ~500K tokens de ingesta + 100 queries × 512 tokens | ~$0.03 |
-| **Amazon Bedrock** | Claude Sonnet 3.5: 100 queries × ~2K tokens input + 500 tokens output | ~$0.35 |
-| **Aurora PostgreSQL Serverless v2** | 0.5 ACU mínimo × 2 horas + 1 GB storage | ~$0.08 |
-| **ElastiCache Redis** | cache.t3.micro × 2 horas | ~$0.03 |
-| **Amazon DynamoDB** | On-demand, <1K lecturas/escrituras | ~$0.01 |
-| **Amazon S3** | <1 GB storage + transferencia | ~$0.02 |
-| **Total Lab (2h)** | | **~$0.52** |
-
-> **Costo real dominante si olvidas hacer cleanup:** Aurora y ElastiCache siguen corriendo.  
-> Costo diario si no eliminas: ~$15-25 USD/día.
+**Resumen: hacer el workshop completo en una sesión de ~2 horas cuesta menos de
+$1. Olvidarte del cleanup cuesta ~$20/día.**
 
 ---
 
-## Escenario 2: Desarrollo y Pruebas (1 mes, equipo de 3)
+## Coste por lab
 
-| Servicio | Configuración | Costo/Mes |
-|----------|--------------|-----------|
-| **Amazon Bedrock — Embeddings** | 10M tokens/mes (reingesta + queries) | $2.00 |
-| **Amazon Bedrock — Claude Sonnet 3.5** | 500K tokens input + 100K output/mes | $4.25 |
-| **Aurora Serverless v2** | Promedio 1 ACU, 20 GB storage, 8h/día | ~$45 |
-| **ElastiCache Redis** | cache.t3.micro (siempre encendido) | ~$12 |
-| **DynamoDB** | On-demand, 100K R/W/mes | $0.25 |
-| **S3** | 5 GB documents + transferencia | $0.15 |
-| **Secrets Manager** | 2 secrets | $0.80 |
-| **Total Dev/Mes** | | **~$64** |
+### Lab 1 — Ingestion + Data Lake
+
+| Servicio | Configuración | $/hora | 2 h |
+|----------|--------------|--------|-----|
+| RDS MySQL | `db.t3.micro`, 20 GB gp2 | ~$0.017 | ~$0.034 |
+| DMS Replication Instance | `dms.t3.medium`, 50 GB | ~$0.068 | ~$0.136 |
+| S3 | < 1 GB + requests | — | < $0.01 |
+| Secrets Manager | 1 secret | ~$0.0005 | < $0.01 |
+| **Total Lab 1** | | **~$0.085/h** | **~$0.18** |
+
+> DMS es el más caro y el que se olvida más fácil, porque no aparece en la
+> consola de RDS. Es ~$1.63/día si se queda corriendo.
+
+### Lab 2 — Transformation + Quality + Catalog
+
+| Servicio | Configuración | Coste |
+|----------|--------------|-------|
+| Glue Python Shell Job | 0.0625 DPU × ~3 min | ~$0.0006 por ejecución |
+| Glue Crawler | 1 crawl de < 1 min | ~$0.0007 |
+| Glue Data Catalog | < 1M objetos | $0 (nivel gratuito) |
+| S3 (curated + rejected + reports) | < 1 GB | < $0.01 |
+| **Total Lab 2** | | **~$0.01** |
+
+> **En reposo el Lab 2 cuesta $0.** No hay nada encendido: Glue solo cobra
+> cuando un job corre. Es el lab que puedes dejar desplegado sin miedo.
+
+### Lab 3 — Data to AI (RAG)
+
+| Servicio | Configuración | $/hora | 2 h |
+|----------|--------------|--------|-----|
+| Aurora PostgreSQL Serverless v2 | mín. 0.5 ACU | ~$0.06 | ~$0.12 |
+| Aurora storage | ~1 GB | — | < $0.01 |
+| ElastiCache Redis | `cache.t3.micro` | ~$0.017 | ~$0.034 |
+| EC2 App Server | `t3.medium` | ~$0.042 | ~$0.084 |
+| DynamoDB | on-demand, < 1K ops | — | < $0.01 |
+| S3 | corpus de 7 documentos | — | < $0.01 |
+| **Total Lab 3** | | **~$0.12/h** | **~$0.25** |
+
+#### Bedrock (se paga por uso, no por tiempo)
+
+| Modelo | Uso típico del lab | Coste |
+|--------|-------------------|-------|
+| Titan Embeddings V2 | ~50K tokens de ingesta del corpus | ~$0.001 |
+| Titan Embeddings V2 | ~20 queries × 50 tokens | < $0.001 |
+| Nova Pro | ~20 queries × (2K in + 500 out) | ~$0.04 |
+| **Total Bedrock** | | **~$0.05** |
+
+> Nova Pro es ~8× más barato que Claude Sonnet para este uso. Por eso es el
+> modelo por defecto de un lab que se repite muchas veces.
 
 ---
 
-## Escenario 3: Producción (empresa financiera mediana, 500 usuarios/día)
+## Escenarios
 
-| Servicio | Configuración | Costo/Mes |
-|----------|--------------|-----------|
-| **Amazon Bedrock — Embeddings** | 50M tokens/mes | $10 |
-| **Amazon Bedrock — Claude Sonnet 3.5** | 5M tokens input + 1M output/mes | $42.50 |
-| **Aurora PostgreSQL Serverless v2** | Promedio 4 ACU, 100 GB storage, HA | ~$380 |
-| **ElastiCache Redis** | cache.r7g.large (2 nodos, Multi-AZ) | ~$280 |
-| **DynamoDB** | On-demand, 5M R/W/mes | $2.50 |
-| **S3** | 50 GB + transferencia | $1.50 |
-| **VPC, NAT Gateway** | 2 AZs, tráfico moderado | ~$65 |
-| **CloudWatch Logs/Metrics** | Dashboards + alertas | ~$15 |
-| **Secrets Manager** | 5 secrets | $2 |
-| **Total Producción/Mes** | | **~$800** |
+### Workshop completo en una sesión (~2 h)
 
-### Optimizaciones para Producción
+| Concepto | Coste |
+|----------|-------|
+| Lab 1 (2 h) | ~$0.18 |
+| Lab 2 | ~$0.01 |
+| Lab 3 (2 h) | ~$0.25 |
+| Bedrock | ~$0.05 |
+| Backend de Terraform (S3 + DynamoDB) | < $0.01 |
+| **Total** | **~$0.50** |
 
-| Optimización | Ahorro Estimado |
-|-------------|-----------------|
-| Usar **Titan Embeddings V2 con 256 dimensiones** en vez de 1024 | -60% costo embedding |
-| **Caché semántico** (Redis) para queries similares | -30% costo LLM |
-| **Aurora Provisioned** en vez de Serverless (si carga predecible) | -40% costo DB |
-| **Bedrock Provisioned Throughput** (si >100K tokens/min) | -50% costo LLM |
-| **S3 Intelligent-Tiering** para documentos históricos | -30% costo S3 |
+### Si te olvidas del cleanup
 
----
+| Periodo | Lab 1 | Lab 3 | Total |
+|---------|-------|-------|-------|
+| 1 día | ~$2.04 | ~$2.86 | **~$4.90** |
+| 1 semana | ~$14 | ~$20 | **~$34** |
+| 1 mes | ~$61 | ~$86 | **~$147** |
 
-## Notas sobre Precios
+> Aurora Serverless v2 no baja de 0.5 ACU: **cobra aunque nadie la use.**
+> ElastiCache y EC2 tampoco tienen escala a cero.
 
-- **Amazon Bedrock:** Pago por token consumido; sin costo por hora encendido.
-- **Aurora Serverless v2:** Se factura por ACU·hora + GB·mes. Escala a 0 ACU tras inactividad (pero no hay garantía de cuándo).
-- **ElastiCache:** Se factura por hora de nodo aunque esté idle — apagar en entornos de dev.
-- **DynamoDB:** On-demand es ideal para cargas variables como un lab; en producción con carga predecible usar **Provisioned**.
+### Hacer los labs por separado, en días distintos
+
+Es perfectamente válido y más barato si vas con calma: destruye cada lab al
+acabarlo. Los tres son independientes salvo que el Lab 2 necesita el Lab 1
+desplegado.
 
 ---
 
-## Cleanup Cost Savings
+## Cómo no gastar dinero
 
-Ejecutar `infrastructure/cleanup.sh` después del lab elimina Aurora y ElastiCache, los dos servicios más costosos.
+### 1. Cleanup al terminar, en este orden
 
 ```bash
-# Tiempo estimado de cleanup: 5-10 minutos
-cd infrastructure && ./cleanup.sh
+bash labs/02-transformation-quality-catalog/scripts/cleanup.sh
+bash labs/01-ingestion-data-lake/scripts/cleanup.sh
+bash labs/03-data-to-ai/infrastructure/cleanup.sh
 ```
+
+El Lab 2 antes del Lab 1: el Lab 2 escribe en el bucket que crea el Lab 1.
+
+### 2. Comprobar que no queda nada
+
+```bash
+for M in lab1 lab2 lab3; do
+  echo -n "infra/$M: "
+  terraform -chdir="infra/$M" state list 2>/dev/null | wc -l
+done
+```
+
+Los tres deben dar `0`.
+
+### 3. Poner un presupuesto con alerta
+
+Antes de empezar, y lleva 2 minutos:
+
+```bash
+aws budgets create-budget \
+  --account-id "$(aws sts get-caller-identity --query Account --output text)" \
+  --budget '{
+    "BudgetName": "workshop-datos-a-ia",
+    "BudgetLimit": {"Amount": "10", "Unit": "USD"},
+    "TimeUnit": "MONTHLY",
+    "BudgetType": "COST"
+  }'
+```
+
+O desde la [consola de Budgets](https://console.aws.amazon.com/billing/home#/budgets),
+que además te deja añadir el aviso por email.
+
+### 4. Revisar a mano lo que cuesta
+
+Estos tres servicios son los que duelen si se quedan encendidos:
+
+- [RDS](https://console.aws.amazon.com/rds/) — instancias y clusters Aurora
+- [DMS](https://console.aws.amazon.com/dms/) — replication instances
+- [ElastiCache](https://console.aws.amazon.com/elasticache/) — clusters Redis
+
+---
+
+## Lo que sobrevive al cleanup (y por qué)
+
+| Recurso | Coste | Por qué se queda |
+|---------|-------|------------------|
+| Bucket del estado de Terraform | ~$0.01/mes | Es donde vive el estado de todo lo demás |
+| Tabla DynamoDB de locks | $0 sin uso | Va con el bucket del estado |
+
+Ambos tienen `prevent_destroy`. Si quieres borrarlos de verdad, hay que quitar
+esa protección a mano — está puesta para que un `destroy` accidental no te deje
+sin el estado.
+
+---
+
+## Nivel gratuito
+
+Si tu cuenta es nueva (< 12 meses), entran en el nivel gratuito:
+
+- RDS `db.t3.micro`: 750 h/mes
+- ElastiCache `cache.t3.micro`: 750 h/mes
+- EC2 `t3.micro`: 750 h/mes — **pero el Lab 3 usa `t3.medium`, que no entra**
+- DynamoDB: 25 GB y 25 WCU/RCU
+- S3: 5 GB
+
+**DMS, Aurora Serverless v2, Glue y Bedrock no tienen nivel gratuito.**

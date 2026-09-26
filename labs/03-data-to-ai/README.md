@@ -1,7 +1,22 @@
 # Lab 3 — Data to AI: RAG sobre la Plataforma de Datos
 
-> **Parte 3 de 3** · El consumidor final de la plataforma construida en Labs 1 y 2  
-> Charla "De los Datos a la IA" · AWS Community Day Perú 2026
+> **Lab 3 de 3** · [← Lab 2](../02-transformation-quality-catalog/README.md) · [Índice](../../README.md)
+
+| | |
+|---|---|
+| **Tiempo** | ~40 min (~20 son espera de Aurora) |
+| **Coste** | ~$0.12/hora + ~$0.05 de Bedrock · **el lab más caro: haz cleanup** |
+| **Qué despliegas** | Aurora pgvector, ElastiCache Redis, DynamoDB, S3, EC2 con Streamlit |
+| **Requisitos** | Modelos de Bedrock habilitados. **No** necesita los Labs 1 y 2. |
+
+**Objetivo:** montar un asistente de compliance con RAG y tres capas de memoria
+sobre la plataforma de datos.
+
+**Qué te llevas:** que el RAG es la última etapa y la más corta. Todo lo que lo
+hace funcionar — datos accesibles, limpios y con significado — son los Labs 1 y 2.
+
+> Este lab se puede hacer solo, sin los anteriores. Pero entonces te pierdes el
+> punto del workshop.
 
 ---
 
@@ -218,6 +233,31 @@ streamlit run app/app.py  # http://localhost:8501
 
 ---
 
+## ✅ Checkpoint — ¿funcionó?
+
+```bash
+# 1. La infraestructura está en pie
+terraform -chdir=../../infra/lab3 output
+
+# 2. Streamlit responde
+curl -sSf -o /dev/null -w "HTTP %{http_code}\n" \
+  "$(terraform -chdir=../../infra/lab3 output -raw streamlit_url)"
+```
+
+Y desde la raíz del repositorio, el semáforo completo:
+
+```bash
+python scripts/validate_setup.py --lab 3
+```
+
+Abre la URL de Streamlit y haz una pregunta. Debe responder **citando las
+fuentes** — si responde sin fuentes o dice que no encuentra nada, el corpus no
+se ingestó.
+
+¿Algo no cuadra? → [docs/troubleshooting.md](../../docs/troubleshooting.md#lab-3--data-to-ai)
+
+---
+
 ## Preguntas de demo
 
 ```
@@ -333,3 +373,44 @@ AHORA — Data Platform for AI (2026):
 
 El Lab 3 es el mismo que en 2025. Lo que cambió es todo lo que lo precede.
 ```
+
+
+---
+
+## Has terminado el workshop
+
+Recorriste el camino completo: de una base de datos de producción a un asistente
+de IA que responde sobre datos en los que puedes confiar. Sin saltarte la parte
+aburrida, que es justo la que hace que la IA funcione.
+
+### ⚠️ Cleanup — hazlo ahora
+
+Este lab es el más caro: Aurora, Redis y EC2 no escalan a cero. **~$2.86/día si
+lo dejas.**
+
+```bash
+bash labs/03-data-to-ai/infrastructure/cleanup.sh
+bash labs/02-transformation-quality-catalog/scripts/cleanup.sh
+bash labs/01-ingestion-data-lake/scripts/cleanup.sh
+```
+
+Comprueba que no queda nada:
+
+```bash
+for M in lab1 lab2 lab3; do
+  echo -n "infra/$M: "
+  terraform -chdir="infra/$M" state list 2>/dev/null | wc -l
+done
+# Los tres deben dar 0
+```
+
+### Para seguir
+
+- **Lake Formation** — control de acceso a nivel de fila y columna sobre el catálogo
+- **Catalog Federation** — consultar Redshift o Databricks desde Athena sin mover datos
+- **Ingestar el `curated/` del Lab 2 al vector store** — hoy la conexión Lab 2 → Lab 3
+  es narrativa; hacerla técnica es un buen ejercicio
+- **Agentes** — el asistente responde preguntas; un agente además actúa
+
+| [← Lab 2](../02-transformation-quality-catalog/README.md) | [Índice](../../README.md) | [Costes](../../COST_ESTIMATE.md) |
+|---|---|---|
