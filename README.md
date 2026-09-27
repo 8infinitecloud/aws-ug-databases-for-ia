@@ -307,6 +307,7 @@ También desde GitHub Actions: `Actions → Cleanup → Run workflow → ELIMINA
 | [COST_ESTIMATE.md](COST_ESTIMATE.md) | Costes por lab y cómo poner un presupuesto |
 | [infra/README.md](infra/README.md) | Cómo están organizados los módulos de Terraform |
 | [docs/local-development.md](docs/local-development.md) | Qué se puede hacer sin AWS, y cómo |
+| [docs/architecture-demo-proposal.md](docs/architecture-demo-proposal.md) | **Propuestas, no implementado.** Smart Coffee: POS físico con M5Stack |
 | [docs/datasets.md](docs/datasets.md) | Por qué el dataset es sintético, y alternativas reales (PaySim, NYC TLC, datos abiertos del Perú) |
 | [docs/cases.md](docs/cases.md) | AJE, BMW y United: los tres casos reales, con cifras verificadas |
 | [docs/frameworks.md](docs/frameworks.md) | Los frameworks de AWS detrás de cada decisión |

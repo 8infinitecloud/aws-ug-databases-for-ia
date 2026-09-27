@@ -1,5 +1,9 @@
 # ARCHITECTURE — Data Platform for AI en AWS
 
+> Este documento describe la arquitectura **implementada**. Para componentes en
+> evaluación y no construidos, ver
+> [architecture-demo-proposal.md](architecture-demo-proposal.md).
+
 > Arquitectura completa de la charla "De los Datos a la IA"  
 > Ver `docs/STRATEGY.md` para el contexto narrativo
 
