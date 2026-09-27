@@ -252,7 +252,7 @@ aws-ug-databases-for-ia/
 │       ├── ingestion/           ← Pipeline de embeddings
 │       ├── query/               ← RAG chain + 3 capas de memoria
 │       ├── app/                 ← UI en Streamlit
-│       ├── data/                ← Corpus de compliance (7 documentos)
+│       ├── data/                ← Corpus de compliance (8 documentos)
 │       └── infrastructure/      ← setup.sh, deploy-app.sh, cleanup.sh
 │
 ├── docs/

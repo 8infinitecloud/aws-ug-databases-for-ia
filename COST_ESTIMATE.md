@@ -46,7 +46,7 @@ $1. Olvidarte del cleanup cuesta ~$20/día.**
 | ElastiCache Redis | `cache.t3.micro` | ~$0.017 | ~$0.034 |
 | EC2 App Server | `t3.medium` | ~$0.042 | ~$0.084 |
 | DynamoDB | on-demand, < 1K ops | — | < $0.01 |
-| S3 | corpus de 7 documentos | — | < $0.01 |
+| S3 | corpus de 8 documentos | — | < $0.01 |
 | **Total Lab 3** | | **~$0.12/h** | **~$0.25** |
 
 #### Bedrock (se paga por uso, no por tiempo)

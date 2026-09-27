@@ -260,6 +260,8 @@ se ingestó.
 
 ## Preguntas de demo
 
+Preguntas sobre las políticas, que solo usan el Lab 3:
+
 ```
 "¿Cuáles son los pasos del proceso KYC para clientes corporativos?"
 "¿Qué documentos necesito para el onboarding de un cliente de alto riesgo?"
@@ -267,6 +269,23 @@ se ingestó.
 "¿Cuándo es obligatorio hacer un Reporte de Actividad Sospechosa (SAR)?"
 "¿Qué entrenamiento de compliance deben completar los empleados nuevos?"
 ```
+
+**Preguntas que atraviesan los tres labs.** Usan el vocabulario exacto de los
+datos que produjeron los Labs 1 y 2 (`WITHDRAWAL`, `risk_level`, `PEN`,
+`rejected/`), así que la respuesta solo es posible porque esa plataforma existe:
+
+```
+"¿Qué hago con un WITHDRAWAL de PEN 200,000 de un cliente con risk_level HIGH?"
+"¿Cuál es el umbral de alerta para un DEPOSIT en soles?"
+"¿Las transacciones en estado FAILED cuentan para los umbrales de reporte?"
+"¿Por qué no debo usar la zona raw/ para el monitoreo transaccional?"
+"¿Qué hago con un registro rechazado por NULL_AMOUNT?"
+```
+
+> La última es la que mejor cierra la charla: la respuesta explica que una
+> operación en `rejected/` **existió y no está siendo vigilada**, así que es una
+> brecha de compliance, no un problema de datos. Eso solo se puede responder
+> porque el Lab 2 conservó los rechazados con su motivo en vez de borrarlos.
 
 Para demostrar las capas de memoria:
 1. Haz 2-3 preguntas como **Ana García** (Asesora de Cuenta)

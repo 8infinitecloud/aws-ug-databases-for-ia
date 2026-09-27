@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -283,3 +284,86 @@ def test_el_pipeline_completo_corre_en_local(tmp_path):
     comparacion = report["rules_raw_vs_curated"]
     assert comparacion["validity_status"]["resolved_by"] == "transformacion"
     assert comparacion["uniqueness_transaction_id"]["resolved_by"] == "rechazo"
+
+
+# ── El puente entre los datos (Labs 1-2) y el corpus (Lab 3) ─────────────────
+# El corpus estaba en prosa espanola y el dataset en codigos enum en ingles:
+# compartian el dominio pero no los tokens, asi que una pregunta que mezclara
+# ambos mundos no recuperaba nada. monitoreo_operativo.md es el puente.
+
+CORPUS = REPO / "labs/03-data-to-ai/data"
+
+
+@pytest.fixture(scope="module")
+def corpus_texto() -> str:
+    return "\n".join(
+        p.read_text(encoding="utf-8") for p in sorted(CORPUS.rglob("*.md"))
+    )
+
+
+@pytest.mark.parametrize(
+    "valor",
+    [
+        # transaction_type
+        "DEPOSIT", "WITHDRAWAL", "TRANSFER",
+        # status
+        "COMPLETED", "PENDING", "FAILED", "PROCESSING",
+        # currency
+        "USD", "PEN", "EUR",
+        # risk_level de customers.csv
+        "LOW", "MEDIUM", "HIGH",
+    ],
+)
+def test_el_corpus_usa_el_vocabulario_del_dataset(corpus_texto, valor):
+    """
+    Cada valor que el RAG puede recibir en una pregunta tiene que existir en el
+    corpus. Si no, el retrieval no puede conectar la pregunta con la politica.
+    """
+    assert re.search(rf"\b{re.escape(valor)}\b", corpus_texto), (
+        f"'{valor}' no aparece en el corpus: una pregunta que lo use no recuperara nada"
+    )
+
+
+@pytest.mark.parametrize(
+    "campo",
+    ["transaction_id", "customer_id", "branch_id", "rejection_reason",
+     "transactions_curated", "curated/", "rejected/"],
+)
+def test_el_corpus_referencia_la_plataforma_de_datos(corpus_texto, campo):
+    """El corpus debe hablar de las zonas y campos que producen los Labs 1 y 2."""
+    assert campo in corpus_texto, f"el corpus no menciona '{campo}'"
+
+
+def test_los_valores_del_dataset_estan_todos_cubiertos(raw):
+    """
+    Lo mismo, pero partiendo del dataset: cualquier valor que exista en los datos
+    reales debe estar documentado en el corpus. Asi, si alguien anade un tipo de
+    transaccion nuevo al generador, el test avisa de que falta documentarlo.
+    """
+    corpus = "\n".join(p.read_text(encoding="utf-8") for p in sorted(CORPUS.rglob("*.md")))
+    for columna in ("transaction_type", "status", "currency"):
+        valores = {v for v in raw[columna].dropna().unique() if v.isascii() and v.isupper()}
+        faltan = [v for v in valores if not re.search(rf"\b{re.escape(v)}\b", corpus)]
+        assert not faltan, f"valores de {columna} sin documentar en el corpus: {faltan}"
+
+
+def test_la_matriz_de_decision_sobrevive_al_chunking():
+    """
+    La matriz de decision es la unidad que el RAG tiene que recuperar entera: sin
+    su cabecera, una fila como '| WITHDRAWAL | HIGH | ... |' no significa nada.
+    Con chunk_size=1000 cabe justa, asi que conviene vigilarlo.
+    """
+    pytest.importorskip("langchain_text_splitters")
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+    doc = (CORPUS / "compliance/monitoreo_operativo.md").read_text(encoding="utf-8")
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000, chunk_overlap=200, separators=["\n\n", "\n", ". ", " ", ""]
+    )
+    chunks = splitter.split_text(doc)
+
+    con_fila = [c for c in chunks if "`WITHDRAWAL` | `HIGH`" in c]
+    assert con_fila, "la fila critica de la matriz no aparece en ningun chunk"
+    assert any(
+        "transaction_type` | `risk_level" in c or "## 5. Matriz" in c for c in con_fila
+    ), "la fila se separo de la cabecera de su tabla: el chunk pierde el significado"

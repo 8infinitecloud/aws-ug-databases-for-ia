@@ -9,6 +9,7 @@ Cada decisión de arquitectura relevante está documentada aquí en formato ADR.
 | 007–009 | Lab 1 | Ingesta: DMS, zonas del data lake, dataset sintético |
 | 010–013 | Lab 2 | Glue Python Shell, medición en tres etapas, rechazo vs corrección, y cómo llega a la IA |
 | 014–016 | Transversal | Terraform, state remoto, acoplamiento entre labs |
+| 017 | Lab 3 | El puente léxico entre los datos y el corpus |
 
 Las decisiones que se apartan a propósito de lo que pediría producción están en
 [docs/well-architected.md](docs/well-architected.md).
@@ -478,7 +479,7 @@ El workshop afirma que los datos curados alimentan a la IA. Durante un tiempo es
 
 ### Consecuencias
 
-- El corpus pasa de 7 documentos a 10, y tres de ellos se regeneran con cada ejecución del Lab 2.
+- El corpus pasa de 8 documentos a 11, y tres de ellos se regeneran con cada ejecución del Lab 2.
 - El documento de calidad permite responder algo que ninguna consulta SQL contesta bien: *"¿puedo confiar en estos datos, y por qué?"*.
 - Las cifras de los documentos derivados dependen del dataset. Si cambia, hay que regenerarlos.
 
@@ -582,3 +583,45 @@ Una sola dependencia técnica real: el Lab 2 lee el bucket del Lab 1. El Lab 3 t
 - El Lab 1 y el Lab 3 se pueden desplegar en paralelo, que es lo que hace el runbook para no esperar 35 minutos en serie.
 - El Lab 2 tiene un fallback a `staging/` si `raw/` estuviera vacío.
 - La conexión Lab 2 → Lab 3 es opcional: `scripts/ingest_from_curated.py` la hace técnica cuando se quiere (ADR-013).
+
+---
+
+## ADR-017: El corpus habla el vocabulario de los datos
+
+**Frase para la presentación:** *"El corpus estaba en prosa española y los datos en códigos en inglés. Compartían el tema, no las palabras — y un RAG recupera por palabras."*
+
+| Campo | Valor |
+|-------|-------|
+| **Título** | Cómo se conecta el corpus del Lab 3 con los datos de los Labs 1 y 2 |
+| **Fecha** | 2026-09-27 |
+| **Estado** | Aceptado |
+
+### Contexto
+
+Al medir el solapamiento de vocabulario entre el corpus del Lab 3 y el dataset de los Labs 1 y 2, el resultado fue casi nulo. De los 13 valores que el dataset puede tener en `transaction_type`, `status`, `currency` y `risk_level`, solo `USD` aparecía en los documentos de políticas.
+
+El corpus hablaba de "depósitos", "alto riesgo" y "transferencias"; los datos decían `DEPOSIT`, `HIGH` y `TRANSFER`. Y `PEN` no aparecía en ningún documento, pese a que 330 de las 1000 transacciones están en soles.
+
+El problema es concreto: un RAG recupera por similitud de embeddings, y una pregunta como *"¿qué hago con un WITHDRAWAL de un cliente HIGH?"* no encontraba nada útil. La narrativa del workshop era correcta, pero el sistema no podía demostrarla.
+
+### Decisión Tomada
+
+Un documento puente: `data/compliance/monitoreo_operativo.md`, un procedimiento operativo que traduce la política al vocabulario del sistema. Incluye la tabla de valores válidos por campo, los umbrales por moneda, una matriz de decisión `transaction_type` × `risk_level`, y qué hacer con cada `rejection_reason` de la zona `rejected/`.
+
+No es un glosario artificial: es el documento que cualquier empresa tiene de verdad, porque el analista de monitoreo no lee políticas mientras revisa alertas — lee filas de una tabla.
+
+### Alternativas Consideradas
+
+| Alternativa | Por qué no |
+|-------------|-----------|
+| **Editar los 7 documentos de políticas** para meterles los enum en inglés | Quedaría forzado. Una política de AML no dice `transaction_type = WITHDRAWAL`; dice "retiros en efectivo" |
+| **Renombrar los valores del dataset al español** | Rompería el Lab 2: la normalización español → inglés es justo lo que demuestra la regla de calidad `validity_transaction_type` |
+| **Confiar en que Titan V2 es multilingüe** | Lo es en parte, y "depósito" y `DEPOSIT` tienen alguna similitud. Pero `HIGH`, `PEN` y `FAILED` no tienen equivalente en el corpus a ningún nivel, y los umbrales por moneda no existían en ninguna parte |
+| **Dejarlo así y contarlo como narrativo** | Era el estado anterior. Funciona para explicarlo, pero el participante no puede comprobarlo |
+
+### Consecuencias
+
+- Una sola pregunta atraviesa los tres labs. *"¿Qué hago con un WITHDRAWAL de PEN 200 000 de un cliente con risk_level HIGH?"* se responde con datos que produjo el Lab 1, validó el Lab 2 y recupera el Lab 3.
+- El corpus pasa de 7 a 8 documentos. La sección de `rejected/` da además la mejor respuesta de la charla: un registro rechazado **existió y no está siendo vigilado**, así que es una brecha de compliance, no un problema de datos.
+- `tests/test_glue_job.py` fija el puente: si alguien añade un valor nuevo al generador del dataset y no lo documenta en el corpus, el test falla. Son 23 tests nuevos, uno por valor.
+- La matriz de decisión cabe entera en un chunk de 1000 caracteres **con su cabecera**, verificado con el mismo splitter que usa la ingesta. Sin la cabecera, una fila como `| WITHDRAWAL | HIGH | … |` no significa nada al recuperarse sola.
