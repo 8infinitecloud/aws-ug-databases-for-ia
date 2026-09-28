@@ -249,9 +249,16 @@ Redis, EC2, secretos, EIP, NAT ni log groups del proyecto.
 
 Dos cosas que la auditoría estática no habría cogido y que el ciclo completo sí:
 
-- **El log group que crea RDS** al exportar logs sobrevivía al `destroy` con
-  retención infinita. Ahora lo declara Terraform en `payments` y en `lab3`, y se
-  comprobó que se va con ellos.
+- **Los log groups que crean los servicios**, no Terraform, sobrevivían al
+  `destroy` con retención infinita. Son dos y aparecieron en momentos distintos:
+  `/aws/rds/cluster/<id>/postgresql`, que crea RDS al exportar logs, y
+  `dms-tasks-<instancia>`, que crea DMS al escribir los de la tarea. Los dos
+  tienen nombre determinista, así que ahora los declara Terraform —en
+  `payments`, `lab3` y `lab1`— con retención y se van con el resto.
+
+  El patrón merece recordarse: **si un servicio de AWS crea un recurso por su
+  cuenta, `terraform destroy` no se lo lleva.** Se descubre haciendo el ciclo
+  completo, no leyendo la configuración.
 - **Quedan tres log groups de la era CloudFormation**
   (`/aws/rds/cluster/financial-compliance-rag-lab-auroracluster-*`, de mayo de
   2026, ~26 KB en total). No los creó ningún módulo actual; son restos de

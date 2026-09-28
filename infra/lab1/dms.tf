@@ -115,6 +115,9 @@ resource "aws_dms_replication_subnet_group" "main" {
   depends_on = [
     aws_iam_role_policy_attachment.dms_vpc_role,
     aws_iam_role_policy_attachment.dms_cloudwatch_logs_role,
+    # Que el log group exista antes: si lo crea DMS primero, el apply siguiente
+    # falla con ResourceAlreadyExistsException.
+    aws_cloudwatch_log_group.dms_tasks,
   ]
 
   replication_subnet_group_id          = "${var.project_name}-${var.environment}-dms-subnet"
@@ -321,4 +324,24 @@ resource "aws_iam_role_policy_attachment" "dms_cloudwatch_logs_role" {
 
   role       = aws_iam_role.dms_cloudwatch_logs_role[0].name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonDMSCloudWatchLogsRole"
+}
+
+# =============================================================================
+# El log group de la tarea DMS
+# =============================================================================
+# Lo crea DMS por su cuenta al escribir los logs de la tarea, con retencion
+# infinita y fuera del control de Terraform. `destroy` lo dejaba huerfano: los
+# logs siguen ahi, siguen cobrando, y el siguiente despliegue los mezcla con los
+# del anterior.
+#
+# El nombre no es libre: DMS escribe exactamente en
+# dms-tasks-<identificador-de-la-instancia>, asi que tiene que coincidir.
+# Declararlo aqui lo convierte en un recurso mas, con retencion y que se va con
+# el resto.
+
+resource "aws_cloudwatch_log_group" "dms_tasks" {
+  name              = "dms-tasks-${var.project_name}-${var.environment}-ri"
+  retention_in_days = 7
+
+  tags = { Name = "${var.project_name}-${var.environment}-dms-logs" }
 }
