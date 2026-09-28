@@ -27,6 +27,32 @@ COFFEE SALE → DATA → STREAM → QUALITY → CONTEXT → CURATED → ANALYTIC
 Antes de proponer arquitectura, lo que verifiqué sobre el hardware y los
 servicios.
 
+> **Revisión del 2026-09-27.** Esta sección se reescribió al encontrar el
+> repositorio oficial del **AWS IoT Kit** en local
+> (`../Core2-for-AWS-IoT-EduKit`). Cambia tres premisas: el hardware es una
+> variante distinta, el framework no es Arduino, y la gestión de la clave privada
+> desaparece. Los apartados corregidos están marcados.
+
+### 1.0 El hardware ya está, y no es el que propuse
+
+El repositorio local `Core2-for-AWS-IoT-EduKit` revela que el dispositivo es el
+**M5Stack Core2 for AWS IoT Kit** (antes *AWS IoT EduKit*), no el Core2 genérico.
+
+La diferencia importa: incluye un **elemento seguro Microchip ATECC608
+Trust&GO** que el Core2 v1.3 de tienda **no tiene**.
+
+Y hay evidencia de que está aprovisionado:
+
+```
+Blinky-Hello-World/.pio/build/core2foraws-device_reg          ← registro compilado
+utilities/AWS_IoT_registration_helper/output_files/
+    012370911fd7211101_manifest.json                          ← serial del dispositivo
+    device_cert.pem  signer_cert.crt  signer_key.pem
+```
+
+**Esto resuelve SC-04 y elimina el mayor riesgo del plan**: el hardware existe,
+tiene serial `012370911fd7211101`, y ya pasó por el registration helper.
+
 ### 1.1 M5Stack Core2 — capacidades reales
 
 | Característica | Valor | Relevancia para el POS |
@@ -40,20 +66,26 @@ servicios.
 | Otros | IMU 6 ejes, micrófono, altavoz, motor de vibración, ranura SD, batería 390 mAh | Vibración y sonido al aprobar el pago: buen efecto en vivo |
 | Alimentación | USB-C, gestión por chip AXP192 | La batería de 390 mAh es pequeña: **mantenerlo enchufado durante la charla** |
 
-> **Atención al comprar.** Las versiones **v1.0 y v1.1 están EOL** (discontinuadas).
-> La vigente es la **v1.3**. Verificar antes de pedirlo.
+> **Corregido.** Ya no hace falta comprar nada: tienes el *Core2 for AWS IoT
+> Kit*, que además del hardware anterior lleva el ATECC608. Si algún día
+> necesitaras un segundo dispositivo, **pide la variante «for AWS IoT Kit»**, no
+> el Core2 v1.3 genérico: sin el elemento seguro habría que gestionar la clave
+> privada en el firmware, que es justo lo que este hardware evita.
 
-### 1.2 Generación de QR — resuelto sin hardware extra
+### 1.2 Generación de QR — corregido: aún más simple
 
-La librería `M5Core2` incluye `M5.Lcd.qrcode()` de serie:
+**No es Arduino.** El AWS IoT Kit usa **ESP-IDF**, así que `M5.Lcd.qrcode()` (de
+la librería Arduino `M5Core2`) no aplica. Lo que hay es mejor: un componente
+`qrcode` ya incluido en el proyecto, con una única función.
 
-```cpp
-M5.Lcd.qrcode("https://pay.smartcoffee.demo/t/TX10023", 0, 0, 150, 6);
-//             contenido                                  x  y  ancho  versión
+```c
+#include "qrcode.h"
+
+esp_err_t qrcode_display(const char *text);   // eso es toda la API
 ```
 
-No hace falta el módulo *M5Module-QRCode*: ese es un **lector**, y aquí sólo
-necesitamos **mostrar**.
+Está en `components/qrcode/` de los proyectos del kit. No hace falta el módulo
+*M5Module-QRCode*: ese es un **lector**, y aquí sólo necesitamos **mostrar**.
 
 **Decisión de diseño que se deriva de esto:** el QR debe contener **una URL
 corta**, no el JSON de la transacción. Una versión 6 admite ~134 caracteres
@@ -62,18 +94,67 @@ versión alta, y un QR denso en una pantalla de 2 pulgadas **no se escanea con u
 móvil desde el público**. La web recupera los detalles con el `transaction_id`
 que viene en la URL.
 
-### 1.3 Conectividad con AWS IoT Core — viable
+### 1.3 Conectividad con AWS IoT Core — resuelta, y mejor de lo previsto
 
-MQTT sobre TLS mutuo con certificado X.509 es el camino estándar y está bien
-soportado en ESP32:
+Corregido: no es `PubSubClient` sobre Arduino, sino el **AWS IoT Device SDK for
+Embedded C** portado por Espressif (`esp-aws-iot`), sobre ESP-IDF y FreeRTOS.
 
-- `WiFiClientSecure` viene en el core de Arduino para ESP32
-- `PubSubClient` para MQTT, `ArduinoJson` para el payload
-- Puerto 8883, con Root CA de Amazon + certificado de dispositivo + clave privada
-  compilados en el firmware
+Y la clave privada **no existe en el firmware**. De `Blinky-Hello-World/main/main.c`:
 
-**Veredicto: es viable y no es "excesivamente complejo"** como temía el §28. Son
-tres ficheros PEM en un header y unas 20 líneas de setup. Se hace una vez.
+```c
+mqttInitParams.pRootCALocation       = (const char *)aws_root_ca_pem_start;
+mqttInitParams.pDeviceCertLocation   = "#";     // slot del ATECC608
+mqttInitParams.pDevicePrivateKeyLocation = "#0"; // slot del ATECC608
+
+char *client_id = malloc(CLIENT_ID_LEN + 1);
+Atecc608_GetSerialString(client_id);            // identidad = serial del chip
+```
+
+Esos `#` y `#0` son referencias PKCS#11 a slots del elemento seguro. La clave se
+generó **dentro del chip** y no se puede extraer. En `main/certs/` sólo hay
+`aws-root-ca.pem`, que es público.
+
+**Consecuencia para el §35 de la especificación:** el apartado de gestión de
+secretos en el firmware desaparece. No hay `secrets.h`, no hay clave que proteger,
+no hay nada que añadir al `.gitignore`. La identidad del dispositivo es el
+hardware.
+
+### 1.4 El proyecto de referencia cubre la mayor parte
+
+`Blinky-Hello-World` ya trae, funcionando y sobre este hardware:
+
+| Pieza | Estado |
+|---|---|
+| Aprovisionamiento por elemento seguro | ✅ |
+| Conexión MQTT a AWS IoT Core (TLS mutuo) | ✅ |
+| Publicar y suscribirse con QoS 0 y 1 | ✅ |
+| Reconexión automática (`aws_iot_mqtt_attempt_reconnect`) | ✅ |
+| Wi-Fi (`wifi.c`) | ✅ |
+| UI con **LVGL** (`ui.c`) | ✅ |
+| Tarea FreeRTOS para periféricos | ✅ |
+
+Lo que hay que escribir es la lógica del POS: catálogo, carrito, pantallas de
+pago y el payload del evento. **La parte difícil —identidad, TLS, MQTT— está
+hecha.**
+
+> **LVGL cambia el diseño de la UI a mejor.** No hay que dibujar píxeles: hay
+> objetos, botones con callbacks y layouts. Una UI de POS con lista de productos y
+> carrito es trabajo normal de GUI, no de gráficos a bajo nivel.
+
+### 1.5 Riesgo real: el toolchain está congelado en 2021
+
+`platformio.ini` fija `platform = espressif32@3.2.0` y el README pide **ESP-IDF
+v4.2**. Son versiones de 2021. ESP-IDF va por la v5.x.
+
+No es un impedimento —los proyectos compilan, hay evidencia en `.pio/build`—
+pero conviene saberlo:
+
+- **No actualizar** el toolchain «porque hay versión nueva». El BSP
+  `core2forAWS` y el port de `esp-cryptoauthlib` están atados a esa versión
+- Reservar tiempo si hay que reinstalar el entorno en otra máquina
+- El programa pasó de AWS a M5Stack (la documentación vive ahora en
+  `aws-iot-kit-docs.m5stack.com` y se renombró de *EduKit* a *AWS IoT Kit*), así
+  que no esperar actualizaciones
 
 ---
 
@@ -167,14 +248,14 @@ Lambda por ~$0.10 y más complejidad.
 
 | Componente | Tecnología | Real o mock | Nuevo |
 |---|---|---|---|
-| POS físico | M5Stack Core2 v1.3 + Arduino/PlatformIO | **Real** | Sí |
-| UI del POS | `M5Core2.h`, pantalla táctil | **Real** | Sí |
-| Generación de QR | `M5.Lcd.qrcode()` | **Real** | Sí |
+| POS físico | **Core2 for AWS IoT Kit** + ESP-IDF v4.2 / PlatformIO | **Real** | Sí |
+| UI del POS | **LVGL** sobre el BSP `core2forAWS` | **Real** | Sí |
+| Generación de QR | componente `qrcode` (`qrcode_display()`) | **Real** | Sí |
 | Web de pago QR | HTML/CSS/JS estático en S3 | **Real** | Sí |
 | Procesador de pagos | Lambda `payment-mock` | **Mock** | Sí |
 | Autorización de tarjeta | Lambda, validación de CVV de prueba | **Mock** | Sí |
 | API | API Gateway HTTP API | **Real** | Sí |
-| Transporte de eventos | AWS IoT Core, MQTT + TLS mutuo | **Real** | Sí |
+| Transporte de eventos | AWS IoT Core, MQTT + TLS mutuo con **ATECC608** | **Real** | Sí |
 | Entrega a S3 | Amazon Data Firehose | **Real** | Sí |
 | Data lake | S3, zona `raw/events/` | **Real** | Reutiliza Lab 1 |
 | Transformación y calidad | AWS Glue | **Real** | Reutiliza Lab 2 |
@@ -293,34 +374,67 @@ lección.
 
 ## 6. Integración del M5Stack
 
-### 6.1 Topics MQTT
+### 6.1 Topics MQTT — ajustado al patrón del kit
+
+El ejemplo del kit usa el **serial del elemento seguro** como `clientId` y como
+raíz del topic:
+
+```c
+snprintf(subscribe_topic,     "%s/#", client_id);   // client_id = serial ATECC608
+snprintf(base_publish_topic,  "%s/",  client_id);
+```
+
+Conviene respetarlo, porque la política de IoT que creó el registration helper ya
+está acotada a ese patrón. Propuesta:
 
 ```
-smartcoffee/pos/{pos_id}/events      ← el POS publica  (QoS 1)
-smartcoffee/pos/{pos_id}/results     ← el POS se suscribe (QoS 1)
+012370911fd7211101/events      ← el POS publica     (QoS 1)
+012370911fd7211101/results     ← el POS se suscribe (QoS 1)
 ```
 
-La política de IoT debe acotarse a esos dos topics con el `pos_id` del
-certificado, no con `*`.
+**Implicación para el esquema de eventos:** `pos_id` no es un valor inventado,
+es el serial del dispositivo. Mantener `pos_id: "POS-01"` como alias legible y
+añadir `device_id` con el serial, para que el dato sea trazable al hardware:
 
-### 6.2 Estructura del firmware
+```json
+"pos_id": "POS-01",
+"device_id": "012370911fd7211101"
+```
+
+La regla de IoT puede enriquecer el evento con el `clientId` usando la función
+`clientid()` de su SQL, así que **el firmware no tiene ni que enviarlo**.
+
+### 6.2 Estructura del firmware — corregida
+
+Partiendo de `Blinky-Hello-World`, que es el ejemplo del kit más cercano, con la
+convención de ESP-IDF (`main/` + `components/`):
 
 ```
 firmware/smart-coffee-pos/
-├── platformio.ini          # PlatformIO: más reproducible que el IDE de Arduino
-├── src/
-│   ├── main.cpp            # setup/loop, máquina de estados
-│   ├── ui.cpp              # pantallas: catálogo, total, pago, resultado
-│   ├── catalog.cpp         # productos y precios (en firmware: no hay inventario)
-│   ├── payment.cpp         # HTTPS al mock de tarjeta
-│   ├── mqtt.cpp            # IoT Core: publicar y suscribirse
-│   └── secrets.h.example   # plantilla; secrets.h va en .gitignore
+├── platformio.ini          # copiado de Blinky-Hello-World: espressif32@3.2.0
+├── sdkconfig.defaults
+├── main/
+│   ├── CMakeLists.txt
+│   ├── main.c              # app_main, tareas FreeRTOS, máquina de estados
+│   ├── ui.c / ui.h         # pantallas LVGL: catálogo, carrito, pago, resultado
+│   ├── catalog.c           # productos y precios (en firmware: no hay inventario)
+│   ├── payment.c           # HTTPS al mock de tarjeta (esp_http_client)
+│   ├── events.c            # construir y publicar el payload del evento
+│   ├── wifi.c              # reutilizado tal cual del ejemplo
+│   └── certs/
+│       └── aws-root-ca.pem # público; es el ÚNICO certificado en el repositorio
+├── components/
+│   ├── core2forAWS/        # BSP, incluye atecc608/ y esp-cryptoauthlib
+│   └── qrcode/             # qrcode_display()
 └── README.md
 ```
 
-> **`secrets.h` nunca se commitea.** Contiene la clave privada del dispositivo.
-> Se añade a `.gitignore` junto con `*.pem` — que ya está cubierto por las reglas
-> actuales del repositorio.
+> **No hay `secrets.h`, y esto es lo mejor del hardware.** La clave privada vive
+> en el ATECC608 y no se puede extraer; el firmware la referencia por slot
+> (`"#0"`). Lo único que se versiona es la Root CA de Amazon, que es pública.
+>
+> Comparado con un ESP32 genérico, esto elimina de golpe la categoría de riesgo
+> «clave privada filtrada en el repositorio».
 
 ### 6.3 Máquina de estados
 
@@ -441,17 +555,52 @@ Aunque los pagos sean falsos, la infraestructura es real:
 
 | Riesgo | Mitigación |
 |---|---|
-| Clave privada del dispositivo en el repositorio | `secrets.h` en `.gitignore`; `*.pem` ya está cubierto |
-| Certificado con permisos amplios | Política de IoT acotada a los dos topics de ese `pos_id` |
+| Clave privada del dispositivo en el repositorio | **No aplica con este hardware.** La clave vive en el ATECC608 y no se puede extraer. Sólo se versiona la Root CA, que es pública |
+| Certificado con permisos amplios | Política de IoT acotada al patrón `<serial>/*`, que es lo que ya creó el registration helper |
 | API abierta al mundo | Throttling en API Gateway; sin datos sensibles que filtrar |
 | Web estática en S3 | Sólo lectura pública del sitio; `block_public_*` en el resto del bucket |
 | Lambda con permisos de más | Sólo `iot:Publish` en el topic concreto |
 | Wi-Fi del evento comprometida | TLS mutuo: un atacante en la red no puede publicar sin el certificado |
 
-### 9.3 El certificado, en la práctica
+### 9.3 El certificado, en la práctica — ya resuelto
 
-Un solo *thing* con un certificado, generado a mano antes de la charla. No hace
-falta *fleet provisioning*: es un dispositivo.
+Nada que hacer: el registration helper del kit ya generó el manifest
+(`012370911fd7211101_manifest.json`) y registró el *thing*. No hace falta *fleet
+provisioning* ni generar certificados a mano.
+
+### 9.3.1 Aviso sobre el repositorio del AWS IoT Kit
+
+Al revisar ese repositorio encontré algo que conviene arreglar, y **no lo toqué
+porque no es este proyecto**:
+
+```
+Blinky-Hello-World/utilities/AWS_IoT_registration_helper/output_files/
+    signer_key.pem          ← clave privada EC, SIN ignorar por git
+    device_cert.pem
+    signer_cert.crt
+    012370911fd7211101_manifest.json
+```
+
+`signer_key.pem` empieza por `-----BEGIN EC PRIVATE KEY-----` y
+`git check-ignore` confirma que **no está ignorado**: un `git add -A` en ese
+repositorio la commitearía.
+
+La regla existe en el `.gitignore` de la raíz pero no encaja, por dos motivos:
+
+```
+/utilities/device_registration_helper/output_files/*
+ ↑ancla en la raíz                ↑el directorio real se llama AWS_IoT_registration_helper
+```
+
+Arreglo, en el `.gitignore` de ese repositorio:
+
+```
+**/AWS_IoT_registration_helper/output_files/
+**/*_manifest.json
+```
+
+Si esa clave llegó a estar en un commit, **rotarla**: quitarla del historial no la
+invalida.
 
 ### 9.4 Deriva del reloj
 
@@ -485,11 +634,14 @@ Sumado al coste actual del workshop (~$0.50), sigue por debajo de $1.
 - **REST API en lugar de HTTP API:** ~3.5× más caro por petición, irrelevante a
   este volumen pero gratis de evitar
 
-### 10.2 Coste del hardware
+### 10.2 Coste del hardware — ya cubierto
 
-El M5Stack Core2 v1.3 ronda los **$50–60**. Es un gasto único y no recurrente,
-pero conviene decirlo: **el workshop deja de ser reproducible sin comprar
-hardware**. Ver §11.3.
+El dispositivo ya está, así que para esta charla el coste de hardware es **$0**.
+
+Sigue siendo cierto lo importante: **quien reproduzca el workshop desde GitHub no
+tendrá un Core2 for AWS IoT Kit** (~$50–60, y la variante con elemento seguro es
+más difícil de encontrar que el Core2 normal). Por eso el simulador del §11.3 no
+es opcional.
 
 ---
 
@@ -604,13 +756,22 @@ ejecuta en vivo. La narrativa mejora y el tiempo cuadra.
 | 3 | Pipeline de Glue para eventos (`curated/events/`) + reglas nuevas | Fase 2 |
 | 4 | Lambda `payment-mock` + API Gateway | — |
 | 5 | Web de pago QR en S3 | Fase 4 |
-| 6 | Firmware del M5Stack | Fases 2 y 4; **necesita el hardware** |
+| 6 | Firmware del POS, partiendo de `Blinky-Hello-World` | Fases 2 y 4. **El hardware ya está y está aprovisionado** |
 | 7 | Documentos derivados para el RAG (ventas de Smart Coffee) | Fase 3 |
 | 8 | Ensayo y capturas de respaldo | Todo |
 
 **Las fases 1-5 y 7 no necesitan el M5Stack.** Se puede construir y probar el
-pipeline entero con el simulador mientras el hardware llega, y eso reduce el
-riesgo de que el dispositivo sea un bloqueante.
+pipeline entero con el simulador, y eso mantiene el workshop reproducible para
+quien no tenga el dispositivo.
+
+La fase 6 es más barata de lo que parecía: `Blinky-Hello-World` ya resuelve
+identidad, TLS, MQTT, Wi-Fi y el arranque de LVGL. Lo que queda es la lógica de
+negocio del POS.
+
+> **Antes de la fase 6, comprobar que el entorno compila.** El toolchain está
+> fijado en ESP-IDF v4.2 / `espressif32@3.2.0` (§1.5). Hay evidencia de builds
+> previos en `.pio/build`, así que funcionaba; conviene confirmarlo antes de
+> depender de ello.
 
 ---
 
@@ -623,15 +784,22 @@ Antes de implementar, hacen falta cuatro decisiones:
 | SC-01 | ¿Firehose o Kinesis Data Streams? | **Firehose**: $0/hora y sin consumidor que escribir. El contrapeso es el buffer de 60 s, resuelto en §12 |
 | SC-02 | ¿Pipeline de eventos separado o fusionado con el de transacciones? | **Separado** (`raw/events/` → `curated/events/`), para no romper la calibración ya probada del Lab 2 |
 | SC-03 | ¿De dónde salen los 5 minutos de la charla? | **Opción A**: el POS sustituye la demo del Lab 1 |
-| SC-04 | ¿Ya tienes el M5Stack Core2, y es v1.3? | Las v1.0 y v1.1 están EOL. Las fases 1-5 avanzan sin él |
+| SC-04 | ~~¿Ya tienes el M5Stack Core2?~~ | **Resuelta.** Es un *Core2 for AWS IoT Kit* con ATECC608, serial `012370911fd7211101`, ya aprovisionado |
+| SC-05 | ¿Compila hoy el entorno del kit? (ESP-IDF v4.2, de 2021) | Comprobarlo antes de la fase 6. Si no, la fase 6 se retrasa pero las 1-5 no |
 
 ---
 
 ## Fuentes
 
-- [M5Stack Core2 — documentación oficial](https://docs.m5stack.com/en/core/core2) · [Core2 v1.3](https://docs.m5stack.com/en/core/Core2_v1.3)
-- [Ejemplo de QR en M5Core2](https://github.com/m5stack/M5Core2/blob/master/examples/Advanced/QRCode/QRCode.ino)
-- [Conectar ESP32 a AWS IoT Core con MQTT](https://how2electronics.com/connecting-esp32-to-amazon-aws-iot-core-using-mqtt/)
+**Código de referencia, en local** — `../Core2-for-AWS-IoT-EduKit/`:
+`Blinky-Hello-World/` (elemento seguro + MQTT + LVGL),
+`components/core2forAWS/atecc608/`, `components/qrcode/`,
+`Smart-Thermostat/` (device shadow).
+
+- [AWS IoT Kit — documentación](https://aws-iot-kit-docs.m5stack.com) · [Cloud Connected Blinky](https://aws-iot-kit-docs.m5stack.com/en/blinky-hello-world/)
+- [Core2 for AWS IoT Kit — tienda M5Stack](https://m5stack.com/products/m5stack-core2-esp32-iot-development-kit-for-aws-iot-kit)
+- [M5Stack Core2 — documentación del hardware](https://docs.m5stack.com/en/core/core2) · [Core2 v1.3](https://docs.m5stack.com/en/core/Core2_v1.3)
+- [esp-aws-iot — port de Espressif del AWS IoT Device SDK](https://github.com/espressif/esp-aws-iot)
 - [AWS IoT Core — acciones de regla](https://docs.aws.amazon.com/iot/latest/developerguide/iot-rule-actions.html) · [acción Firehose](https://docs.aws.amazon.com/iot/latest/developerguide/kinesis-firehose-rule-action.html)
 - [Precios de AWS IoT Core](https://aws.amazon.com/iot-core/pricing/)
 - [Precios de Kinesis Data Streams](https://aws.amazon.com/kinesis/data-streams/pricing/)
