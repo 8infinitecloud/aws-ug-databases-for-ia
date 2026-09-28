@@ -45,12 +45,22 @@ static lv_obj_t *ta_cvv;
 static lv_obj_t *btn_producto[CATALOGO_N];
 static lv_obj_t *btn_qr;
 
+/*
+ * Cancelacion del sondeo del QR.
+ *
+ * `volatile` porque la escribe el hilo de LVGL —al tocar CANCELAR— y la lee la
+ * tarea de sondeo, que corre en otro core. Sin esto el compilador puede
+ * cachearla en un registro y la tarea no se entera nunca.
+ */
+static volatile bool qr_cancelado;
+
 static pos_cart_t carrito;
 static pos_charge_t cobro;
 static char cvv[8];
 
 static void ver_catalogo(void);
 static void ver_metodo(void);
+static void on_cancelar_qr(lv_obj_t *obj, lv_event_t e);
 static void ver_cvv(void);
 static void ver_resultado(void);
 
@@ -58,6 +68,9 @@ static void ver_resultado(void);
 
 static void limpiar(void)
 {
+    /* Antes de borrar los objetos: el canvas del QR lleva un buffer externo que
+     * LVGL no libera. */
+    pos_qr_free();
     lv_obj_clean(pantalla);
     barra_wifi = NULL;
     lbl_total = lbl_estado = ta_cvv = NULL;
@@ -170,6 +183,11 @@ static void on_cobrar(lv_obj_t *obj, lv_event_t e)
 
 static void ver_catalogo(void)
 {
+    /* Volver al catalogo cancela cualquier sondeo en curso: si no, la tarea de
+     * la venta anterior seguiria viva y podria pintar su resultado encima de la
+     * venta nueva. */
+    qr_cancelado = true;
+
     memset(&carrito, 0, sizeof(carrito));
     memset(&cobro, 0, sizeof(cobro));
     cvv[0] = '\0';
@@ -208,6 +226,10 @@ static void tarea_crear_intencion(void *arg)
 {
     bool es_qr = (bool)(intptr_t)arg;
 
+    /* Cada venta arranca limpia: si no, una cancelacion anterior mataria el
+     * sondeo de esta nada mas empezar. */
+    qr_cancelado = false;
+
     pos_api_new_reference(carrito.intent_reference, sizeof(carrito.intent_reference));
     esp_err_t err = pos_api_create_intent(&carrito);
 
@@ -237,6 +259,8 @@ static void tarea_crear_intencion(void *arg)
         lv_label_set_text(l, txt);
         lv_obj_align(l, NULL, LV_ALIGN_IN_BOTTOM_MID, 0, -26);
 
+        boton("CANCELAR", 214, 196, 96, 36, on_cancelar_qr);
+
         lbl_estado = lv_label_create(pantalla, NULL);
         estado("Esperando pago...");
     } else {
@@ -251,6 +275,16 @@ static void tarea_crear_intencion(void *arg)
         char st[24] = "";
         for (int s = 0; s < QR_TIMEOUT_S * 1000 / QR_POLL_MS; s++) {
             vTaskDelay(pdMS_TO_TICKS(QR_POLL_MS));
+
+            /* Se comprueba ANTES de consultar: si el cajero cancelo, esta venta
+             * ya no interesa y seguir preguntando por ella confundiria la
+             * pantalla de la siguiente. */
+            if (qr_cancelado) {
+                ESP_LOGI(TAG, "sondeo de %s cancelado", carrito.intent_reference);
+                vTaskDelete(NULL);
+                return;
+            }
+
             if (pos_api_poll_intent(carrito.intent_reference, st, sizeof(st)) != ESP_OK) {
                 continue;
             }
@@ -264,7 +298,9 @@ static void tarea_crear_intencion(void *arg)
             }
         }
         xSemaphoreTake(xGuiSemaphore, portMAX_DELAY);
-        estado("El QR expiro");
+        if (!qr_cancelado) {
+            estado("El QR expiro. Toca CANCELAR para volver.");
+        }
         xSemaphoreGive(xGuiSemaphore);
     }
 
@@ -297,6 +333,24 @@ static void on_cancelar(lv_obj_t *obj, lv_event_t e)
     if (e == LV_EVENT_CLICKED) {
         ver_catalogo();
     }
+}
+
+/*
+ * Cancela una venta por QR que esta esperando el pago.
+ *
+ * Existe porque sin el la pantalla del QR no tenia NINGUN boton: quien la
+ * abria se quedaba atrapado los 120 s del timeout, con el QR viejo en pantalla
+ * y sin forma de empezar otra venta. Un movil que volviera a escanear leia la
+ * referencia anterior, ya pagada.
+ */
+static void on_cancelar_qr(lv_obj_t *obj, lv_event_t e)
+{
+    (void)obj;
+    if (e != LV_EVENT_CLICKED) {
+        return;
+    }
+    qr_cancelado = true;   /* la tarea de sondeo lo ve y se va */
+    ver_catalogo();
 }
 
 static void ver_metodo(void)

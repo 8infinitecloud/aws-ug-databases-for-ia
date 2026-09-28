@@ -32,6 +32,16 @@ static const char *TAG = "pos_qr";
 static uint8_t *qr_buf;
 static uint8_t *tmp_buf;
 
+/*
+ * El buffer del canvas del QR anterior.
+ *
+ * LVGL no libera los buffers externos cuando borra el objeto: `lv_obj_clean()`
+ * se lleva el canvas y deja los bytes. Cada QR fugaba ~54 KB de PSRAM, y en una
+ * demo con varias ventas eso acaba agotandola y el QR deja de dibujarse — sin
+ * error visible, simplemente no aparece.
+ */
+static void *canvas_anterior;
+
 lv_obj_t *pos_qr_draw(lv_obj_t *parent, const char *text, int max_px)
 {
     if (qr_buf == NULL) {
@@ -74,6 +84,9 @@ lv_obj_t *pos_qr_draw(lv_obj_t *parent, const char *text, int max_px)
         return NULL;
     }
 
+    /* Libera el del QR anterior antes de pedir otro. */
+    pos_qr_free();
+
     size_t bytes = LV_CANVAS_BUF_SIZE_TRUE_COLOR(lado, lado);
     void *px = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
     if (px == NULL) {
@@ -82,6 +95,7 @@ lv_obj_t *pos_qr_draw(lv_obj_t *parent, const char *text, int max_px)
         return NULL;
     }
 
+    canvas_anterior = px;
     lv_canvas_set_buffer(canvas, px, lado, lado, LV_IMG_CF_TRUE_COLOR);
     /* Fondo blanco, incluida la zona tranquila. */
     lv_canvas_fill_bg(canvas, LV_COLOR_WHITE, LV_OPA_COVER);
@@ -103,4 +117,13 @@ lv_obj_t *pos_qr_draw(lv_obj_t *parent, const char *text, int max_px)
 
     ESP_LOGI(TAG, "QR de %d modulos a escala %d (%d px)", modulos, escala, lado);
     return canvas;
+}
+
+
+void pos_qr_free(void)
+{
+    if (canvas_anterior != NULL) {
+        heap_caps_free(canvas_anterior);
+        canvas_anterior = NULL;
+    }
 }

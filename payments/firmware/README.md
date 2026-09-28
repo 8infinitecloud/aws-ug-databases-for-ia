@@ -53,6 +53,34 @@ Catálogo  ──[COBRAR]──>  Método  ──┬──[TARJETA]──>  CVV 
 | `pos_qr.c` | dibuja el QR en la pantalla |
 | `wifi.c` | conexión, con reintentos |
 
+### La pantalla del QR tiene que poder abandonarse
+
+Encontrado usando el terminal, no leyendo el código: **la pantalla del QR no
+tenía ningún botón**. Quien entraba se quedaba atrapado los 120 s del timeout,
+con el QR anterior en pantalla y sin forma de empezar otra venta.
+
+El síntoma no parecía eso. Parecía que la página de pago "cacheaba" el cobro
+anterior: el móvil volvía a escanear el QR viejo —el único que había— y veía una
+operación ya pagada, mientras el POS seguía sondeando una referencia que nadie
+iba a pagar.
+
+Ahora la pantalla lleva **CANCELAR**, y la tarea de sondeo comprueba la bandera
+antes de cada consulta. Volver al catálogo también cancela cualquier sondeo
+vivo: si no, la tarea de la venta anterior podía pintar su resultado encima de
+la nueva.
+
+La bandera es `volatile` porque la escribe el hilo de LVGL y la lee una tarea en
+otro core. Sin eso el compilador puede cachearla en un registro y la tarea no se
+entera nunca.
+
+### El canvas del QR se fugaba
+
+LVGL borra el objeto canvas pero **no libera el buffer externo** que se le pasó.
+Cada QR dejaba ~54 KB de PSRAM sin recuperar. Con varias ventas seguidas eso
+acaba agotándola y el QR deja de dibujarse **sin error visible**: simplemente no
+aparece. `pos_qr_free()` lo libera, y `limpiar()` lo llama antes de borrar los
+objetos.
+
 ### Tres decisiones que no son obvias
 
 **La UI arranca antes que el WiFi.** Si se conectara primero, la pantalla
