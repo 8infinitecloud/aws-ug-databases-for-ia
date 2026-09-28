@@ -474,19 +474,27 @@ COMMENT ON TABLE idempotency_keys IS
 -- Las columnas coinciden a proposito con el vocabulario que ya usan los Labs 2 y
 -- 3 (amount, currency, status, risk_level), para que el pipeline existente y el
 -- corpus de compliance sigan encajando.
-CREATE OR REPLACE VIEW v_transactions_for_ingestion AS
+-- DROP antes del CREATE: `CREATE OR REPLACE VIEW` no puede cambiar el tipo
+-- de una columna existente, asi que reaplicar el esquema tras un cambio de
+-- tipo fallaba con InvalidTableDefinition.
+DROP VIEW IF EXISTS v_transactions_for_ingestion CASCADE;
+CREATE VIEW v_transactions_for_ingestion AS
 SELECT
     c.charge_reference                         AS transaction_id,
     m.merchant_id                              AS customer_id,   -- el comercio es nuestro cliente
     m.trade_name                               AS merchant_name,
     m.mcc,
-    m.risk_level::text                         AS risk_level,
+    -- ::varchar y no ::text a proposito. DMS mapea el `text` de PostgreSQL a
+    -- LOB, y con `SupportLobs = false` en la tarea DESCARTA la columna entera
+    -- sin avisar: el CSV llega al data lake con 16 columnas en vez de 19 y el
+    -- job del Lab 2 muere con KeyError. Son etiquetas cortas, no LOBs.
+    m.risk_level::varchar(16)                  AS risk_level,
     t.terminal_id,
     t.device_serial,
     (c.amount_minor / 100.0)::NUMERIC(14,2)    AS amount,
     c.currency_code                            AS currency,
-    c.channel::text                            AS payment_method,
-    c.status::text                             AS status,
+    c.channel::varchar(16)                     AS payment_method,
+    c.status::varchar(16)                      AS status,
     c.response_code,
     c.rrn,
     c.auth_code,

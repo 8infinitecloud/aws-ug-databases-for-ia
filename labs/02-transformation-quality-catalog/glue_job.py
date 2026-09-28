@@ -88,12 +88,22 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="FinCorp Glue ETL Job — Lab 2")
     parser.add_argument("--S3_BUCKET",       required=True,              help="Nombre del bucket S3")
     parser.add_argument("--RAW_PREFIX",      default="raw/",             help="Prefijo de la zona raw")
+    parser.add_argument("--SOURCE_PATH",     default=DEFAULT_SOURCE_PATH,
+                        help="Ruta de la tabla dentro de raw/, como la escribe DMS")
     parser.add_argument("--CURATED_PREFIX",  default="curated/",         help="Prefijo de la zona curated")
     parser.add_argument("--REJECTED_PREFIX", default="rejected/",        help="Prefijo para registros rechazados")
     parser.add_argument("--REPORTS_PREFIX",  default="quality-reports/", help="Prefijo para reportes de calidad")
     parser.add_argument("--DATABASE_NAME",   default="financial_platform",help="Nombre de la DB en Glue Catalog")
     parser.add_argument("--JOB_NAME",        default="fincorp-glue-etl",  help="Nombre del Glue job (para logs)")
-    return parser.parse_args()
+    # parse_known_args y no parse_args: Glue inyecta sus propios argumentos al
+    # invocar el script —--enable-metrics, --scriptLocation, --python-version y
+    # los que anada en el futuro— y argparse en modo estricto aborta con exit 2
+    # antes de ejecutar una sola linea del job. Con esto se ignoran los que no
+    # son nuestros.
+    args, ajenos = parser.parse_known_args()
+    if ajenos:
+        log.info("argumentos de Glue ignorados: %s", " ".join(ajenos))
+    return args
 
 
 # ── Helpers S3 ────────────────────────────────────────────────────────────────
@@ -141,21 +151,36 @@ def write_json_to_s3(s3_client, data: dict, bucket: str, key: str) -> None:
 
 # ── PASO 1: Leer datos raw ────────────────────────────────────────────────────
 
-def read_raw_data(s3_client, bucket: str, raw_prefix: str) -> tuple[pd.DataFrame, dict]:
-    """Lee todos los CSV de transactions desde S3 raw/ y los concatena."""
-    prefix = f"{raw_prefix}transactions/"
+# DMS no deja los ficheros donde uno esperaria. Su convencion es
+#     <bucket_folder>/<esquema>/<tabla>/LOAD*.csv
+# asi que con bucket_folder=raw y la tabla del Lab 1 sale
+#     raw/acquiring/tbl_transactions_for_ingestion/
+# y no `raw/transactions/`, que es lo que este job leia antes. Los dos labs eran
+# correctos por separado y nunca se habian ejecutado juntos: el job no encontraba
+# nada y fallaba con un FileNotFoundError que culpaba al Lab 1.
+DEFAULT_SOURCE_PATH = "acquiring/tbl_transactions_for_ingestion/"
+
+
+def read_raw_data(s3_client, bucket: str, raw_prefix: str,
+                  source_path: str = DEFAULT_SOURCE_PATH) -> tuple[pd.DataFrame, dict]:
+    """Lee los CSV que dejo DMS en la zona raw y los concatena."""
+    prefix = f"{raw_prefix}{source_path}"
     keys = list_s3_files(s3_client, bucket, prefix)
 
     if not keys:
-        # Fallback: buscar en staging/ (para desarrollo sin DMS)
-        prefix_staging = "staging/transactions/"
-        keys = list_s3_files(s3_client, bucket, prefix_staging)
-        log.warning(f"No se encontraron CSVs en {raw_prefix}transactions/. Usando staging/.")
+        # Compatibilidad con datasets subidos a mano y con el runner local.
+        for alternativa in (f"{raw_prefix}transactions/", "staging/transactions/"):
+            keys = list_s3_files(s3_client, bucket, alternativa)
+            if keys:
+                log.warning("No habia CSVs en %s; usando %s", prefix, alternativa)
+                prefix = alternativa
+                break
 
     if not keys:
         raise FileNotFoundError(
-            f"No se encontraron archivos CSV en s3://{bucket}/{raw_prefix}transactions/ "
-            f"ni en staging/. Asegúrate de que el Lab 1 completó correctamente."
+            f"No se encontraron CSV en s3://{bucket}/{prefix}. "
+            f"Comprueba que la tarea DMS del Lab 1 termino con 'Table completed' "
+            f"y que escribio en esa ruta: DMS usa <bucket_folder>/<esquema>/<tabla>/."
         )
 
     frames = []
@@ -650,7 +675,7 @@ def main() -> None:
 
     # ── Paso 1: Leer raw data ────────────────────────────────────────────────
     log.info("\n[PASO 1/5] Leyendo datos raw desde S3...")
-    raw_df, read_metadata = read_raw_data(s3_client, args.S3_BUCKET, args.RAW_PREFIX)
+    raw_df, read_metadata = read_raw_data(s3_client, args.S3_BUCKET, args.RAW_PREFIX, args.SOURCE_PATH)
 
     # Medir las reglas ANTES de tocar nada: es la foto del problema real.
     raw_metrics = measure_rules(raw_df)

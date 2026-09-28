@@ -110,8 +110,12 @@ def seed_raw_zone(root: Path) -> None:
     asi que el nombre exacto da igual. Se usa el de DMS para que la estructura
     local se parezca a la real.
     """
-    for tabla in ("transactions", "merchants"):
-        destino = root / "raw" / tabla / "LOAD00000001.csv"
+    # Las rutas imitan las de DMS: <bucket_folder>/<esquema>/<tabla>/. Si local
+    # sembrara `raw/transactions/`, el runner pasaria y AWS fallaria, que es
+    # exactamente lo que ocurrio la primera vez que se ejecutaron juntos.
+    for tabla, ruta in (("transactions", "acquiring/tbl_transactions_for_ingestion"),
+                        ("merchants", "acquiring/merchants")):
+        destino = root / "raw" / ruta / "LOAD00000001.csv"
         destino.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(DATASET / f"{tabla}.csv", destino)
 

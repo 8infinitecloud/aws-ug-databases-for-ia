@@ -170,7 +170,13 @@ resource "aws_dms_endpoint" "target_s3" {
     bucket_folder           = "raw"
     service_access_role_arn = aws_iam_role.dms.arn
 
-    data_format      = "csv"
+    data_format = "csv"
+
+    # Sin esto DMS escribe el CSV SIN CABECERA, y el job del Lab 2 —que lee por
+    # nombre de columna— muere con KeyError('amount') tratando la primera fila de
+    # datos como si fuera el encabezado. El valor por defecto es false, asi que
+    # hay que pedirlo explicitamente.
+    add_column_name  = true
     encoding_type    = "plain"
     compression_type = "NONE"
 

@@ -163,7 +163,8 @@ COMMENT ON TABLE webhook_deliveries IS
 -- El filtrado por comercio NO va aqui: lo aplica la API con el merchant_id de la
 -- clave autenticada. Una vista sin filtro que se consulta con el filtro puesto
 -- es mas seguro que una vista que "sabe" quien pregunta.
-CREATE OR REPLACE VIEW v_merchant_operations AS
+DROP VIEW IF EXISTS v_merchant_operations CASCADE;
+CREATE VIEW v_merchant_operations AS
 SELECT
     m.merchant_id,
     c.charge_reference        AS operation_id,
