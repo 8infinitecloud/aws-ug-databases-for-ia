@@ -37,20 +37,28 @@ variable "source_schema" {
 
 variable "source_object" {
   description = <<-DESC
-    Objeto que DMS replica. Por defecto la vista v_transactions_for_ingestion, que
-    entrega el dato ya aplanado y aisla el schema interno del consumidor.
+    Objeto que replica DMS.
+
+    Es una TABLA y no la vista a proposito: DMS full-load no puede replicar
+    vistas de PostgreSQL —falla con "No tables were found at task
+    initialization" antes de consultar nada— ni tampoco vistas materializadas.
+    `payments/schema/004_ingestion_snapshot.sql` crea esta tabla como
+    materializacion de `v_transactions_for_ingestion`, y hay que refrescarla con
+    `SELECT acquiring.refresh_ingestion_snapshot()` antes de cada carga.
   DESC
   type        = string
-  default     = "v_transactions_for_ingestion"
+  default     = "tbl_transactions_for_ingestion"
 }
 
 variable "create_dms_vpc_role" {
   description = <<-DESC
-    Crear el rol `dms-vpc-role` de la cuenta.
+    Crear los roles de cuenta que DMS exige con nombre fijo:
+    `dms-vpc-role` y `dms-cloudwatch-logs-role`.
 
-    DMS exige un rol con ESE nombre exacto para crear subnet groups: no mira el
-    rol del modulo, por muchos permisos que tenga. Es un prerrequisito de cuenta,
-    no de este lab.
+    DMS exige esos nombres exactos: no mira el rol del modulo, por muchos
+    permisos que tenga. Son prerrequisitos de cuenta, no de este lab. Sin el
+    primero no se puede crear el subnet group; sin el segundo, la tarea no
+    escribe logs y sus fallos son indiagnosticables.
 
     Ponlo a false si tu cuenta ya lo tiene —pasa en cuentas donde alguien uso DMS
     antes— o el apply fallara con EntityAlreadyExists. Para saberlo:

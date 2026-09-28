@@ -85,39 +85,56 @@ terraform -chdir=infra/lab1 apply -var mysql_version=8.0.44
 
 ### DMS: `No tables were found at task initialization`
 
-**Estado: sin resolver. Bloquea el Lab 1.** Encontrado desplegando en una cuenta
-real el 2026-09-28.
+**Causa: DMS full-load no puede replicar una vista de PostgreSQL.** Diagnosticado
+el 2026-09-28 contra Aurora PostgreSQL 16.10.
 
-La tarea arranca, llega al 100 % de progreso y termina en `FATAL_ERROR` con cero
-tablas cargadas. El bucket queda vacío.
+La tarea falla en menos de un segundo, antes de consultar nada: el Metadata
+Manager devuelve una lista vacía y la tarea muere en `FATAL_ERROR`.
 
-Lo que **sí** está comprobado y descartado:
+Aislado probando cada caso por separado sobre el mismo endpoint:
 
-| Comprobación | Resultado |
-|---|---|
-| Conexión al endpoint origen (Aurora) | `successful` |
-| Conexión al endpoint destino (S3) | `successful` (tras añadir el VPC endpoint) |
-| `database_name` del endpoint | `acquiring`, correcto |
-| Usuario | el maestro del cluster, que creó el esquema |
-| Esquema en Aurora | 17 tablas, verificado desde la propia base |
-| Selección de la vista | falla |
-| Selección de una **vista materializada** | falla igual |
-| Selección de **todas** las tablas (`table-name: "%"`) | **falla igual** |
-| `exposeViews=true` en el endpoint | no cambia nada |
+| Objeto seleccionado | Tipo | Resultado |
+|---|---|---|
+| `v_transactions_for_ingestion` | vista | **failed**, 0 tablas |
+| `mv_transactions_for_ingestion` | vista materializada | **failed**, 0 tablas |
+| `charges` | tabla | `Table completed` |
+| `tbl_transactions_for_ingestion` | tabla | `Table completed` |
+| `%` (todas) | tablas | replica las que tienen datos |
 
-Que falle con `%` es lo decisivo: **no es un problema de vistas**. DMS conecta a
-la base pero no enumera ningún objeto del esquema `acquiring`.
+Ni siquiera `exposeViews=true` en el endpoint cambia nada: esa opción es de
+Oracle, no de PostgreSQL.
 
-Pistas para quien lo retome:
+**La solución** está en `payments/schema/004_ingestion_snapshot.sql`: una tabla
+real que materializa la vista, más `refresh_ingestion_snapshot()` para
+rellenarla antes de cada carga. La vista se conserva como contrato legible; la
+tabla existe sólo para DMS.
 
-- Revisar los `GRANT` que DMS pide para PostgreSQL más allá de ser superusuario
-- Comprobar si DMS busca en `public` y no respeta `schema-name`
-- Probar con una tabla en `public` para aislar si es el esquema o la enumeración
-- Revisar `search_path` del usuario
+```sql
+SELECT acquiring.refresh_ingestion_snapshot();   -- antes de arrancar la tarea
+```
 
-**Consecuencia para el ADR-019:** decidió replicar una vista con `full-load`.
-Esa decisión no se puede validar hasta resolver esto, y si el problema resulta
-ser la enumeración de objetos, el ADR entero hay que revisarlo.
+> **Para diagnosticar esto hacían falta los logs de la tarea, y no existían.**
+> Ver la sección siguiente: sin `dms-cloudwatch-logs-role`, DMS ignora
+> `EnableLogging` en silencio.
+
+---
+
+### DMS ignora `EnableLogging` y no escribe ningún log
+
+DMS asume un rol llamado **exactamente** `dms-cloudwatch-logs-role` para escribir
+los logs de la tarea. Si no existe, no avisa: el ajuste dice que loguea, la tarea
+corre, y no aparece ningún log group.
+
+Eso convierte cualquier fallo en indiagnosticable. Es el segundo rol de cuenta
+con nombre cableado que DMS exige, junto a `dms-vpc-role`; los crea
+`infra/lab1/dms.tf` salvo que pongas `create_dms_vpc_role = false`.
+
+Comprobar:
+
+```bash
+aws iam get-role --role-name dms-cloudwatch-logs-role
+aws logs describe-log-groups --query 'logGroups[?contains(logGroupName,`dms-tasks`)].logGroupName'
+```
 
 ---
 

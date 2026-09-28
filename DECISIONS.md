@@ -706,26 +706,42 @@ La plataforma tiene **dos velocidades de ingesta**, cada una con el mecanismo qu
 - La narrativa mejora: **batch para la historia, streaming para el presente** es como funcionan las plataformas de datos reales. Intentar que un solo mecanismo haga las dos cosas es el error común.
 - La tarea DMS se puede reejecutar: `TargetTablePrepMode = DROP_AND_CREATE` rehace la carga entera.
 
-### Revisión del 2026-09-28, tras desplegar
+### Revisión del 2026-09-28, tras desplegar y diagnosticar
 
-**Esta decisión no se ha podido validar, y puede que sea inviable.**
+**La decisión se sostiene, pero le faltaba una pieza que sólo apareció
+desplegando.**
 
-Al desplegar en una cuenta real, la tarea DMS termina en `FATAL_ERROR` con
-`No tables were found at task initialization`. Se probó con la vista, con una
-vista materializada y con **todas las tablas del esquema** (`table-name: "%"`):
-falla igual en los tres casos.
+Este ADR dice que DMS no puede hacer CDC sobre una vista porque una vista no
+tiene WAL, y de ahí concluye `full-load`. Eso es correcto. Lo que daba por hecho
+sin comprobarlo es que el **full-load sí podría** leerla.
 
-Que falle también con `%` significa que **el problema no son las vistas**: DMS
-conecta a Aurora correctamente —el test de conexión da `successful`— pero no
-enumera ningún objeto del esquema `acquiring`.
+No puede. Aislado contra Aurora PostgreSQL 16.10:
 
-Hasta resolverlo no se puede afirmar ni que el full-load sobre una vista
-funcione ni que no. El diagnóstico detallado, con lo comprobado y lo descartado,
-está en [`docs/troubleshooting.md`](docs/troubleshooting.md).
+| Objeto | Tipo | Resultado |
+|---|---|---|
+| `v_transactions_for_ingestion` | vista | `failed`, 0 tablas |
+| `mv_...` | vista materializada | `failed`, 0 tablas |
+| `charges` | tabla | `Table completed` |
 
-Lo que sí quedó resuelto por el camino: la instancia DMS no tenía **ningún**
-camino de red a S3 (sin NAT y sin VPC endpoint). Se añadió un Gateway Endpoint
-de S3, que es gratis. Eso era un bloqueo anterior e independiente.
+DMS falla antes de consultar la base: el Metadata Manager devuelve una lista
+vacía en menos de un segundo. `exposeViews=true` no ayuda — esa opción es de
+Oracle.
+
+**El arreglo conserva el objetivo del ADR.** `004_ingestion_snapshot.sql` crea
+`tbl_transactions_for_ingestion`, una tabla real que materializa la vista, y
+`refresh_ingestion_snapshot()` la rellena antes de cada carga. La vista se
+mantiene como contrato legible y como lo que se consulta a mano; la tabla existe
+sólo porque DMS no sabe leer vistas.
+
+El precio —refrescar antes de cargar— no cambia la naturaleza del pipeline: el
+full load ya era bajo demanda y no continuo. Sigue siendo **batch para la
+historia, streaming para el presente**.
+
+> **Corrección de una corrección.** El commit `8b59247` afirmó que el problema
+> «no eran las vistas, porque falla también con `%`». Era falso: esa corrida sí
+> funcionó y escribió cuatro ficheros en S3; comprobé el bucket antes de que
+> terminara. La lección se repite en esta sesión: medir antes de que el proceso
+> acabe produce conclusiones invertidas.
 
 ---
 

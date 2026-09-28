@@ -112,7 +112,10 @@ resource "aws_security_group" "dms" {
 resource "aws_dms_replication_subnet_group" "main" {
   # Sin esta dependencia Terraform crea el subnet group y el rol en paralelo, y
   # DMS falla porque el rol todavia no esta.
-  depends_on = [aws_iam_role_policy_attachment.dms_vpc_role]
+  depends_on = [
+    aws_iam_role_policy_attachment.dms_vpc_role,
+    aws_iam_role_policy_attachment.dms_cloudwatch_logs_role,
+  ]
 
   replication_subnet_group_id          = "${var.project_name}-${var.environment}-dms-subnet"
   replication_subnet_group_description = "Subnets privadas del core para DMS"
@@ -276,4 +279,40 @@ resource "aws_iam_role_policy_attachment" "dms_vpc_role" {
 
   role       = aws_iam_role.dms_vpc_role[0].name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonDMSVPCManagementRole"
+}
+
+# =============================================================================
+# El rol de logs que DMS tampoco crea solo
+# =============================================================================
+# `EnableLogging = true` en los task settings NO basta. DMS escribe los logs de
+# la tarea asumiendo un rol llamado exactamente `dms-cloudwatch-logs-role`, y si
+# no existe **no avisa**: la tarea corre, el ajuste dice que loguea, y no hay
+# log group en ninguna parte.
+#
+# Eso convierte cualquier fallo de la tarea en indiagnosticable, que es
+# exactamente lo que paso: `No tables were found at task initialization` sin una
+# sola linea de log que dijera que consulto DMS.
+
+resource "aws_iam_role" "dms_cloudwatch_logs_role" {
+  count = var.create_dms_vpc_role ? 1 : 0
+
+  name = "dms-cloudwatch-logs-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "dms.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+
+  tags = { Name = "dms-cloudwatch-logs-role" }
+}
+
+resource "aws_iam_role_policy_attachment" "dms_cloudwatch_logs_role" {
+  count = var.create_dms_vpc_role ? 1 : 0
+
+  role       = aws_iam_role.dms_cloudwatch_logs_role[0].name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonDMSCloudWatchLogsRole"
 }
