@@ -267,7 +267,18 @@ def confirm_intent(
         # Fuera del `with`: el evento se publica cuando el cobro ya esta
         # confirmado en la base. Publicar dentro anunciaria un cobro que todavia
         # podria deshacerse.
-        _publish(charge, intent, terminal)
+        #
+        # Y solo si el cobro es NUEVO. El POS reconfirma al detectar SUCCEEDED
+        # para leer los datos del comprobante, y sin esta guarda cada pago por QR
+        # publicaba DOS eventos identicos. El scoring del Lab 4 los contaba como
+        # dos operaciones: los velocity checks saltaban a la mitad del umbral
+        # real. Visto en el dispositivo: un cobro daba "2 tx / 61.00" en la
+        # ventana.
+        if not charge.get("already_captured"):
+            _publish(charge, intent, terminal)
+        else:
+            log.info("cobro %s ya existia; no se republica el evento",
+                     charge.get("charge_reference"))
         return 200, ChargeResponse(**charge).model_dump(mode="json")
 
     status_code, saved = _with_idempotency(

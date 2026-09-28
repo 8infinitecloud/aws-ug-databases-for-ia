@@ -536,3 +536,24 @@ def test_el_evento_lleva_el_mcc_del_comercio(client, ref, eventos):
     # siembra 002_seed.sql.
     assert evento["mcc"] == "5812"
     assert evento["risk_level"] in {"LOW", "MEDIUM", "HIGH"}
+
+
+def test_reconfirmar_no_republica_el_evento(client, ref, eventos):
+    """
+    Un cobro publica UN evento, aunque se confirme dos veces.
+
+    El POS reconfirma al detectar SUCCEEDED para leer los datos del
+    comprobante. Sin la guarda, cada pago por QR publicaba dos eventos
+    idénticos y el scoring del Lab 4 los contaba como dos operaciones: los
+    velocity checks saltaban a la mitad del umbral real. Visto en el
+    dispositivo, no en los tests.
+    """
+    _crear(client, ref, amount=3050)
+    _confirmar(client, ref, key=f"a-{ref}")
+    assert len(eventos) == 1, "el primer cobro debe publicar un evento"
+
+    # La reconfirmación devuelve el mismo cobro y NO publica otro.
+    segunda = _confirmar(client, ref, key=f"b-{ref}")
+    assert segunda.status_code == 200
+    assert segunda.json()["charge_reference"] == eventos[0]["transaction_id"]
+    assert len(eventos) == 1, "reconfirmar republicó el evento"

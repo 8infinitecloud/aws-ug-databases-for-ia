@@ -403,7 +403,15 @@ def _existing_charge(conn: Connection, intent_pk: int, intent: dict) -> dict:
         row = cur.fetchone()
     if row is None:
         raise AcquiringError("la intencion esta cobrada pero no se encuentra el cobro", 500)
-    return {"intent_reference": intent["intent_reference"], "decline_reason": None, **row}
+    return {
+        "intent_reference": intent["intent_reference"],
+        "decline_reason": None,
+        # Marca que esto NO es un cobro nuevo: es el que ya existia. Quien
+        # publica eventos tiene que saberlo para no anunciar dos veces la misma
+        # operacion.
+        "already_captured": True,
+        **row,
+    }
 
 
 def get_terminal_context(conn: Connection, terminal_pk: int | None) -> dict:
