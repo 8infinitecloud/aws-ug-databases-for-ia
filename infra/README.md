@@ -1,128 +1,134 @@
-# Infraestructura — Terraform
-
-Toda la infraestructura de los tres labs. Un módulo raíz por lab, con state
-independiente: si el Lab 1 se rompe, el Lab 3 sigue desplegable.
+# Infraestructura
 
 ```
 infra/
-├── bootstrap/        crea el backend remoto (se corre UNA vez)
-├── lab1/             VPC, RDS MySQL, DMS, S3 data lake
-├── lab2/             Glue Job, Crawler, Catalog, DQ Ruleset
-└── lab3/             Aurora pgvector, Redis, DynamoDB, S3, EC2
+├── bootstrap/   ← META: el backend de Terraform. Se ejecuta UNA vez.
+├── payments/    ← EL CORE: el sistema transaccional. Todo orbita aquí.
+├── lab1/        ← Ingesta: del core al data lake
+├── lab2/        ← Transformación, calidad y catálogo
+└── lab3/        ← IA sobre los datos curados
 ```
+
+---
+
+## Tres niveles, y por qué están al mismo nivel de directorio
+
+Es una pregunta razonable, porque los tres niveles son distintos:
+
+| Nivel | Módulo | Qué es |
+|-------|--------|--------|
+| **Meta** | `bootstrap/` | Infraestructura **para Terraform**, no para la aplicación |
+| **Core** | `payments/` | El sistema transaccional. El origen del dato |
+| **Soluciones** | `lab1/`, `lab2/`, `lab3/` | Lo que se construye **sobre** el core |
+
+### ¿Por qué `bootstrap/` no va dentro de `payments/`?
+
+Porque su `backend.hcl` lo consumen **los cuatro módulos**, el helper
+`scripts/lib/tf.sh` y dos workflows. Si viviera dentro de `payments/`, entonces
+`lab1`, `lab2` y `lab3` dependerían de payments **solo para tener dónde guardar su
+state** — una dependencia falsa que además invertiría el orden de arranque.
+
+El state bucket no es una preocupación de pagos: es una preocupación de Terraform.
+Está un nivel por debajo de todo lo demás, y por eso es el primero que se aplica y
+el único que sobrevive al cleanup.
+
+---
+
+## El grafo de dependencias
+
+```
+bootstrap                 (todos necesitan su backend.hcl)
+    │
+    ▼
+payments  ◀── EL CORE: Aurora Serverless, Fargate, API Gateway
+    │
+    ▼
+  lab1    ── DMS desde Aurora ──▶ S3 raw/
+    │
+    ▼
+  lab2    ── Glue: raw/ ──▶ curated/ + catálogo
+
+  lab3    ── independiente: su propio Aurora con pgvector para el RAG
+```
+
+| Módulo | Lee el state de | Por qué |
+|--------|-----------------|---------|
+| `payments` | — | Es el core: no depende de nada |
+| `lab1` | **`payments`** | VPC, subnets, endpoint de Aurora y su secreto |
+| `lab2` | `lab1` | El bucket del data lake |
+| `lab3` | — | Tiene su propia infraestructura para el vector store |
+
+> `lab3` es independiente a propósito: si el core falla en la charla, el Lab 3
+> arranca igual. Ver ADR-016.
+
+---
+
+## Orden de despliegue
+
+```bash
+export TF_VAR_db_password='CambiaEstaPassword2026!'
+
+# 1. Una vez por cuenta AWS
+cd infra/bootstrap && terraform init && terraform apply
+
+# 2. El core (~10 min, casi todo Aurora)
+cd ../payments
+terraform init -backend-config=../backend.hcl && terraform apply
+
+# 3. El schema del core, sobre Aurora
+#    (subnets privadas: hace falta túnel SSM o ejecutarlo dentro de la VPC)
+for f in ../../payments/schema/00*.sql; do psql "$CONN" -f "$f"; done
+
+# 4. Los labs
+cd ../lab1 && terraform init -backend-config=../backend.hcl && terraform apply
+cd ../lab2 && terraform init -backend-config=../backend.hcl && terraform apply
+cd ../lab3 && terraform init -backend-config=../backend.hcl && terraform apply
+```
+
+Los scripts de cada lab (`labs/*/scripts/setup.sh`) hacen los pasos 4 y siguientes,
+y comprueban que el core exista antes de empezar.
+
+---
+
+## Orden de destrucción: inverso, y con un matiz
+
+```bash
+cd infra/lab2 && terraform destroy     # antes que lab1: escribe en su bucket
+cd ../lab1    && terraform destroy     # antes que payments: sus ENIs de DMS
+                                       # bloquearían el borrado de las subnets
+cd ../lab3    && terraform destroy     # independiente, en cualquier momento
+cd ../payments && terraform destroy
+```
+
+`bootstrap` **no se destruye**: el bucket tiene `prevent_destroy` porque contiene
+el state de todo lo demás. Cuesta céntimos al mes.
 
 ---
 
 ## Por qué el state va remoto
 
-El `terraform.tfstate` describe toda la infraestructura del demo, **y guarda las
-contraseñas de RDS y Aurora en claro**. Nunca se commitea (está en
-`.gitignore`), y vive en S3 por dos razones:
+El `terraform.tfstate` describe toda la infraestructura **y guarda las contraseñas
+de Aurora en claro**. Nunca se commitea (está en `.gitignore`), y vive en S3 por dos
+razones:
 
-1. La demo se despliega desde dos sitios — tu laptop y GitHub Actions. Con state
+1. La demo se despliega desde dos sitios — tu portátil y GitHub Actions. Con state
    local, el workflow arrancaría de cero e intentaría recrear lo que ya existe.
 2. La tabla DynamoDB de locks evita que dos `apply` simultáneos lo corrompan.
 
----
-
-## Primera vez: bootstrap
-
-Es el problema del huevo y la gallina — este módulo crea el bucket donde vivirá
-el state de todo lo demás, así que su propio state es local.
-
-```bash
-cd infra/bootstrap
-terraform init
-terraform apply
-```
-
-Crea el bucket `fincorp-datalake-tfstate-<account-id>`, la tabla de locks, y
-escribe `infra/backend.hcl`, que es lo que consumen los tres labs.
-
-> Solo se ejecuta una vez por cuenta AWS. El bucket tiene `prevent_destroy`:
-> un `terraform destroy` aquí sería irreversible para los otros tres módulos.
+`infra/backend.hcl` lo genera `bootstrap` y lleva tu account id, así que también
+está en `.gitignore`. Los workflows lo reconstruyen desde la identidad que asumen
+por OIDC.
 
 ---
 
-## Desplegar un lab
+## Coste
 
-Los tres siguen el mismo patrón. La contraseña va por variable de entorno, nunca
-en un fichero:
+| Módulo | En reposo | Notas |
+|--------|-----------|-------|
+| `bootstrap` | ~$0.01/mes | S3 + DynamoDB on-demand |
+| `payments` | **~$0.11/hora** | Aurora (0.5 ACU) y el ALB no bajan a cero |
+| `lab1` | **~$0.068/hora** | La instancia de DMS. No escala a cero |
+| `lab2` | **$0** | Glue solo cobra cuando corre |
+| `lab3` | **~$0.12/hora** | Aurora, Redis y EC2 |
 
-```bash
-export TF_VAR_db_password="FinCorp2026!"
-
-cd infra/lab1
-terraform init -backend-config=../backend.hcl
-terraform plan
-terraform apply
-```
-
-El `-backend-config` es obligatorio la primera vez en cada módulo: el bloque
-`backend` de Terraform no admite interpolación, así que el nombre del bucket
-(que lleva el account id) no puede vivir dentro de `backend.tf`.
-
-### Orden y dependencias
-
-| Módulo | Depende de | Tiempo | Notas |
-|--------|-----------|--------|-------|
-| `bootstrap` | — | ~30 s | Una sola vez por cuenta |
-| `lab1` | bootstrap | ~15 min | La instancia DMS es lo que tarda |
-| `lab2` | **lab1** | ~1 min | Lee el state del Lab 1 |
-| `lab3` | bootstrap | ~20 min | Independiente de los Labs 1 y 2 |
-
-El Lab 2 lee los outputs del Lab 1 con `terraform_remote_state`. En
-CloudFormation había que copiar el nombre del bucket a mano entre stacks; aquí
-si el Lab 1 cambia de bucket, el Lab 2 se entera solo.
-
-Los Labs 1 y 3 son independientes: se pueden lanzar en paralelo, que es
-justo lo que hace el runbook para no esperar 35 minutos en serie.
-
----
-
-## Variables
-
-Todas tienen default salvo las contraseñas.
-
-| Variable | Módulo | Default |
-|----------|--------|---------|
-| `db_password` | lab1, lab3 | **sin default** — `export TF_VAR_db_password=...` |
-| `aws_region` | todos | `us-east-1` |
-| `project_name` | bootstrap, lab1, lab2 | `fincorp-datalake` |
-| `project_name` | lab3 | `rag-lab` |
-| `environment` | lab1, lab2 | `lab` |
-| `mysql_version` | lab1 | `8.0.43` |
-| `aurora_engine_version` | lab3 | `16.10` |
-
-> Las versiones de motor están fijadas a propósito. AWS deprecia versiones y
-> deja de permitir crear instancias nuevas con ellas — es exactamente lo que
-> pasaba con Aurora 16.4 y con el `"8.0"` genérico de MySQL.
-
----
-
-## Destruir
-
-En orden inverso, y el Lab 2 antes que el Lab 1: el Lab 2 escribe en el bucket
-que crea el Lab 1.
-
-```bash
-cd infra/lab2 && terraform destroy
-cd ../lab1 && terraform destroy
-cd ../lab3 && terraform destroy
-```
-
-Los buckets de datos llevan `force_destroy = true`, así que `destroy` se lleva
-también los objetos versionados. El bucket del **state** no: ese sobrevive a
-propósito.
-
----
-
-## Consultar outputs
-
-Los scripts de cada lab los leen de aquí, así que están disponibles igual:
-
-```bash
-cd infra/lab1
-terraform output                      # todos
-terraform output -raw s3_bucket_name  # uno solo, sin comillas
-```
+Detalle en [COST_ESTIMATE.md](../COST_ESTIMATE.md).

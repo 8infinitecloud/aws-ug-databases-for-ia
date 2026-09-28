@@ -21,31 +21,25 @@ variable "environment" {
   }
 }
 
-variable "db_username" {
-  description = "Usuario administrador de RDS MySQL"
+variable "state_bucket" {
+  description = <<-DESC
+    Bucket del state remoto. Lo rellena scripts/setup.sh desde ../backend.hcl.
+    Hace falta para leer el state de infra/payments, que es el sistema origen.
+  DESC
   type        = string
-  default     = "fincorpadmin"
 }
 
-variable "db_password" {
-  description = "Contrasena de RDS MySQL (export TF_VAR_db_password=...)"
+variable "source_schema" {
+  description = "Schema de Aurora del que replica DMS"
   type        = string
-  sensitive   = true
-
-  validation {
-    condition     = length(var.db_password) >= 8
-    error_message = "Minimo 8 caracteres."
-  }
+  default     = "acquiring"
 }
 
-variable "db_name" {
-  description = "Nombre de la base de datos en RDS"
+variable "source_object" {
+  description = <<-DESC
+    Objeto que DMS replica. Por defecto la vista v_transactions_for_ingestion, que
+    entrega el dato ya aplanado y aisla el schema interno del consumidor.
+  DESC
   type        = string
-  default     = "fincorp"
-}
-
-variable "mysql_version" {
-  description = "Version de RDS MySQL. Debe ser una version concreta, no '8.0'."
-  type        = string
-  default     = "8.0.43"
+  default     = "v_transactions_for_ingestion"
 }

@@ -164,7 +164,7 @@ else
   echo "  Revisa los errores arriba. Causas comunes:"
   echo "  - DMS task no iniciada: inicia manualmente desde la consola"
   echo "  - DMS task en progreso: espera a que complete el Full Load (~2 min)"
-  echo "  - RDS sin datos: ejecuta seed.sql manualmente"
+  echo "  - La vista del core esta vacia: aplica payments/schema/ sobre Aurora"
 fi
 echo "============================================================"
 echo ""

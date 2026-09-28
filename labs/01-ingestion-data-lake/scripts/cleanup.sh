@@ -3,12 +3,12 @@
 # cleanup.sh — Lab 1: Eliminar todos los recursos AWS
 # =============================================================================
 # EJECUTAR AL TERMINAR EL LAB.
-# Costo estimado si se dejan corriendo: ~$0.09/hr (RDS + DMS)
+# Costo estimado si se deja corriendo: ~$0.068/hr (la instancia de DMS)
 #
 # Acciones:
 #   1. Para la tarea DMS si está corriendo
 #   2. Vacía el bucket S3 (objetos versioned)
-#   3. Elimina el CloudFormation stack (VPC, RDS, DMS, S3, IAM, Secrets)
+#   3. Destruye el modulo: DMS, S3 e IAM. NO toca el core (infra/payments).
 #   4. Confirma que no quedan recursos
 #
 # Uso: ./cleanup.sh
@@ -42,12 +42,12 @@ echo "============================================================"
 echo ""
 echo "  Esto eliminará PERMANENTEMENTE:"
 echo "  - Todo el modulo Terraform infra/lab1"
-echo "  - VPC + Subnets + Security Groups"
-echo "  - RDS MySQL (${PROJECT_NAME}-${ENVIRONMENT}-mysql)"
 echo "  - DMS Replication Instance + Endpoints + Task"
-echo "  - S3 Bucket + todos los objetos (raw/, curated/, staging/)"
-echo "  - Secrets Manager secret"
-echo "  - IAM Role DMS"
+echo "  - S3 Bucket del data lake + todos los objetos (raw/, curated/, staging/)"
+echo "  - Security Group e IAM Role de DMS"
+echo ""
+echo "  NO toca el core (infra/payments): ni Aurora, ni la VPC, ni el backend."
+echo "  Para eso: cd infra/payments && terraform destroy"
 echo ""
 read -r -p "  ¿Confirmar? (escribe 'si' para continuar): " CONFIRM
 
@@ -145,12 +145,13 @@ fi
 
 # ── [3/4] Destruir la infraestructura ─────────────────────────────────────────
 echo ""
-info "[3/4] Ejecutando terraform destroy (VPC, RDS, DMS, S3, IAM)..."
+info "[3/4] Ejecutando terraform destroy (DMS, S3, IAM)..."
 info "      Tiempo estimado: ~5-10 minutos"
 
-# terraform destroy necesita las variables sin default para poder planificar,
-# aunque el valor no se use para borrar nada.
-export TF_VAR_db_password="${DB_PASSWORD:-placeholder-no-usado-en-destroy}"
+# destroy necesita las variables sin default para poder planificar. state_bucket
+# hace falta porque este modulo lee el state de payments.
+TF_STATE_BUCKET=$(grep -E '^\s*bucket\s*=' "${TF_BACKEND_CONFIG}" | head -1 | sed 's/.*= *"\(.*\)"/\1/')
+export TF_VAR_state_bucket="${TF_STATE_BUCKET}"
 export TF_VAR_project_name="${PROJECT_NAME}"
 export TF_VAR_environment="${ENVIRONMENT}"
 export TF_VAR_aws_region="${REGION}"
@@ -178,15 +179,11 @@ echo "============================================================"
 echo ""
 echo "  Recursos eliminados:"
 echo "  ✓ Modulo Terraform infra/lab1"
-echo "  ✓ VPC + Networking"
-echo "  ✓ RDS MySQL"
 echo "  ✓ DMS Replication Instance + Task"
 echo "  ✓ S3 Bucket + objetos"
-echo "  ✓ Secrets Manager"
 echo "  ✓ IAM Role DMS"
 echo ""
 echo "  Verifica en la consola AWS que no queden recursos:"
-echo "  - https://console.aws.amazon.com/rds"
 echo "  - https://console.aws.amazon.com/dms"
 echo "  - https://console.aws.amazon.com/s3"
 echo ""

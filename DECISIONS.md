@@ -10,6 +10,7 @@ Cada decisión de arquitectura relevante está documentada aquí en formato ADR.
 | 010–013 | Lab 2 | Glue Python Shell, medición en tres etapas, rechazo vs corrección, y cómo llega a la IA |
 | 014–016 | Transversal | Terraform, state remoto, acoplamiento entre labs |
 | 017 | Lab 3 | El puente léxico entre los datos y el corpus |
+| 018 | Transversal | `payments` es el core; los labs orbitan |
 
 Las decisiones que se apartan a propósito de lo que pediría producción están en
 [docs/well-architected.md](docs/well-architected.md).
@@ -625,3 +626,82 @@ No es un glosario artificial: es el documento que cualquier empresa tiene de ver
 - El corpus pasa de 7 a 8 documentos. La sección de `rejected/` da además la mejor respuesta de la charla: un registro rechazado **existió y no está siendo vigilado**, así que es una brecha de compliance, no un problema de datos.
 - `tests/test_glue_job.py` fija el puente: si alguien añade un valor nuevo al generador del dataset y no lo documenta en el corpus, el test falla. Son 23 tests nuevos, uno por valor.
 - La matriz de decisión cabe entera en un chunk de 1000 caracteres **con su cabecera**, verificado con el mismo splitter que usa la ingesta. Sin la cabecera, una fila como `| WITHDRAWAL | HIGH | … |` no significa nada al recuperarse sola.
+
+---
+
+## ADR-018: `payments` es el core, y los labs orbitan
+
+**Frase para la presentación:** *"El Lab 1 no crea una base de datos: replica la que ya existe. Duplicar el sistema origen era el error."*
+
+| Campo | Valor |
+|-------|-------|
+| **Título** | Dónde vive el sistema transaccional y quién depende de quién |
+| **Fecha** | 2026-09-28 |
+| **Estado** | Aceptado (revisa la estructura anterior, donde el Lab 1 creaba su propio RDS) |
+
+### Contexto
+
+El Lab 1 creaba su propia VPC, sus subnets, sus security groups y un **RDS MySQL entero** con su parameter group y su secreto. Cuando apareció `infra/payments` con Aurora Serverless, todo eso quedó duplicado: dos sistemas transaccionales, dos VPC, dos secretos.
+
+Peor que la duplicación: dejaba ambiguo **cuál es el origen del dato**, que es justo la tesis de la charla.
+
+### Decisión Tomada
+
+`infra/payments` es el core y el único sistema transaccional. El Lab 1 conserva solo lo que le corresponde —el data lake y la replicación— y lee del state de payments la VPC, las subnets, el endpoint de Aurora y su secreto.
+
+El grafo queda: `bootstrap → payments → lab1 → lab2`, con `lab3` independiente.
+
+### Alternativas Consideradas
+
+| Alternativa | Por qué no |
+|-------------|-----------|
+| **Dejar el RDS MySQL del Lab 1** | Dos orígenes de dato, y el participante no sabría cuál es el real |
+| **Mover `bootstrap` dentro de `payments`** | Su `backend.hcl` lo consumen los cuatro módulos, el helper de shell y dos workflows. `lab1`, `lab2` y `lab3` acabarían dependiendo de payments **solo para tener dónde guardar su state**: una dependencia falsa que invierte el orden de arranque |
+| **Que el Lab 1 cree su propia VPC y haga peering** | Complejidad sin lección |
+| **Que payments incluya el data lake** | El data lake es la plataforma de datos, no el sistema transaccional. Mezclarlos borra la frontera que el workshop enseña |
+
+### Consecuencias
+
+- El Lab 1 baja de ~20 tipos de recurso a 7: DMS, su security group, su rol y el bucket.
+- El Lab 1 **ya no recibe ninguna contraseña**: lee las credenciales del Secrets Manager de payments.
+- `scripts/setup.sh` del Lab 1 comprueba que el core esté desplegado antes de aplicar, y falla con un mensaje claro si no.
+- Al destruir, el Lab 1 va **antes** que payments: sus ENIs de DMS bloquearían el borrado de las subnets.
+- Desaparecen los outputs `rds_endpoint` y `secret_arn`, sustituidos por `source_aurora_endpoint` y `source_object`.
+
+---
+
+## ADR-019: DMS hace full load, no CDC, y por una razón técnica
+
+**Frase para la presentación:** *"DMS no puede hacer CDC sobre una vista: una vista no tiene WAL. Así que el batch carga la historia y el streaming lleva lo que pasa ahora."*
+
+| Campo | Valor |
+|-------|-------|
+| **Título** | Modo de replicación del Lab 1 |
+| **Fecha** | 2026-09-28 |
+| **Estado** | Aceptado |
+
+### Contexto
+
+El Lab 1 replica `acquiring.v_transactions_for_ingestion`, una **vista** que entrega el dato aplanado y aísla el schema interno del consumidor.
+
+Pero **DMS no puede hacer CDC sobre una vista.** El CDC lee el WAL de PostgreSQL, y una vista no tiene WAL propio: no es una tabla, es una consulta. El full load sí puede leerla, porque es un `SELECT` normal.
+
+### Decisión Tomada
+
+`MigrationType = full-load`. La vista se mantiene, y el tiempo real lo cubre el otro camino: terminal → IoT Core → Firehose → S3.
+
+La plataforma tiene **dos velocidades de ingesta**, cada una con el mecanismo que le corresponde.
+
+### Alternativas Consideradas
+
+| Alternativa | Por qué no |
+|-------------|-----------|
+| **CDC sobre las tablas base** (`charges`, `merchants`, `terminals`, `balance_transactions`) | Funciona, pero obliga a rehacer el JOIN en Glue y expone el schema interno al consumidor, que es lo que la vista evita |
+| **Una tabla materializada que replique la vista** | Tendría WAL y permitiría CDC, pero añade un trigger o un proceso que mantenerla sincronizada. Maquinaria para un problema que el streaming ya resuelve |
+| **Renunciar a la vista** | Se pierde el aislamiento, y el Lab 2 tendría que conocer el modelo del adquirente |
+
+### Consecuencias
+
+- `rds.logical_replication` sigue habilitado en payments: no hace falta para este full load, pero sí si algún día se quiere CDC sobre las tablas base, y activarlo después exige reiniciar el cluster.
+- La narrativa mejora: **batch para la historia, streaming para el presente** es como funcionan las plataformas de datos reales. Intentar que un solo mecanismo haga las dos cosas es el error común.
+- La tarea DMS se puede reejecutar: `TargetTablePrepMode = DROP_AND_CREATE` rehace la carga entera.
