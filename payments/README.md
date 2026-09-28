@@ -44,7 +44,7 @@ de demo y como dueño del POS físico que se usa en la charla.
 |---|---|
 | `schema/` | Modelo transaccional del adquirente (Aurora PostgreSQL Serverless v2) |
 | `backend/` | API de adquirencia sobre Fargate |
-| `web/` | Página de pago QR (S3 static website) |
+| `web/` | Página de pago QR, servida por la propia API en `/pay/{ref}` |
 | `firmware/` | Firmware del terminal que provisionamos (M5Stack Core2 for AWS IoT Kit) |
 
 La infraestructura está en [`../infra/payments/`](../infra/payments/).
@@ -60,7 +60,7 @@ La infraestructura está en [`../infra/payments/`](../infra/payments/).
 | Dominio de adquirencia (autorizar, capturar, libro mayor) | ✅ Probado contra PostgreSQL real |
 | API HTTP + idempotencia | ✅ 19 tests de integración · imagen construida |
 | Terraform (Aurora, Fargate, API Gateway) | ✅ `plan` verificado · **no desplegado** |
-| Web de pago QR | 🔲 Pendiente |
+| Web de pago QR | ✅ Servida en `/pay/{ref}` · mismo origen, sin CORS |
 | Firmware del terminal | 🔲 Pendiente |
 
 Lo único que falta por validar es un despliegue real en AWS. Todo lo demás se
@@ -98,6 +98,7 @@ Tres rutas, que son las tres cosas que pasan en un cobro:
 | `POST /v1/intents` | el POS | cierra el carrito y crea la intención |
 | `GET /v1/intents/{ref}` | la web del QR | lee importe y comercio antes de confirmar |
 | `POST /v1/intents/{ref}/confirm` | POS o web | autoriza, captura y asienta en el libro mayor |
+| `GET /pay/{ref}` | el móvil que escanea | la página de pago del QR |
 
 Más `GET /health`, que es lo que consulta el health check del ALB.
 
@@ -106,6 +107,12 @@ Dos decisiones que conviene conocer antes de leer el código:
 **Una declinación devuelve 200, no un 4xx.** El POS necesita el `response_code`
 para decidir qué pinta en pantalla; un error HTTP le quitaría el dato. El 4xx
 queda para lo que de verdad está mal en la petición.
+
+**La página del QR la sirve la API, no un bucket.** El QR lleva una URL, el
+móvil la abre, y esa página llama a la API. Si vive en otro origen hacen falta
+CORS abiertos —había un `allow_origins = ["*"]` en una API de pagos— y un bucket
+público servido por HTTP. Con el mismo origen no hace falta ninguna de las dos
+cosas. Ver ADR-021.
 
 **La idempotencia son tres transacciones separadas, no una.** La reserva de la
 clave se *commitea* antes de ejecutar el cobro, porque si viviera en la misma
@@ -126,6 +133,9 @@ cd backend
 pip install -r requirements.txt
 DB_PORT=55433 DB_PASSWORD=demo uvicorn app.main:app --reload --port 8080
 ```
+
+La página de pago queda en `http://localhost:8080/pay/PI0001`, y se puede abrir
+en el móvil apuntando a la IP de la máquina.
 
 Sin `IOT_ENDPOINT` los eventos van al log en vez de a IoT Core, así que el
 servicio funciona entero sin AWS. La documentación interactiva queda en

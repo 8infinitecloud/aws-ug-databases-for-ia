@@ -9,12 +9,19 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /srv
 
+# El contexto de build es `payments/`, no `payments/backend/`, porque la imagen
+# necesita tambien la pagina de pago del QR:
+#     docker build -f payments/backend/Dockerfile payments/
+
 # Las dependencias en su propia capa: el codigo cambia en cada despliegue, estas
 # casi nunca, y asi la reconstruccion no vuelve a bajarlas.
-COPY requirements.txt .
+COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app/ ./app/
+COPY backend/app/ ./app/
+# La pagina que se abre al escanear el QR. Se sirve desde el mismo origen que la
+# API para no necesitar CORS ni un bucket publico.
+COPY web/ ./web/
 
 # Sin privilegios. La imagen no necesita root para nada despues del pip install.
 RUN useradd --create-home --uid 10001 acquiring

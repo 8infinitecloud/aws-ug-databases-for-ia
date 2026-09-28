@@ -425,3 +425,95 @@ def test_los_importes_del_evento_cuadran_como_los_espera_el_lab2(client, ref, ev
     assert evento["amount"] == 18.50
     descuadre = abs(evento["amount"] - evento["fee_amount"] - evento["net_amount"])
     assert descuadre <= lab2.LEDGER_TOLERANCE
+
+
+# ── La pagina de pago del QR ─────────────────────────────────────────────────
+def _pagina() -> str:
+    return (REPO_ROOT / "payments/web/index.html").read_text(encoding="utf-8")
+
+
+def test_la_pagina_se_sirve_como_html_y_no_se_cachea(client, ref):
+    _crear(client, ref, amount=1850)
+    r = client.get(f"/pay/{ref}")
+
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+    # El cobro cambia de estado al pagarlo: una pagina cacheada mostraria un
+    # importe pendiente que ya no lo esta.
+    assert r.headers["cache-control"] == "no-store"
+    assert r.headers["x-content-type-options"] == "nosniff"
+
+
+def test_la_pagina_no_lleva_la_referencia_inyectada(client, ref):
+    """
+    Es estatica de verdad: la referencia la lee de su propia URL.
+
+    Si se inyectara habria que escaparla, y una referencia con HTML dentro seria
+    un XSS en una pagina de pagos.
+    """
+    _crear(client, ref)
+    assert ref not in client.get(f"/pay/{ref}").text
+
+
+def test_la_pagina_avisa_de_que_es_una_demo(client, ref):
+    """
+    El aviso no es decorativo: es un requisito explicito del proyecto.
+
+    Quien escanee el QR desde el publico tiene que ver, sin leer nada mas, que
+    no se le esta cobrando dinero.
+    """
+    _crear(client, ref)
+    html = client.get(f"/pay/{ref}").text
+    assert "DEMO" in html
+    assert "no se cobra dinero real" in html
+
+
+def test_una_referencia_inexistente_devuelve_la_pagina_igual(client):
+    """
+    200 y no 404: la pagina es estatica y el error lo pinta ella.
+
+    Devolver 404 aqui obligaria a servir dos documentos distintos y no aportaria
+    nada, porque quien abre la URL es un movil que va a llamar a la API de todos
+    modos.
+    """
+    assert client.get("/pay/PINOEXISTE").status_code == 200
+
+
+def test_el_javascript_de_la_pagina_es_valido():
+    """
+    Un error de sintaxis dejaria la pagina en blanco sin que nada fallara.
+
+    Se comprueba con node si esta; si no, la prueba se salta en vez de dar una
+    falsa sensacion de cobertura.
+    """
+    import re
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node no esta instalado")
+
+    bloques = re.findall(r"<script>(.*?)</script>", _pagina(), re.DOTALL)
+    assert bloques, "la pagina no tiene script"
+
+    for js in bloques:
+        # --check analiza sin ejecutar: no toca la red ni el DOM.
+        proc = subprocess.run(
+            [node, "--check", "-"], input=js, capture_output=True, text=True
+        )
+        assert proc.returncode == 0, proc.stderr
+
+
+def test_la_pagina_llama_a_las_rutas_que_la_api_expone():
+    """
+    Ata la pagina a la API.
+
+    Si alguien renombra una ruta, el fallo aparece aqui y no en el movil de
+    alguien del publico durante la charla.
+    """
+    html = _pagina()
+    assert '"/v1/intents/" + encodeURIComponent(referencia)' in html
+    assert '/confirm' in html
+    assert '"Idempotency-Key"' in html, "sin clave, un doble toque cobraria dos veces"
+    assert '{ channel: "QR" }' in html

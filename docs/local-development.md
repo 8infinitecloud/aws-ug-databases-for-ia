@@ -100,12 +100,15 @@ cd payments/backend && DB_PORT=55433 DB_PASSWORD=demo uvicorn app.main:app --por
 
 Sin `IOT_ENDPOINT` los eventos se escriben en el log en vez de publicarse en IoT
 Core, así que el cobro completo —autorizar, capturar, asentar en el libro mayor y
-emitir el evento— funciona sin tocar AWS. Queda en `localhost:8080/docs`.
+emitir el evento— funciona sin tocar AWS. Queda en `localhost:8080/docs`, y la
+página que se abre al escanear el QR en `localhost:8080/pay/{referencia}`.
 
 También construye y corre como imagen, que es exactamente lo que ejecuta Fargate:
 
 ```bash
-docker build -t fincorp-acquiring payments/backend
+# El contexto es payments/ y no payments/backend/, porque la imagen lleva
+# tambien la pagina de pago del QR.
+docker build -f payments/backend/Dockerfile -t fincorp-acquiring payments/
 docker run -p 8099:8080 -e DB_HOST=host.docker.internal -e DB_PORT=55433 \
   -e DB_PASSWORD=demo fincorp-acquiring
 ```
@@ -119,16 +122,16 @@ haría que ECS reciclara la tarea en bucle y el log se perdería con ella.
 pytest tests/ -v
 ```
 
-68 tests que ejecutan el código real, no dobles:
+74 tests que ejecutan el código real, no dobles:
 
 | | Qué fijan |
 |---|---|
 | `test_glue_job.py` (49) | los números que citan los README: que en raw fallen reglas, cuáles resuelve la transformación y cuáles el rechazo, y que no se pierda ninguna fila |
-| `test_api.py` (19) | que el ledger cuadre, que la idempotencia no permita el doble cobro, y que el evento publicado pase las reglas del Lab 2 |
+| `test_api.py` (25) | que el ledger cuadre, que la idempotencia no permita el doble cobro, que el evento publicado pase las reglas del Lab 2, y que la página del QR siga hablando con las rutas que existen |
 
 Los de la API necesitan el PostgreSQL de la sección anterior en el puerto 55433.
 **Sin él se saltan**, y el resto de la suite pasa igual — así que si te salen 49
-en vez de 68, es que falta la base.
+en vez de 74, es que falta la base.
 
 Ese último grupo cubre un fallo que ya ocurrió: el evento salía con
 `payment_method: null` y el Lab 2 habría rechazado el 100% de las filas del

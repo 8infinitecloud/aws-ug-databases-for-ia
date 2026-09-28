@@ -18,14 +18,12 @@ resource "aws_apigatewayv2_api" "main" {
   protocol_type = "HTTP"
   description   = "API de adquirencia de FinCorp Payments"
 
-  cors_configuration {
-    # La web de pago QR se sirve desde S3, otro origen. Sin CORS el navegador
-    # bloquea la llamada.
-    allow_origins = ["*"]
-    allow_methods = ["GET", "POST", "OPTIONS"]
-    allow_headers = ["content-type", "idempotency-key", "authorization"]
-    max_age       = 300
-  }
+  # Sin CORS, y es deliberado. La web de pago QR se sirve desde la propia API
+  # (`GET /pay/{ref}`), asi que comparte origen con ella y el navegador no pide
+  # permiso ninguno. La configuracion anterior servia la pagina desde un bucket
+  # en S3, lo que obligaba a `allow_origins = ["*"]`: cualquier sitio web podria
+  # llamar a una API de pagos desde el navegador de quien lo visitara. Mover la
+  # pagina al mismo origen elimina el comodin en vez de justificarlo.
 
   tags = { Name = "${local.name_prefix}-api" }
 }

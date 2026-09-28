@@ -166,7 +166,7 @@ pero conviene saberlo:
                 ┌─────────────┴─────────────┐
                 │                           │
         M5Stack Core2 POS            QR Payment Web
-        (CARD: CVV en pantalla)      (S3 static website)
+        (CARD: CVV en pantalla)      (servida por la API)
                 │                           │
                 │                    ┌──────┘
                 │                    │
@@ -251,7 +251,7 @@ Lambda por ~$0.10 y más complejidad.
 | POS físico | **Core2 for AWS IoT Kit** + ESP-IDF v4.2 / PlatformIO | **Real** | Sí |
 | UI del POS | **LVGL** sobre el BSP `core2forAWS` | **Real** | Sí |
 | Generación de QR | componente `qrcode` (`qrcode_display()`) | **Real** | Sí |
-| Web de pago QR | HTML/CSS/JS estático en S3 | **Real** | Sí |
+| Web de pago QR | HTML/CSS/JS servido por la API en `/pay/{ref}` ~~(S3)~~ | **Real** | Sí |
 | Procesador de pagos | Lambda `payment-mock` | **Mock** | Sí |
 | Autorización de tarjeta | Lambda, validación de CVV de prueba | **Mock** | Sí |
 | API | API Gateway HTTP API | **Real** | Sí |

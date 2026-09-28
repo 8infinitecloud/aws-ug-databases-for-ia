@@ -763,3 +763,69 @@ candado huérfano.
 - Los tests de `tests/test_api.py` necesitan PostgreSQL real. El CI lo levanta
   como servicio, y un paso extra falla si se saltaron: un CI verde por no haber
   ejecutado nada es peor que uno rojo.
+
+---
+
+## ADR-021: La página de pago del QR la sirve la API, no un bucket en S3
+
+**Fecha:** 2026-09-28 · **Estado:** Aceptada · **Supersede:** el diseño de `architecture-demo-proposal.md` §2
+
+### Contexto
+
+El POS muestra un QR con una URL. Alguien del público lo escanea, el móvil abre
+esa URL, y la página que se abre llama a la API para leer el importe y confirmar
+el pago.
+
+La propuesta original decía *S3 static website*, y de ahí venía esto, que ya
+estaba escrito en `infra/payments/api_gateway.tf`:
+
+```hcl
+cors_configuration {
+  allow_origins = ["*"]
+}
+```
+
+Un comodín de CORS en una API de pagos significa que **cualquier web puede
+llamarla desde el navegador de quien la visite**. Aquí no hay riesgo real
+—los pagos son simulados y no hay cookies de sesión que robar— pero el taller
+enseña Well-Architected, y esto enseña lo contrario.
+
+A eso se suma que un *S3 static website* sirve por HTTP, no HTTPS. Un móvil
+abriendo una página de pago sin candado es exactamente la señal que a la gente
+se le pide que desconfíe.
+
+### Decisión Tomada
+
+La página se sirve desde la propia API, en `GET /pay/{intent_reference}`.
+
+Mismo origen que las rutas que llama, así que **no hace falta CORS ninguno**: el
+bloque se eliminó entero, no se restringió. Tampoco hace falta un bucket público,
+ni una segunda URL que configurar en el firmware, ni HTTPS aparte —API Gateway ya
+lo da.
+
+La referencia **no se inyecta** en el HTML: la página la lee de su propia URL.
+Así el fichero es estático de verdad y no hay plantilla que escapar; una
+referencia con HTML dentro sería un XSS en una página de pagos.
+
+### Alternativas Consideradas
+
+| Alternativa | Por qué no |
+|-------------|-----------|
+| **S3 + CloudFront**, con CORS restringido al dominio de la distribución | Resuelve el HTTPS y acota el comodín, pero añade una distribución, un *origin access control* y una invalidación de caché a una página de 9 KB |
+| **S3 website con `allow_origins` al dominio del bucket** | Sigue siendo HTTP y sigue necesitando un bucket público |
+| **Inyectar la referencia en el HTML** desde el servidor | Obliga a escapar la entrada en el punto donde se muestra un importe a cobrar. El riesgo no compensa ahorrarle una llamada al móvil |
+
+### Consecuencias
+
+- El contexto del build pasa a ser `payments/`, no `payments/backend/`, porque la
+  imagen lleva ahora la página:
+  `docker build -f payments/backend/Dockerfile payments/`
+- La página responde 200 aunque la referencia no exista: es estática y el error
+  lo pinta ella al llamar a la API. Servir dos documentos distintos no aportaría
+  nada a un móvil que va a llamar a la API de todos modos.
+- `Cache-Control: no-store`, porque el cobro cambia de estado al pagarlo y una
+  página cacheada mostraría un importe pendiente que ya no lo está.
+- `HEAD /pay/{ref}` devuelve 405: FastAPI no enruta HEAD automáticamente. No se
+  añade porque quien abre la URL es un navegador móvil, que usa GET.
+- Si algún día la página crece hasta justificar CDN, volver a S3 exige recuperar
+  el CORS. La decisión se revisa entera, no a medias.

@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Pago — FinCorp</title>
+<style>
+  :root {
+    --fondo: #0f1115;
+    --tarjeta: #1a1d24;
+    --borde: #2a2f3a;
+    --texto: #f2f4f8;
+    --tenue: #9aa3b2;
+    --acento: #4f8cff;
+    --ok: #2ecc71;
+    --error: #ff5c5c;
+    --aviso: #f5a623;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+    padding: 24px 16px;
+    background: var(--fondo);
+    color: var(--texto);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* El aviso es obligatorio: este sistema no cobra nada de verdad. */
+  .demo {
+    width: 100%;
+    max-width: 420px;
+    padding: 10px 14px;
+    border: 1px solid var(--aviso);
+    border-radius: 10px;
+    background: rgba(245, 166, 35, .1);
+    color: var(--aviso);
+    font-size: 13px;
+    font-weight: 600;
+    text-align: center;
+  }
+
+  .tarjeta {
+    width: 100%;
+    max-width: 420px;
+    padding: 28px 24px;
+    border: 1px solid var(--borde);
+    border-radius: 16px;
+    background: var(--tarjeta);
+    text-align: center;
+  }
+
+  .comercio { font-size: 15px; color: var(--tenue); margin-bottom: 4px; }
+  .referencia {
+    font-size: 12px;
+    color: var(--tenue);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    margin-bottom: 22px;
+    word-break: break-all;
+  }
+  .importe {
+    font-size: 46px;
+    font-weight: 700;
+    letter-spacing: -1px;
+    margin-bottom: 22px;
+    font-variant-numeric: tabular-nums;
+  }
+  .importe small { font-size: 20px; color: var(--tenue); font-weight: 500; }
+
+  .lineas {
+    margin: 0 0 22px;
+    padding: 0;
+    list-style: none;
+    text-align: left;
+    font-size: 14px;
+    color: var(--tenue);
+  }
+  .lineas li { display: flex; justify-content: space-between; padding: 5px 0; }
+  .lineas li + li { border-top: 1px solid var(--borde); }
+
+  button {
+    width: 100%;
+    padding: 17px;
+    border: 0;
+    border-radius: 12px;
+    background: var(--acento);
+    color: #fff;
+    font-size: 17px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  button:active:not(:disabled) { transform: scale(.99); }
+
+  .resultado { display: none; }
+  .resultado.visible { display: block; }
+  .icono { font-size: 54px; line-height: 1; margin-bottom: 12px; }
+  .titulo { font-size: 22px; font-weight: 700; margin-bottom: 18px; }
+  .aprobado .titulo { color: var(--ok); }
+  .rechazado .titulo { color: var(--error); }
+
+  /* Los data elements de ISO 8583: el RRN es lo que se busca en un reclamo. */
+  .datos {
+    margin-top: 6px;
+    border-top: 1px solid var(--borde);
+    padding-top: 14px;
+    font-size: 13px;
+  }
+  .datos div { display: flex; justify-content: space-between; padding: 4px 0; }
+  .datos dt { color: var(--tenue); }
+  .datos dd {
+    margin: 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  .cargando, .fallo { color: var(--tenue); text-align: center; font-size: 15px; }
+  .fallo { color: var(--error); }
+  .pie { font-size: 12px; color: var(--tenue); text-align: center; max-width: 420px; }
+</style>
+</head>
+<body>
+
+<div class="demo">DEMO EDUCATIVA · no se cobra dinero real</div>
+
+<div id="cargando" class="cargando">Cargando el cobro…</div>
+
+<div id="fallo" class="tarjeta fallo" hidden></div>
+
+<!-- Estado 1: el cobro pendiente de confirmar -->
+<div id="cobro" class="tarjeta" hidden>
+  <div class="comercio" id="comercio"></div>
+  <div class="referencia" id="referencia"></div>
+  <div class="importe" id="importe"></div>
+  <ul class="lineas" id="lineas"></ul>
+  <button id="pagar">Pagar</button>
+</div>
+
+<!-- Estado 2: el resultado -->
+<div id="resultado" class="tarjeta resultado" hidden>
+  <div class="icono" id="icono"></div>
+  <div class="titulo" id="titulo"></div>
+  <dl class="datos" id="datos"></dl>
+</div>
+
+<div class="pie">
+  FinCorp Payments · plataforma de adquirencia simulada<br>
+  Ninguna tarjeta, credencial ni red de pagos real interviene en esta operación.
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // La referencia viene en la propia URL: /pay/PI0001. La pagina se sirve desde
+  // el mismo origen que la API, asi que no hay CORS ni URL que configurar.
+  var referencia = decodeURIComponent(
+    window.location.pathname.replace(/\/+$/, "").split("/").pop() || ""
+  );
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  function mostrarFallo(mensaje) {
+    $("cargando").hidden = true;
+    $("cobro").hidden = true;
+    $("resultado").hidden = true;
+    $("fallo").hidden = false;
+    $("fallo").textContent = mensaje;
+  }
+
+  // Los importes viajan en unidades menores (centimos) porque el dinero en
+  // coma flotante pierde centimos. El formateo es cosa de la vista.
+  function formatear(menores, moneda) {
+    var valor = (menores / 100).toFixed(2);
+    return { entero: valor, moneda: moneda };
+  }
+
+  function pintarCobro(intent) {
+    if (intent.status === "SUCCEEDED") {
+      // Alguien ya pago, o se recargo la pagina despues de pagar.
+      pintarResultado({
+        status: "CAPTURED",
+        response_code: "00",
+        amount_minor: intent.amount_received_minor || intent.amount_minor,
+        currency_code: intent.currency_code
+      }, "Este cobro ya estaba pagado");
+      return;
+    }
+    if (intent.status === "CANCELED" || intent.status === "FAILED") {
+      mostrarFallo("Este cobro está en estado " + intent.status + " y ya no puede pagarse.");
+      return;
+    }
+
+    var imp = formatear(intent.amount_minor, intent.currency_code);
+    $("comercio").textContent = intent.merchant_name || "Comercio";
+    $("referencia").textContent = intent.intent_reference;
+    $("importe").innerHTML = imp.entero + ' <small>' + imp.moneda + "</small>";
+
+    var lista = $("lineas");
+    (intent.line_items || []).forEach(function (linea) {
+      var li = document.createElement("li");
+      var izq = document.createElement("span");
+      izq.textContent = linea.quantity + "× " + linea.name;
+      var der = document.createElement("span");
+      der.textContent = formatear(linea.quantity * linea.unit_price_minor, imp.moneda).entero;
+      li.appendChild(izq);
+      li.appendChild(der);
+      lista.appendChild(li);
+    });
+
+    $("cargando").hidden = true;
+    $("cobro").hidden = false;
+  }
+
+  function fila(clave, valor) {
+    if (!valor) { return; }
+    var div = document.createElement("div");
+    var dt = document.createElement("dt");
+    dt.textContent = clave;
+    var dd = document.createElement("dd");
+    dd.textContent = valor;
+    div.appendChild(dt);
+    div.appendChild(dd);
+    $("datos").appendChild(div);
+  }
+
+  function pintarResultado(cobro, tituloForzado) {
+    var aprobado = cobro.response_code === "00";
+    var imp = formatear(cobro.amount_minor, cobro.currency_code);
+
+    $("icono").textContent = aprobado ? "✓" : "✕";
+    $("titulo").textContent = tituloForzado || (aprobado
+      ? "Pago aprobado"
+      : "Pago rechazado");
+    $("resultado").className = "tarjeta resultado visible " +
+      (aprobado ? "aprobado" : "rechazado");
+
+    $("datos").innerHTML = "";
+    fila("Importe", imp.entero + " " + imp.moneda);
+    if (aprobado) {
+      // El RRN (ISO 8583 DE 37) es la referencia con la que se reclama.
+      fila("Autorización", cobro.auth_code);
+      fila("RRN", cobro.rrn);
+    } else {
+      fila("Motivo", cobro.decline_reason);
+      fila("Código", cobro.response_code);
+    }
+
+    $("cargando").hidden = true;
+    $("cobro").hidden = true;
+    $("resultado").hidden = false;
+  }
+
+  function pagar() {
+    var boton = $("pagar");
+    boton.disabled = true;
+    boton.textContent = "Procesando…";
+
+    fetch("/v1/intents/" + encodeURIComponent(referencia) + "/confirm", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        // Sin esto, un doble toque en un movil lento cobraria dos veces.
+        "Idempotency-Key": "qr-" + referencia
+      },
+      body: JSON.stringify({ channel: "QR" })
+    })
+      .then(function (r) {
+        return r.json().then(function (cuerpo) {
+          // Una declinacion llega con 200: el codigo va en el cuerpo, no en el
+          // status. Solo un 4xx/5xx es un error de verdad.
+          if (!r.ok) { throw new Error(cuerpo.error || "No se pudo completar el pago"); }
+          return cuerpo;
+        });
+      })
+      .then(function (cobro) { pintarResultado(cobro); })
+      .catch(function (err) {
+        boton.disabled = false;
+        boton.textContent = "Reintentar";
+        mostrarFallo(err.message);
+      });
+  }
+
+  if (!referencia || referencia === "pay") {
+    mostrarFallo("Esta URL no lleva ninguna referencia de cobro.");
+    return;
+  }
+
+  fetch("/v1/intents/" + encodeURIComponent(referencia))
+    .then(function (r) {
+      if (r.status === 404) { throw new Error("El cobro " + referencia + " no existe."); }
+      if (!r.ok) { throw new Error("No se pudo leer el cobro."); }
+      return r.json();
+    })
+    .then(pintarCobro)
+    .catch(function (err) { mostrarFallo(err.message); });
+
+  $("pagar").addEventListener("click", pagar);
+})();
+</script>
+</body>
+</html>

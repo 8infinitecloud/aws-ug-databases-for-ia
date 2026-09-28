@@ -21,10 +21,11 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated, Union
 
 from fastapi import Body, FastAPI, Header, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import Field
 from psycopg_pool import ConnectionPool
 
@@ -52,6 +53,30 @@ ConfirmRequest = Annotated[
     Union[ConfirmCardRequest, ConfirmQrRequest],
     Field(discriminator="channel"),
 ]
+
+def _localizar_web() -> Path | None:
+    """
+    Encuentra la carpeta `web/`, que esta en un sitio distinto segun donde corra.
+
+    En la imagen el codigo vive en /srv/app y la pagina en /srv/web; en el repo
+    son payments/backend/app y payments/web. Probar los dos sitios evita tener
+    que configurar una variable para algo que siempre esta en uno de ellos.
+    """
+    import os
+
+    if os.getenv("WEB_DIR"):
+        candidatos = [Path(os.environ["WEB_DIR"])]
+    else:
+        aqui = Path(__file__).resolve().parent
+        candidatos = [aqui.parent / "web", aqui.parent.parent / "web"]
+
+    for ruta in candidatos:
+        if (ruta / "index.html").is_file():
+            return ruta
+    return None
+
+
+WEB_DIR = _localizar_web()
 
 settings = get_settings()
 publisher = EventPublisher(
@@ -85,6 +110,8 @@ async def lifespan(app: FastAPI):
         settings.db_name,
         settings.iot_endpoint or "sin configurar (los eventos van al log)",
     )
+    if WEB_DIR is None:
+        log.warning("no se encontro web/index.html: /pay/{ref} respondera 503")
     yield
     pool.close()
 
@@ -249,6 +276,36 @@ def confirm_intent(
         operacion, resource_type="charge",
     )
     return JSONResponse(saved, status_code)
+
+
+# ── La pagina de pago del QR ─────────────────────────────────────────────────
+@app.get("/pay/{intent_reference}", response_class=HTMLResponse, tags=["cobros"])
+def pagina_de_pago(intent_reference: str):
+    """
+    La pagina que se abre al escanear el QR del POS.
+
+    Se sirve desde la propia API y no desde un bucket en S3 a proposito. El QR
+    lleva una URL, el movil la abre, y esa pagina llama a la API: si vive en
+    otro origen hacen falta CORS abiertos —la configuracion anterior tenia
+    `allow_origins = ["*"]` en una API de pagos— y un bucket publico servido por
+    HTTP. Con el mismo origen no hace falta ninguna de las dos cosas, y el QR
+    lleva una sola URL en vez de dos.
+
+    La referencia no se inyecta en el HTML: la pagina la lee de su propia URL.
+    Asi el fichero es estatico de verdad y no hay plantilla que escapar.
+    """
+    if WEB_DIR is None:
+        raise acquiring.AcquiringError("la pagina de pago no esta desplegada", 503)
+    return HTMLResponse(
+        (WEB_DIR / "index.html").read_text(encoding="utf-8"),
+        headers={
+            # El cobro cambia de estado al pagarlo; una pagina cacheada
+            # mostraria un importe pendiente que ya no lo esta.
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "Referrer-Policy": "no-referrer",
+        },
+    )
 
 
 # ── Ayudas ───────────────────────────────────────────────────────────────────
