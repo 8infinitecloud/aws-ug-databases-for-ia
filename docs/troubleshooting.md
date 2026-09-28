@@ -83,6 +83,75 @@ aws rds describe-db-engine-versions --engine mysql \
 terraform -chdir=infra/lab1 apply -var mysql_version=8.0.44
 ```
 
+### DMS: `No tables were found at task initialization`
+
+**Estado: sin resolver. Bloquea el Lab 1.** Encontrado desplegando en una cuenta
+real el 2026-09-28.
+
+La tarea arranca, llega al 100 % de progreso y termina en `FATAL_ERROR` con cero
+tablas cargadas. El bucket queda vacío.
+
+Lo que **sí** está comprobado y descartado:
+
+| Comprobación | Resultado |
+|---|---|
+| Conexión al endpoint origen (Aurora) | `successful` |
+| Conexión al endpoint destino (S3) | `successful` (tras añadir el VPC endpoint) |
+| `database_name` del endpoint | `acquiring`, correcto |
+| Usuario | el maestro del cluster, que creó el esquema |
+| Esquema en Aurora | 17 tablas, verificado desde la propia base |
+| Selección de la vista | falla |
+| Selección de una **vista materializada** | falla igual |
+| Selección de **todas** las tablas (`table-name: "%"`) | **falla igual** |
+| `exposeViews=true` en el endpoint | no cambia nada |
+
+Que falle con `%` es lo decisivo: **no es un problema de vistas**. DMS conecta a
+la base pero no enumera ningún objeto del esquema `acquiring`.
+
+Pistas para quien lo retome:
+
+- Revisar los `GRANT` que DMS pide para PostgreSQL más allá de ser superusuario
+- Comprobar si DMS busca en `public` y no respeta `schema-name`
+- Probar con una tabla en `public` para aislar si es el esquema o la enumeración
+- Revisar `search_path` del usuario
+
+**Consecuencia para el ADR-019:** decidió replicar una vista con `full-load`.
+Esa decisión no se puede validar hasta resolver esto, y si el problema resulta
+ser la enumeración de objetos, el ADR entero hay que revisarlo.
+
+---
+
+### `Test connection ... should be successful for starting the replication task`
+
+DMS exige que **ambos** endpoints tengan una prueba de conexión correcta antes de
+arrancar la tarea. No basta con que existan.
+
+```bash
+RI=$(aws dms describe-replication-instances --query 'ReplicationInstances[0].ReplicationInstanceArn' --output text)
+for E in source-aurora target-s3; do
+  EP=$(aws dms describe-endpoints --query "Endpoints[?EndpointIdentifier=='fincorp-datalake-lab-$E'].EndpointArn" --output text)
+  aws dms test-connection --replication-instance-arn "$RI" --endpoint-arn "$EP"
+done
+aws dms describe-connections --query 'Connections[*].[EndpointIdentifier,Status]' --output text
+```
+
+`labs/01-ingestion-data-lake/scripts/setup.sh` **no** hace esto todavía.
+
+---
+
+### DMS no puede escribir en S3: `Failed to connect to database`
+
+Mensaje engañoso: no es la base, es la red. La instancia de replicación vive en
+las subnets privadas de `payments`, que **no tienen NAT Gateway** (concesión
+deliberada) ni tenían VPC endpoint. Sin camino a S3, el full load no puede
+escribir.
+
+Resuelto añadiendo un **Gateway Endpoint de S3** en `infra/payments/network.tf`.
+Es gratis —ni por hora ni por GB— y evita el NAT que la arquitectura quería
+evitar.
+
+---
+
 ### La tarea DMS se queda en `ready` y no arranca
 
 `ready` significa creada pero no iniciada. Es a propósito: el workshop la lanza

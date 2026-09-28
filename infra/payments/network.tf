@@ -195,3 +195,48 @@ resource "aws_default_security_group" "default" {
   vpc_id = aws_vpc.main.id
   tags   = { Name = "${local.name_prefix}-default-DO-NOT-USE" }
 }
+
+# =============================================================================
+# Salida a S3 desde las subnets privadas
+# =============================================================================
+# Sin esto, lo que vive en las subnets privadas no puede hablar con S3 en
+# absoluto: no hay NAT Gateway (concesion deliberada, cuesta ~1 USD/dia) y las
+# privadas solo tenian la ruta local.
+#
+# Se descubrio desplegando: la instancia de replicacion de DMS del Lab 1 va en
+# estas subnets, y su endpoint destino es S3. El test de conexion fallaba con
+# "Failed to connect to database" —un mensaje que no ayuda nada— y el full load
+# no habria podido escribir en el data lake. `plan` no puede detectarlo: la
+# configuracion es valida, simplemente no hay camino.
+#
+# Un Gateway Endpoint es la respuesta correcta y no un parche: **no cuesta
+# nada** (ni por hora ni por GB), el trafico no sale de la red de AWS, y evita
+# el NAT que la arquitectura queria evitar.
+
+resource "aws_route_table" "private" {
+  vpc_id = aws_vpc.main.id
+
+  # Sin ruta a internet a proposito. Lo unico que necesitan estas subnets es
+  # llegar a S3, y de eso se encarga el endpoint de abajo.
+
+  tags = { Name = "${local.name_prefix}-private-rt" }
+}
+
+resource "aws_route_table_association" "private" {
+  count = length(aws_subnet.private)
+
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private.id
+}
+
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${var.aws_region}.s3"
+  vpc_endpoint_type = "Gateway"
+
+  # El endpoint funciona anadiendo una ruta a los prefijos de S3 en estas tablas.
+  # Si no se asocia a ninguna, existe y no sirve para nada.
+  route_table_ids = [aws_route_table.private.id]
+
+  tags = { Name = "${local.name_prefix}-s3-endpoint" }
+}

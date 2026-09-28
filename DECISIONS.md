@@ -706,6 +706,27 @@ La plataforma tiene **dos velocidades de ingesta**, cada una con el mecanismo qu
 - La narrativa mejora: **batch para la historia, streaming para el presente** es como funcionan las plataformas de datos reales. Intentar que un solo mecanismo haga las dos cosas es el error común.
 - La tarea DMS se puede reejecutar: `TargetTablePrepMode = DROP_AND_CREATE` rehace la carga entera.
 
+### Revisión del 2026-09-28, tras desplegar
+
+**Esta decisión no se ha podido validar, y puede que sea inviable.**
+
+Al desplegar en una cuenta real, la tarea DMS termina en `FATAL_ERROR` con
+`No tables were found at task initialization`. Se probó con la vista, con una
+vista materializada y con **todas las tablas del esquema** (`table-name: "%"`):
+falla igual en los tres casos.
+
+Que falle también con `%` significa que **el problema no son las vistas**: DMS
+conecta a Aurora correctamente —el test de conexión da `successful`— pero no
+enumera ningún objeto del esquema `acquiring`.
+
+Hasta resolverlo no se puede afirmar ni que el full-load sobre una vista
+funcione ni que no. El diagnóstico detallado, con lo comprobado y lo descartado,
+está en [`docs/troubleshooting.md`](docs/troubleshooting.md).
+
+Lo que sí quedó resuelto por el camino: la instancia DMS no tenía **ningún**
+camino de red a S3 (sin NAT y sin VPC endpoint). Se añadió un Gateway Endpoint
+de S3, que es gratis. Eso era un bloqueo anterior e independiente.
+
 ---
 
 ## ADR-020: La API de adquirencia — códigos de estado y frontera de la idempotencia
