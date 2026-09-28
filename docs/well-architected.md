@@ -241,6 +241,28 @@ configuración con `grep` daba falsos positivos y falsos negativos.
 | EIP o NAT huérfanos | red | **No existen**: la concesión de `assign_public_ip` en Fargate evita el NAT Gateway, y de paso este problema |
 | PITR / backups continuos | DynamoDB | Desactivado: son contadores que expiran en minutos |
 
+### Verificado desplegando y destruyendo los seis módulos
+
+El 2026-09-28 se aplicaron y destruyeron los seis módulos contra una cuenta real.
+Tras el `destroy`, el barrido no encontró Aurora, snapshots, DMS, ALB, ECS, ECR,
+Redis, EC2, secretos, EIP, NAT ni log groups del proyecto.
+
+Dos cosas que la auditoría estática no habría cogido y que el ciclo completo sí:
+
+- **El log group que crea RDS** al exportar logs sobrevivía al `destroy` con
+  retención infinita. Ahora lo declara Terraform en `payments` y en `lab3`, y se
+  comprobó que se va con ellos.
+- **Quedan tres log groups de la era CloudFormation**
+  (`/aws/rds/cluster/financial-compliance-rag-lab-auroracluster-*`, de mayo de
+  2026, ~26 KB en total). No los creó ningún módulo actual; son restos de
+  despliegues anteriores a la migración a Terraform. Borrarlos es seguro:
+
+  ```bash
+  aws logs describe-log-groups \
+    --query 'logGroups[?contains(logGroupName,`financial-compliance`)].logGroupName' \
+    --output text | tr '\t' '\n' | xargs -I{} aws logs delete-log-group --log-group-name {}
+  ```
+
 **Lo único que sobrevive a propósito** es `fincorp-datalake-tfstate-<account>`,
 que guarda el state de todo lo demás y cuesta céntimos al mes. Tiene
 `prevent_destroy` para que un `destroy` distraído no se lleve por delante la
