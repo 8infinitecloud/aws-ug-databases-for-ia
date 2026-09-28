@@ -81,15 +81,58 @@ print(pd.read_csv(f)['rejection_reason'].value_counts())
 "
 ```
 
+### La API de adquirencia, entera
+
+El core de la plataforma corre en local contra un PostgreSQL en Docker. No es una
+versión reducida: es el mismo código que va a Fargate, con la misma base y el
+mismo esquema.
+
+```bash
+docker run -d --name pg-acq -e POSTGRES_PASSWORD=demo -e POSTGRES_DB=acquiring \
+  -p 55433:5432 postgres:16.3-alpine
+for f in payments/schema/0*.sql; do
+  docker exec -i pg-acq psql -U postgres -d acquiring -q -v ON_ERROR_STOP=1 < "$f"
+done
+
+pip install -r payments/backend/requirements.txt
+cd payments/backend && DB_PORT=55433 DB_PASSWORD=demo uvicorn app.main:app --port 8080
+```
+
+Sin `IOT_ENDPOINT` los eventos se escriben en el log en vez de publicarse en IoT
+Core, así que el cobro completo —autorizar, capturar, asentar en el libro mayor y
+emitir el evento— funciona sin tocar AWS. Queda en `localhost:8080/docs`.
+
+También construye y corre como imagen, que es exactamente lo que ejecuta Fargate:
+
+```bash
+docker build -t fincorp-acquiring payments/backend
+docker run -p 8099:8080 -e DB_HOST=host.docker.internal -e DB_PORT=55433 \
+  -e DB_PASSWORD=demo fincorp-acquiring
+```
+
+Si la base no está, `/health` responde `degraded` en vez de morir: un 503 ahí
+haría que ECS reciclara la tarea en bucle y el log se perdería con ella.
+
 ### Los tests
 
 ```bash
 pytest tests/ -v
 ```
 
-19 tests que ejecutan las funciones reales contra el dataset real. Fijan los
-números que citan los README: que en raw fallen 3 reglas, que la transformación
-resuelva 2 y el rechazo 1, que se rechacen 100 filas, que no se pierda ninguna.
+68 tests que ejecutan el código real, no dobles:
+
+| | Qué fijan |
+|---|---|
+| `test_glue_job.py` (49) | los números que citan los README: que en raw fallen reglas, cuáles resuelve la transformación y cuáles el rechazo, y que no se pierda ninguna fila |
+| `test_api.py` (19) | que el ledger cuadre, que la idempotencia no permita el doble cobro, y que el evento publicado pase las reglas del Lab 2 |
+
+Los de la API necesitan el PostgreSQL de la sección anterior en el puerto 55433.
+**Sin él se saltan**, y el resto de la suite pasa igual — así que si te salen 49
+en vez de 68, es que falta la base.
+
+Ese último grupo cubre un fallo que ya ocurrió: el evento salía con
+`payment_method: null` y el Lab 2 habría rechazado el 100% de las filas del
+stream. Las dos piezas viven en carpetas distintas y nada las ataba.
 
 ### El generador del dataset
 
@@ -107,7 +150,7 @@ python labs/01-ingestion-data-lake/dataset/generate_dataset.py --rows 500000
 referencias y tipos contra el esquema del proveedor, que se descarga en el `init`.
 
 ```bash
-for M in bootstrap lab1 lab2 lab3; do
+for M in bootstrap payments lab1 lab2 lab3; do
   terraform -chdir="infra/$M" init -backend=false -input=false
   terraform -chdir="infra/$M" validate
 done
@@ -206,7 +249,7 @@ No hay compilación: es Python y HCL. Lo que hace de build es lo que corre el CI
 |-----------|-------|--------------|
 | `validate-python` — ruff + sintaxis | ✅ | no |
 | `validate-shell` — shellcheck | ✅ | no |
-| `test-pipeline` — pytest | ✅ | no |
+| `test-pipeline` — pytest | ✅ | no (levanta PostgreSQL como servicio) |
 | `security-scan` — checkov | ✅ | no |
 | `validate-terraform` — fmt + validate | ✅ | no |
 | `validate-data` — dataset y corpus | ✅ | no |
@@ -214,13 +257,14 @@ No hay compilación: es Python y HCL. Lo que hace de build es lo que corre el CI
 Reproducir el CI entero en local:
 
 ```bash
-pip install -r requirements.txt ruff==0.7.0 checkov==3.3.19
+pip install -r requirements.txt -r payments/backend/requirements.txt \
+  httpx ruff==0.7.0 checkov==3.3.19
 
-ruff check labs/ scripts/ tests/ --ignore E501,F401
+ruff check labs/ scripts/ tests/ payments/backend/ --ignore E501,F401
 shellcheck -x --severity=warning scripts/*.sh scripts/lib/*.sh labs/*/scripts/*.sh
 pytest tests/ -v
 checkov -d infra --framework terraform --compact --soft-fail
-for M in bootstrap lab1 lab2 lab3; do
+for M in bootstrap payments lab1 lab2 lab3; do
   terraform -chdir="infra/$M" fmt -check
   terraform -chdir="infra/$M" init -backend=false -input=false
   terraform -chdir="infra/$M" validate
@@ -236,6 +280,7 @@ los workflows de deploy y cleanup, que se ejecutan a mano.
 
 Se puede trabajar en todo esto sin desplegar nada:
 
+- La API de adquirencia entera (`payments/backend/`), con su base en Docker
 - Las reglas de calidad y las transformaciones del Lab 2 (`glue_job.py`)
 - El dataset y su calibración (`generate_dataset.py`)
 - Los documentos derivados (`ingest_from_curated.py`)

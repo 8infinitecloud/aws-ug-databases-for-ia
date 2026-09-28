@@ -86,8 +86,14 @@ def begin(
         existing = cur.fetchone()
 
     if existing["request_fingerprint"] != fp:
+        # 409 y no 422 a proposito: 422 es el codigo con el que FastAPI
+        # responde a un cuerpo mal formado, y el POS es firmware embebido que
+        # decide por el status sin parsear el JSON. Si los dos casos comparten
+        # codigo, no puede distinguir "tu peticion esta mal" de "reusaste una
+        # clave", que piden reacciones opuestas: la primera no se reintenta, la
+        # segunda se reintenta con clave nueva.
         raise IdempotencyConflict(
-            "la clave de idempotencia ya se uso con un cuerpo distinto", 422
+            "la clave de idempotencia ya se uso con un cuerpo distinto", 409
         )
 
     if existing["status"] == "IN_PROGRESS":

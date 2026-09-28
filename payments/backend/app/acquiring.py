@@ -288,6 +288,7 @@ def _record_decline(
         "intent_reference": intent["intent_reference"],
         "charge_reference": charge["charge_reference"],
         "status": "FAILED",
+        "channel": channel,
         "response_code": auth.response_code,
         "auth_code": None,
         "rrn": auth.rrn,
@@ -366,6 +367,7 @@ def _record_approval(
         "intent_reference": intent["intent_reference"],
         "charge_reference": charge["charge_reference"],
         "status": "CAPTURED",
+        "channel": channel,
         "response_code": auth.response_code,
         "auth_code": auth.auth_code,
         "rrn": auth.rrn,
@@ -384,7 +386,7 @@ def _existing_charge(conn: Connection, intent_pk: int, intent: dict) -> dict:
         cur.execute(
             """
             SELECT c.charge_reference, c.status, c.response_code, c.auth_code,
-                   c.rrn, c.stan, c.amount_minor, c.currency_code,
+                   c.rrn, c.stan, c.amount_minor, c.currency_code, c.channel,
                    bt.fee_minor, bt.net_minor
             FROM acquiring.charges c
             LEFT JOIN acquiring.balance_transactions bt
@@ -398,3 +400,23 @@ def _existing_charge(conn: Connection, intent_pk: int, intent: dict) -> dict:
     if row is None:
         raise AcquiringError("la intencion esta cobrada pero no se encuentra el cobro", 500)
     return {"intent_reference": intent["intent_reference"], "decline_reason": None, **row}
+
+
+def get_terminal_context(conn: Connection, terminal_pk: int | None) -> dict:
+    """
+    Los datos del terminal que necesita el evento: su codigo y su serial.
+
+    El serial no es decorativo: es el clientId con el que ese POS se autentica
+    en IoT Core, y de el cuelga el topic donde se publica el evento.
+    """
+    if terminal_pk is None:
+        return {}
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """
+            SELECT terminal_id AS terminal_code, device_serial
+            FROM acquiring.terminals WHERE id = %s
+            """,
+            (terminal_pk,),
+        )
+        return cur.fetchone() or {}

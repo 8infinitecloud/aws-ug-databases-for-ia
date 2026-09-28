@@ -57,11 +57,14 @@ La infraestructura está en [`../infra/payments/`](../infra/payments/).
 |---|---|
 | Schema transaccional | ✅ Validado contra PostgreSQL 16 |
 | Interfaz con el comercio (API keys, webhooks) | ✅ Modelado · entrega no implementada |
-| Dominio de adquirencia (autorizar, capturar, libro mayor) | 🔄 En curso |
-| API HTTP + idempotencia | 🔄 En curso |
-| Terraform (Aurora, Fargate, API Gateway) | 🔲 Pendiente |
+| Dominio de adquirencia (autorizar, capturar, libro mayor) | ✅ Probado contra PostgreSQL real |
+| API HTTP + idempotencia | ✅ 19 tests de integración · imagen construida |
+| Terraform (Aurora, Fargate, API Gateway) | ✅ `plan` verificado · **no desplegado** |
 | Web de pago QR | 🔲 Pendiente |
 | Firmware del terminal | 🔲 Pendiente |
+
+Lo único que falta por validar es un despliegue real en AWS. Todo lo demás se
+ejecuta y se prueba en local.
 
 Diseño completo:
 [`../docs/architecture-demo-proposal.md`](../docs/architecture-demo-proposal.md).
@@ -86,7 +89,73 @@ Lo que **sí** hay que proteger, porque la infraestructura es real:
 
 ---
 
-## Probar en local, sin AWS
+## La API
+
+Tres rutas, que son las tres cosas que pasan en un cobro:
+
+| | Quién la llama | Qué hace |
+|---|---|---|
+| `POST /v1/intents` | el POS | cierra el carrito y crea la intención |
+| `GET /v1/intents/{ref}` | la web del QR | lee importe y comercio antes de confirmar |
+| `POST /v1/intents/{ref}/confirm` | POS o web | autoriza, captura y asienta en el libro mayor |
+
+Más `GET /health`, que es lo que consulta el health check del ALB.
+
+Dos decisiones que conviene conocer antes de leer el código:
+
+**Una declinación devuelve 200, no un 4xx.** El POS necesita el `response_code`
+para decidir qué pinta en pantalla; un error HTTP le quitaría el dato. El 4xx
+queda para lo que de verdad está mal en la petición.
+
+**La idempotencia son tres transacciones separadas, no una.** La reserva de la
+clave se *commitea* antes de ejecutar el cobro, porque si viviera en la misma
+transacción ninguna petición concurrente la vería y el candado no serviría de
+nada. Si el cobro falla, una tercera transacción libera la clave para que el
+reintento legítimo no choque con un candado huérfano.
+
+```bash
+# La base
+docker run -d --name pg-acq -e POSTGRES_PASSWORD=demo -e POSTGRES_DB=acquiring \
+  -p 55433:5432 postgres:16.3-alpine
+for f in schema/0*.sql; do
+  docker exec -i pg-acq psql -U postgres -d acquiring -q -v ON_ERROR_STOP=1 < "$f"
+done
+
+# La API
+cd backend
+pip install -r requirements.txt
+DB_PORT=55433 DB_PASSWORD=demo uvicorn app.main:app --reload --port 8080
+```
+
+Sin `IOT_ENDPOINT` los eventos van al log en vez de a IoT Core, así que el
+servicio funciona entero sin AWS. La documentación interactiva queda en
+`http://localhost:8080/docs`.
+
+Un cobro completo:
+
+```bash
+curl -X POST localhost:8080/v1/intents -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: demo-1' \
+  -d '{"intent_reference":"PI0001","terminal_id":"TID00001","amount_minor":1850,"currency_code":"PEN"}'
+
+curl -X POST localhost:8080/v1/intents/PI0001/confirm -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: demo-1-confirm' \
+  -d '{"channel":"CARD_PRESENT","card_token":"demo_card_4242","cvv":"123"}'
+```
+
+Devuelve el cobro con sus data elements de ISO 8583 y el MDR ya descontado:
+sobre 1850 con 299 bps + 30 fijos, `fee_minor: 85` y `net_minor: 1765`. Un CVV
+distinto de `123` declina con `response_code: "05"`.
+
+Los tests son la forma corta de verlo todo:
+
+```bash
+pytest tests/test_api.py -v    # desde la raíz del repo, con la base levantada
+```
+
+---
+
+## Probar el esquema en local, sin AWS
 
 ```bash
 docker run -d --name pg-acq -e POSTGRES_PASSWORD=test -e POSTGRES_DB=acq postgres:16

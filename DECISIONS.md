@@ -705,3 +705,61 @@ La plataforma tiene **dos velocidades de ingesta**, cada una con el mecanismo qu
 - `rds.logical_replication` sigue habilitado en payments: no hace falta para este full load, pero sí si algún día se quiere CDC sobre las tablas base, y activarlo después exige reiniciar el cluster.
 - La narrativa mejora: **batch para la historia, streaming para el presente** es como funcionan las plataformas de datos reales. Intentar que un solo mecanismo haga las dos cosas es el error común.
 - La tarea DMS se puede reejecutar: `TargetTablePrepMode = DROP_AND_CREATE` rehace la carga entera.
+
+---
+
+## ADR-020: La API de adquirencia — códigos de estado y frontera de la idempotencia
+
+**Fecha:** 2026-09-28 · **Estado:** Aceptada
+
+### Contexto
+
+La API tiene un cliente que no es un navegador ni un SDK: un M5Stack Core2 con
+firmware en C. Eso cambia qué es una buena respuesta HTTP. El POS decide qué
+pinta en pantalla a partir del status y de un puñado de campos, y parsear JSON
+para distinguir dos situaciones distintas es trabajo que en un microcontrolador
+se paga.
+
+Tres decisiones salieron de ahí, y una de ellas corrige código que ya existía.
+
+### Decisión Tomada
+
+**1. Una declinación devuelve 200, no un 4xx.** Que el emisor no honre la tarjeta
+no es un error de la petición: es el resultado de negocio que el POS pidió. Va en
+el cuerpo con `response_code: "05"` y su `decline_reason`. Un 4xx obligaría al
+firmware a leer el cuerpo para saber si el problema es suyo o del emisor. El 4xx
+queda para lo que de verdad está mal en la petición.
+
+**2. El desajuste de cuerpo en una clave de idempotencia devuelve 409, no 422.**
+`idempotency.py` devolvía 422, que es **el mismo código con el que FastAPI
+responde a un JSON mal formado**. Los dos casos piden reacciones opuestas: una
+petición mal formada no se reintenta nunca, una clave reusada se reintenta con
+clave nueva. Compartir código las hace indistinguibles por status.
+
+**3. La idempotencia son tres transacciones, no una.** La reserva de la clave se
+*commitea* antes de ejecutar el cobro. Si viviera en la misma transacción, una
+petición concurrente con la misma clave no la vería —no está commiteada— y las
+dos cobrarían. Por eso `release()` existe: si el cobro falla, una tercera
+transacción borra la reserva para que el reintento legítimo no choque con un
+candado huérfano.
+
+### Alternativas Consideradas
+
+| Alternativa | Por qué no |
+|-------------|-----------|
+| **400 para la clave reusada**, como Stripe | Defendible, pero 409 describe mejor el conflicto con el estado existente, y lo que importaba era no colisionar con el 422 de validación |
+| **Una sola transacción** para reserva y cobro | El candado sería invisible a las peticiones concurrentes, que es justo aquello de lo que protege |
+| **`SELECT ... FOR UPDATE` sobre la intención** en vez de tabla de idempotencia | Protege del doble cobro pero no permite *devolver la misma respuesta*, que es lo que un cliente idempotente espera |
+| **503 en `/health` cuando la base no responde** | ECS reciclaría la tarea en bucle por un problema que no está en la tarea, y el log del contenedor se perdería con ella. Devuelve 200 con `database: "unreachable"` |
+
+### Consecuencias
+
+- El POS decide con el status en la mano: 2xx es una respuesta del emisor —mire
+  `response_code`—, 4xx es culpa suya.
+- `/health` distingue *arriba* de *sano*. Aurora Serverless v2 escala desde cero,
+  así que el contenedor tiene que poder arrancar antes que la base.
+- El evento a IoT Core se publica **fuera** de la transacción del cobro: dentro
+  anunciaría un cobro que todavía podría deshacerse.
+- Los tests de `tests/test_api.py` necesitan PostgreSQL real. El CI lo levanta
+  como servicio, y un paso extra falla si se saltaron: un CI verde por no haber
+  ejecutado nada es peor que uno rojo.

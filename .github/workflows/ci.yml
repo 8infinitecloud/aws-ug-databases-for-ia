@@ -45,6 +45,12 @@ jobs:
             --ignore E501,F401 \
             --output-format=concise
 
+      - name: Lint with ruff — API de adquirencia (payments)
+        run: |
+          ruff check payments/backend/ tests/ \
+            --ignore E501,F401 \
+            --output-format=concise
+
   # ── Lab 1 + Lab 2: Shell scripts ────────────────────────────────────────────
   validate-shell:
     name: Shell scripts (shellcheck)
@@ -81,6 +87,26 @@ jobs:
   test-pipeline:
     name: Tests del pipeline (pytest)
     runs-on: ubuntu-latest
+
+    # PostgreSQL de verdad, no un doble. Las garantias que prueban los tests de
+    # la API son constraints de la base (net = gross - fee, el enum del canal),
+    # y una base simulada las daria por buenas sin comprobarlas. Sin este
+    # servicio los tests de tests/test_api.py se SALTAN en silencio, que es peor
+    # que fallar: el CI se pondria verde sin haberlos ejecutado.
+    services:
+      postgres:
+        image: postgres:16.3-alpine
+        env:
+          POSTGRES_PASSWORD: demo
+          POSTGRES_DB: acquiring
+        ports:
+          - 55433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -89,13 +115,33 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt --quiet
+        run: |
+          pip install --quiet -r requirements.txt
+          pip install --quiet -r payments/backend/requirements.txt httpx
+
+      - name: Cargar el esquema del adquirente
+        env:
+          PGPASSWORD: demo
+        run: |
+          for f in payments/schema/0*.sql; do
+            echo "  $f"
+            psql -h localhost -p 55433 -U postgres -d acquiring -q -v ON_ERROR_STOP=1 -f "$f"
+          done
 
       # Ejecutan glue_job.py contra el dataset real. Si alguien recalibra el
       # dataset o toca las reglas, los numeros de los README dejan de cuadrar y
       # estos tests lo dicen.
       - name: pytest
         run: pytest tests/ -v
+
+      # El CI no debe pasar por haberse saltado los tests de la API: si el
+      # servicio de postgres no arranco, esto lo convierte en un fallo visible.
+      - name: Comprobar que los tests de la API no se saltaron
+        run: |
+          if pytest tests/test_api.py --collect-only -q 2>&1 | grep -q "no tests ran\|skipped"; then
+            echo "::error::los tests de la API se saltaron; revisa el servicio de postgres"
+            exit 1
+          fi
 
   # ── Escaneo de seguridad de la infraestructura ───────────────────────────────
   security-scan:
