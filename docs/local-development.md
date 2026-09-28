@@ -122,16 +122,17 @@ haría que ECS reciclara la tarea en bucle y el log se perdería con ella.
 pytest tests/ -v
 ```
 
-74 tests que ejecutan el código real, no dobles:
+77 tests que ejecutan el código real, no dobles:
 
 | | Qué fijan |
 |---|---|
 | `test_glue_job.py` (49) | los números que citan los README: que en raw fallen reglas, cuáles resuelve la transformación y cuáles el rechazo, y que no se pierda ninguna fila |
 | `test_api.py` (25) | que el ledger cuadre, que la idempotencia no permita el doble cobro, que el evento publicado pase las reglas del Lab 2, y que la página del QR siga hablando con las rutas que existen |
+| `test_firmware.py` (3) | que la URL de pago siga cabiendo en un QR legible en una pantalla de 2″. No necesita base de datos ni el toolchain de ESP-IDF |
 
 Los de la API necesitan el PostgreSQL de la sección anterior en el puerto 55433.
 **Sin él se saltan**, y el resto de la suite pasa igual — así que si te salen 49
-en vez de 74, es que falta la base.
+en vez de 52, es que falta la base.
 
 Ese último grupo cubre un fallo que ya ocurrió: el evento salía con
 `payment_method: null` y el Lab 2 habría rechazado el 100% de las filas del
@@ -292,5 +293,18 @@ Se puede trabajar en todo esto sin desplegar nada:
 - La infraestructura, hasta `validate`
 
 Lo único que exige desplegar es confirmar que DMS completa el full load, que el
-CDC funciona, que el Crawler crea la tabla y que el EC2 arranca Streamlit. Esas
-cuatro cosas no las verifica ninguna prueba estática.
+Crawler crea la tabla y que el EC2 arranca Streamlit. Y con el hardware delante,
+que el firmware se graba y la pantalla queda como se espera. Eso no lo verifica
+ninguna prueba estática.
+
+### El firmware del POS
+
+Compila en local, pero necesita el kit del Core2 (~20 MB) y la cadena de
+herramientas de PlatformIO (~1,3 GB la primera vez):
+
+```bash
+cd payments/firmware && ./setup.sh && pio run
+```
+
+Verificado el 2026-09-28: ESP-IDF v4.2.1 compila hoy en ~45 s. Detalles en
+[`payments/firmware/README.md`](../payments/firmware/README.md).

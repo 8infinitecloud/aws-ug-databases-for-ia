@@ -1,0 +1,14 @@
+# Artefactos de PlatformIO y ESP-IDF
+.pio/
+build/
+sdkconfig
+sdkconfig.old
+
+# Los componentes del kit se descargan con setup.sh: 20 MB de codigo de AWS y
+# M5Stack que no tiene por que vivir en este repo.
+components/
+
+# Nunca: los certificados del dispositivo son secretos y no se versionan.
+main/certs/device_cert.pem
+main/certs/*_manifest.json
+*.key

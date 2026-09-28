@@ -517,3 +517,4 @@ def test_la_pagina_llama_a_las_rutas_que_la_api_expone():
     assert '/confirm' in html
     assert '"Idempotency-Key"' in html, "sin clave, un doble toque cobraria dos veces"
     assert '{ channel: "QR" }' in html
+

@@ -1,0 +1,35 @@
+menu "FinCorp POS"
+
+    config WIFI_SSID
+        string "WiFi SSID"
+        default "FinCorpDemo"
+        help
+            Red a la que se conecta el terminal.
+
+    config WIFI_PASSWORD
+        string "WiFi Password"
+        default ""
+        help
+            Contrasena de la red. Vacia si es abierta.
+
+    config API_BASE_URL
+        string "URL base de la API de adquirencia"
+        default "https://example.execute-api.us-east-1.amazonaws.com"
+        help
+            El endpoint de API Gateway, sin barra final. Lo da
+            `terraform -chdir=infra/payments output api_endpoint`.
+
+    config TERMINAL_ID
+        string "Identificador del terminal (TID)"
+        default "TID00001"
+        help
+            Debe existir en acquiring.terminals y pertenecer al comercio.
+
+    config DEMO_CVV
+        string "CVV que aprueba (DEMO)"
+        default "123"
+        help
+            DEMO: no es un CVV real. Cualquier otro valor hace que el emisor
+            simulado declino con el codigo 05.
+
+endmenu

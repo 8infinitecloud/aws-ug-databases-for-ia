@@ -72,27 +72,48 @@ tiene serial `012370911fd7211101`, y ya pasó por el registration helper.
 > el Core2 v1.3 genérico: sin el elemento seguro habría que gestionar la clave
 > privada en el firmware, que es justo lo que este hardware evita.
 
-### 1.2 Generación de QR — corregido: aún más simple
+### 1.2 Generación de QR — corregido dos veces
 
 **No es Arduino.** El AWS IoT Kit usa **ESP-IDF**, así que `M5.Lcd.qrcode()` (de
-la librería Arduino `M5Core2`) no aplica. Lo que hay es mejor: un componente
-`qrcode` ya incluido en el proyecto, con una única función.
+la librería Arduino `M5Core2`) no aplica.
 
-```c
-#include "qrcode.h"
+> **Corrección del 2026-09-28, al implementarlo.** Esta sección decía que el kit
+> trae un componente `qrcode` con `qrcode_display()` y que «eso es toda la API».
+> Es engañoso por dos motivos:
+>
+> 1. **No está en el proyecto que usamos.** `components/qrcode/` existe en
+>    `Getting-Started` y `Alexa_for_IoT-Intro`, que van sobre ESP RainMaker, no
+>    en `Blinky-Hello-World`, que es la base de este firmware.
+> 2. **`qrcode_display()` no dibuja en la pantalla.** Hace `printf` del QR como
+>    arte ASCII en la **consola serie**. Sirve para aprovisionar un dispositivo
+>    mirando el log; no sirve para que alguien escanee el QR.
+>
+> Lo que sí se aprovecha es la librería que hay debajo: **qrcodegen** (de
+> Nayuki, MIT), con `qrcodegen_encodeText()`, `qrcodegen_getSize()` y
+> `qrcodegen_getModule()`. El firmware pinta el mapa de módulos sobre un canvas
+> de LVGL en `payments/firmware/main/pos_qr.c`.
 
-esp_err_t qrcode_display(const char *text);   // eso es toda la API
-```
+**Decisión de diseño:** el QR contiene **una URL corta**, no el JSON de la
+transacción. Medido con la URL real de API Gateway:
 
-Está en `components/qrcode/` de los proyectos del kit. No hace falta el módulo
-*M5Module-QRCode*: ese es un **lector**, y aquí sólo necesitamos **mostrar**.
+| URL | Caracteres | Versión | Módulos | Escala |
+|---|---|---|---|---|
+| `https://<id>.execute-api.us-east-1.amazonaws.com/pay/PI1A2B3C4D` | 69 | 4 | 33×33 | 4 px |
+| Con un stage `/prod` delante | 74 | 4 | 33×33 | 4 px |
+| Con dominio propio corto | 39 | 3 | 29×29 | 4 px |
 
-**Decisión de diseño que se deriva de esto:** el QR debe contener **una URL
-corta**, no el JSON de la transacción. Una versión 6 admite ~134 caracteres
-alfanuméricos; el JSON del §24 de la especificación ocupa más, obligaría a una
-versión alta, y un QR denso en una pantalla de 2 pulgadas **no se escanea con un
-móvil desde el público**. La web recupera los detalles con el `transaction_id`
-que viene en la URL.
+**Y aquí está la restricción que hay que asumir, no resolver.** La pantalla del
+Core2 son 2″ a 320×240, o sea ~200 px por pulgada. Un QR de 164 px son **21 mm
+reales**, con módulos de 0,63 mm. La distancia de lectura práctica de un móvil
+ronda 10-15× el ancho del símbolo: **unos 25 cm**.
+
+O sea: **el QR no se escanea desde la butaca.** Hay que acercarse al terminal.
+Eso cambia la puesta en escena del §4.2 —donde se decía «alguien del público
+escanea el QR»— pero no la arquitectura: alguien sube, escanea y paga desde su
+móvil, que además se ve mejor en cámara.
+
+Si alguna vez se quisiera a distancia, la palanca no es la pantalla: es acortar
+la URL con un dominio propio, que bajaría a versión 2-3.
 
 ### 1.3 Conectividad con AWS IoT Core — resuelta, y mejor de lo previsto
 
@@ -785,7 +806,39 @@ Antes de implementar, hacen falta cuatro decisiones:
 | SC-02 | ¿Pipeline de eventos separado o fusionado con el de transacciones? | **Separado** (`raw/events/` → `curated/events/`), para no romper la calibración ya probada del Lab 2 |
 | SC-03 | ¿De dónde salen los 5 minutos de la charla? | **Opción A**: el POS sustituye la demo del Lab 1 |
 | SC-04 | ~~¿Ya tienes el M5Stack Core2?~~ | **Resuelta.** Es un *Core2 for AWS IoT Kit* con ATECC608, serial `012370911fd7211101`, ya aprovisionado |
-| SC-05 | ¿Compila hoy el entorno del kit? (ESP-IDF v4.2, de 2021) | Comprobarlo antes de la fase 6. Si no, la fase 6 se retrasa pero las 1-5 no |
+| SC-05 | ~~¿Compila hoy el entorno del kit? (ESP-IDF v4.2, de 2021)~~ | **Resuelta el 2026-09-28: sí.** Build verificado del proyecto de referencia, 55,7 s, `firmware.bin` de 992 KB. Detalles abajo |
+
+#### SC-05, la evidencia
+
+El riesgo era que una cadena de herramientas de 2021 ya no resolviera sus
+dependencias. Se comprobó compilando el proyecto de referencia del kit
+(`Blinky-Hello-World`) en el Mac donde se dará la charla:
+
+```
+Linking .pio/build/core2foraws/firmware.elf
+RAM:   [          ]   0.9% (used 56124 bytes from 6553600 bytes)
+Flash: [==        ]  15.5% (used 1015712 bytes from 6553600 bytes)
+========================= [SUCCESS] Took 55.73 seconds =========================
+```
+
+Lo que resolvió PlatformIO 6.2.0, que es lo que importa para reproducirlo:
+
+| Paquete | Versión |
+|---|---|
+| `espressif32` | 3.2.1 |
+| `framework-espidf` | 3.40201.210513 (ESP-IDF v4.2.1) |
+| `tool-cmake` | 3.16.4 |
+| `tool-esptoolpy` | 1.30000.201119 |
+| `tool-ninja` | 1.9.0 |
+
+**El margen es cómodo:** el proyecto de referencia ocupa el 15,5 % del flash y el
+0,9 % de la RAM. Quedan 5,5 MB de flash y 6,5 MB de RAM para el QR, el cliente
+HTTP y la UI del POS, así que el tamaño no es una restricción de diseño.
+
+Fuente de los `components/` (`core2forAWS`, `esp-aws-iot`, `esp-cryptoauthlib`,
+20 MB en total): <https://github.com/m5stack/Core2-for-AWS-IoT-EduKit>, commit
+`3ec44e0`.
+
 
 ---
 

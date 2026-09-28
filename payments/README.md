@@ -45,7 +45,7 @@ de demo y como dueño del POS físico que se usa en la charla.
 | `schema/` | Modelo transaccional del adquirente (Aurora PostgreSQL Serverless v2) |
 | `backend/` | API de adquirencia sobre Fargate |
 | `web/` | Página de pago QR, servida por la propia API en `/pay/{ref}` |
-| `firmware/` | Firmware del terminal que provisionamos (M5Stack Core2 for AWS IoT Kit) |
+| `firmware/` | Firmware del terminal (M5Stack Core2 for AWS IoT Kit), compilación local |
 
 La infraestructura está en [`../infra/payments/`](../infra/payments/).
 
@@ -61,10 +61,10 @@ La infraestructura está en [`../infra/payments/`](../infra/payments/).
 | API HTTP + idempotencia | ✅ 19 tests de integración · imagen construida |
 | Terraform (Aurora, Fargate, API Gateway) | ✅ `plan` verificado · **no desplegado** |
 | Web de pago QR | ✅ Servida en `/pay/{ref}` · mismo origen, sin CORS |
-| Firmware del terminal | 🔲 Pendiente |
+| Firmware del terminal | ✅ Compila (1,0 MB) · **sin grabar en el dispositivo** |
 
-Lo único que falta por validar es un despliegue real en AWS. Todo lo demás se
-ejecuta y se prueba en local.
+Falta validar dos cosas contra hardware real: un despliegue en AWS y una grabada
+en el Core2. Todo lo demás se ejecuta y se prueba en local.
 
 Diseño completo:
 [`../docs/architecture-demo-proposal.md`](../docs/architecture-demo-proposal.md).
