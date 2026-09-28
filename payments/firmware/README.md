@@ -153,9 +153,46 @@ SHORT_CLICKED, CLICKED, RELEASED y alguno más—. El filtro por
 exactamente **una** intención de cobro y no siete. Comprobado instrumentando los
 callbacks en el dispositivo.
 
-Lo que sigue sin comprobar es lo visual: si las posiciones, los tamaños de
-fuente y los importes se leen bien en una pantalla de 2 pulgadas. Eso necesita
-mirarla, no leer un log.
+### El flujo completo, contra la API real
 
-Y el flujo completo contra la API real está pendiente de configurar
-`API_BASE_URL` y la red con `pio run -t menuconfig`.
+Verificado el 2026-09-28 con el terminal conectado a un hotspot de móvil y
+`payments` desplegado en AWS:
+
+```
++ 4.0s  IP: 172.20.10.3
++21.4s  POST /v1/intents -> 201                    (se toca QR)
++25.3s  GET  /v1/intents/PIEF4950CA -> 200         (empieza el sondeo)
+        … cada ~3,6 s …
++42.0s  POST /v1/intents/PIEF4950CA/confirm -> 200 (alguien pagó)
+```
+
+El cobro llegó entero a Aurora:
+
+```
+PIEF4950CA · SUCCEEDED · 38,50 PEN · Smart Coffee
+Espresso 8,00 + Latte 18,50 + Croissant 12,00 = 38,50
+```
+
+Las líneas suman exactamente el importe, así que el carrito del POS y el
+validador del backend concuerdan. El backend sirvió la página del QR al móvil
+(`GET /pay/PIEF4950CA` 200) y publicó el evento en IoT Core, en el topic que
+cuelga del serial real del elemento seguro:
+
+```
+evento payment.captured publicado en 012370911fd7211101/events
+```
+
+El segundo `confirm` que manda el POS al detectar `SUCCEEDED` devolvió el cobro
+existente en vez de cobrar otra vez (`intencion ya estaba cobrada`): la
+idempotencia funcionando sobre hardware real.
+
+### Configurar la red y la API
+
+Las credenciales van en `sdkconfig`, que **está en `.gitignore`**. No las pongas
+en `Kconfig.projbuild`, que sí se commitea.
+
+```bash
+pio run -t menuconfig     # menú "FinCorp POS"
+```
+
+`API_BASE_URL` sale de `terraform -chdir=infra/payments output -raw api_endpoint`.
