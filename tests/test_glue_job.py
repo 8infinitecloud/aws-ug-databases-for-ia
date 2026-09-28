@@ -235,7 +235,15 @@ def test_el_csv_tiene_las_columnas_de_la_vista_del_adquirente(raw):
     import re as _re
 
     sql = (REPO / "payments/schema/001_schema.sql").read_text(encoding="utf-8")
-    bloque = sql.split("CREATE OR REPLACE VIEW v_transactions_for_ingestion")[1]
+    # Acepta `CREATE VIEW` y `CREATE OR REPLACE VIEW`: la vista pasó a crearse
+    # con DROP previo porque CREATE OR REPLACE no puede cambiar el tipo de una
+    # columna, y este test se rompió con un IndexError que no decía nada.
+    partes = _re.split(
+        r"CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+v_transactions_for_ingestion",
+        sql,
+    )
+    assert len(partes) > 1, "no se encontró la definición de la vista"
+    bloque = partes[1]
     bloque = bloque.split("FROM charges")[0]
 
     vista = []
