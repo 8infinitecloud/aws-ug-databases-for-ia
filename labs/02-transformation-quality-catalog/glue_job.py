@@ -45,18 +45,38 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ── Constantes ────────────────────────────────────────────────────────────────
-VALID_TRANSACTION_TYPES = {"DEPOSIT", "WITHDRAWAL", "TRANSFER"}
-VALID_STATUSES           = {"PENDING", "COMPLETED", "FAILED", "PROCESSING"}
-VALID_CURRENCIES         = {"USD", "PEN", "EUR"}
+# ── Constantes del dominio de adquirencia ─────────────────────────────────────
+# Somos el adquirente: procesamos autorizaciones de pago para comercios
+# afiliados. No hay depositos ni retiros; hay capturas, rechazos y devoluciones.
+VALID_PAYMENT_METHODS = {"CARD_PRESENT", "QR"}
+VALID_STATUSES        = {"CAPTURED", "FAILED", "REFUNDED", "REVERSED"}
+VALID_CURRENCIES      = {"PEN", "USD", "EUR"}
 
-# Mapa de normalización para transaction_type (español → inglés)
-TYPE_NORMALIZATION = {
-    "DEPÓSITO":      "DEPOSIT",
-    "DEPOSITO":      "DEPOSIT",
-    "RETIRO":        "WITHDRAWAL",
-    "TRANSFERENCIA": "TRANSFER",
+# ISO 8583 DE 39: solo el 00 aprueba.
+RESPONSE_CODE_APPROVED = "00"
+
+# Codigos que escribia el core antiguo. Dos generaciones de sistema nombrando lo
+# mismo distinto: el caso mas comun de dato recuperable por normalizacion.
+METHOD_NORMALIZATION = {
+    "TARJETA":      "CARD_PRESENT",
+    "POS":          "CARD_PRESENT",
+    "CARD":         "CARD_PRESENT",
+    "CODIGO_QR":    "QR",
+    "CÓDIGO_QR":    "QR",
+    "QR_CODE":      "QR",
 }
+
+# Igual con los estados: el core antiguo escribia en espanol.
+STATUS_NORMALIZATION = {
+    "CAPTURADA":  "CAPTURED",
+    "RECHAZADA":  "FAILED",
+    "DEVUELTA":   "REFUNDED",
+    "REVERSADA":  "REVERSED",
+}
+
+# Tolerancia al comparar importes. Los CSV traen 2 decimales, asi que un centimo
+# de diferencia es redondeo y no un descuadre real.
+LEDGER_TOLERANCE = 0.01
 
 # ── Argumentos del job ────────────────────────────────────────────────────────
 
@@ -195,7 +215,7 @@ def transform_dataframe(raw_df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
 
     Transformaciones:
       a. Normalizar transaction_date (DD/MM/YYYY → YYYY-MM-DD)
-      b. Normalizar transaction_type (español → inglés)
+      b. Normalizar payment_method (codigos del core antiguo)
       c. Normalizar status (upper case)
       d. Convertir amount a numérico
       e. Agregar columnas de auditoría y particionado
@@ -217,22 +237,27 @@ def transform_dataframe(raw_df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     log.info(f"  Fechas: {stats['dates_fixed_format']} convertidas DD/MM/YYYY→YYYY-MM-DD, "
              f"{stats['dates_unrecognized']} no reconocidas")
 
-    # b. Normalizar transaction_type (upper + mapa español→inglés)
-    original_types = df["transaction_type"].copy()
-    df["transaction_type"] = df["transaction_type"].str.strip().str.upper()
-    df["transaction_type"] = df["transaction_type"].replace(TYPE_NORMALIZATION)
-    stats["types_normalized"] = int(
-        (original_types.str.upper().isin(set(TYPE_NORMALIZATION.keys()))).sum()
+    # b. Normalizar payment_method (upper + codigos del core antiguo)
+    original_methods = df["payment_method"].copy()
+    df["payment_method"] = df["payment_method"].str.strip().str.upper()
+    df["payment_method"] = df["payment_method"].replace(METHOD_NORMALIZATION)
+    stats["methods_normalized"] = int(
+        (original_methods.str.upper().isin(set(METHOD_NORMALIZATION.keys()))).sum()
     )
-    log.info(f"  Tipos normalizados (español→inglés): {stats['types_normalized']}")
+    log.info(f"  Metodos de pago normalizados: {stats['methods_normalized']}")
 
-    # c. Normalizar status (upper case)
+    # c. Normalizar status (upper + codigos en espanol del core antiguo)
     original_status = df["status"].copy()
     df["status"] = df["status"].str.strip().str.upper()
-    stats["status_normalized"] = int(
-        (original_status != df["status"]).sum()
-    )
-    log.info(f"  Status normalizados (case): {stats['status_normalized']}")
+    df["status"] = df["status"].replace(STATUS_NORMALIZATION)
+    stats["status_normalized"] = int((original_status != df["status"]).sum())
+    log.info(f"  Status normalizados: {stats['status_normalized']}")
+
+    # c2. Convertir los importes economicos. Sin esto, las reglas de libro mayor
+    # compararian cadenas y no numeros.
+    for col in ("fee_amount", "net_amount"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
     # d. Convertir amount a numérico (NULL/vacío → NaN)
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
@@ -255,12 +280,17 @@ def transform_dataframe(raw_df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
 
 def measure_rules(df: pd.DataFrame) -> dict:
     """
-    Mide las 8 reglas del ruleset DQDL sobre CUALQUIER dataframe, sin modificarlo.
+    Mide las 10 reglas del ruleset DQDL sobre CUALQUIER dataframe, sin modificarlo.
+
+    Ocho son validaciones de columna (completitud, unicidad, valores validos,
+    longitud). Las dos ultimas comparan CAMPOS ENTRE SI, y son las propias de un
+    adquirente: que el libro mayor cuadre y que una operacion capturada tenga la
+    aprobacion del emisor. Ninguna herramienta que mire columna a columna las ve.
 
     Se aplica dos veces en el job: una sobre los datos raw y otra sobre los
     curados. Esa comparacion es el punto del lab — muestra que problemas traia
     el origen y cuales quedaron resueltos. Medir solo al final dejaria las
-    reglas de transaction_type y status siempre en PASS, porque la
+    reglas de payment_method y status siempre en PASS, porque la
     transformacion ya las habia normalizado, y no se veria nada.
 
     Devuelve solo metricas: la decision de aceptar o rechazar filas vive en
@@ -270,12 +300,41 @@ def measure_rules(df: pd.DataFrame) -> dict:
     if total == 0:
         return {"rules": {}, "rules_passed": 0, "rules_failed": 0, "overall_score": 1.0}
 
-    null_amount    = df["amount"].isna()
+    # Un importe que no se puede convertir a numero es tan inservible como uno
+    # ausente, asi que cuenta igual para la completitud.
+    null_amount    = pd.to_numeric(df["amount"], errors="coerce").isna()
     null_txn_id    = df["transaction_id"].isna()
     null_cust_id   = df["customer_id"].isna()
-    invalid_type   = ~df["transaction_type"].isin(VALID_TRANSACTION_TYPES)
+    invalid_method = ~df["payment_method"].isin(VALID_PAYMENT_METHODS)
     invalid_status = ~df["status"].isin(VALID_STATUSES)
     invalid_curr   = ~df["currency"].isin(VALID_CURRENCIES)
+
+    # ── Reglas de REGLA DE NEGOCIO, propias de la adquirencia ────────────────
+    # Estas dos no son validaciones de columna: comparan varios campos entre si.
+    # Ninguna herramienta que mire "esta columna tiene nulos" las detecta, y son
+    # las que de verdad importan en un sistema de pagos.
+
+    # El libro mayor: neto = importe - comision. Si no cuadra, la liquidacion al
+    # comercio sale mal, y eso es dinero real mal pagado.
+    #
+    # Se convierte a numerico AQUI, en copias locales, por dos razones: esta
+    # funcion se aplica tambien sobre los datos raw, donde los importes siguen
+    # siendo cadenas del CSV; y la funcion promete no modificar el dataframe que
+    # recibe.
+    amount_num = pd.to_numeric(df["amount"], errors="coerce")
+    fee_num    = pd.to_numeric(df.get("fee_amount"), errors="coerce")
+    net_num    = pd.to_numeric(df.get("net_amount"), errors="coerce")
+
+    has_ledger    = amount_num.notna() & fee_num.notna() & net_num.notna()
+    ledger_diff   = (amount_num - fee_num - net_num).abs()
+    ledger_broken = has_ledger & (ledger_diff > LEDGER_TOLERANCE)
+
+    # Contradiccion interna: la operacion dice estar capturada y el emisor dice
+    # que no la aprobo. Una de las dos afirmaciones es falsa, y cobrar sin
+    # autorizacion del emisor acaba en contracargo.
+    claims_captured = df["status"] == "CAPTURED"
+    issuer_declined = df["response_code"] != RESPONSE_CODE_APPROVED
+    captured_without_auth = claims_captured & issuer_declined
 
     # ColumnLength del DQDL: entre 1 y 20 caracteres.
     txn_id_len  = df["transaction_id"].astype(str).str.len()
@@ -309,10 +368,10 @@ def measure_rules(df: pd.DataFrame) -> dict:
             "passed":      uniqueness >= 1.0,
             "failed_rows": int(df.duplicated(subset=["transaction_id"], keep=False).sum()),
         },
-        # R05 — ColumnValues "transaction_type"
-        "validity_transaction_type": rule(
-            ~invalid_type, 1.0,
-            {"invalid_values": df[invalid_type]["transaction_type"].value_counts().to_dict()},
+        # R05 — ColumnValues "payment_method"
+        "validity_payment_method": rule(
+            ~invalid_method, 1.0,
+            {"invalid_values": df[invalid_method]["payment_method"].value_counts().to_dict()},
         ),
         # R06 — ColumnValues "status"
         "validity_status": rule(
@@ -321,8 +380,26 @@ def measure_rules(df: pd.DataFrame) -> dict:
         ),
         # R07 — ColumnValues "currency"
         "validity_currency": rule(~invalid_curr, 1.0),
-        # R08 — ColumnLength "transaction_id" between 1 and 20
+        # R08 — ColumnLength "transaction_id" between 1 and 40
         "length_transaction_id": rule(~bad_txn_len, 1.0),
+        # R09 — CustomSql: net_amount = amount - fee_amount
+        # La invariante contable del adquirente. Se mide solo sobre las filas que
+        # tienen los tres importes: una fila sin comision no esta descuadrada,
+        # simplemente no tiene libro todavia.
+        "ledger_coherence": {
+            "score":       round(float((~ledger_broken).sum()) / total, 4),
+            "threshold":   1.0,
+            "passed":      bool(~ledger_broken.any()),
+            "failed_rows": int(ledger_broken.sum()),
+            "checked_rows": int(has_ledger.sum()),
+        },
+        # R10 — CustomSql: status CAPTURED implica response_code = 00
+        "captured_implies_approved": {
+            "score":       round(float((~captured_without_auth).sum()) / total, 4),
+            "threshold":   1.0,
+            "passed":      bool(~captured_without_auth.any()),
+            "failed_rows": int(captured_without_auth.sum()),
+        },
     }
 
     passed = sum(1 for r in rules.values() if r["passed"])
@@ -338,7 +415,11 @@ def apply_data_quality(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, di
     """
     Evalúa las reglas de calidad y separa registros válidos de rechazados.
 
-    Un registro se rechaza si falla cualquiera de las reglas del ruleset DQDL.
+    Un registro se rechaza si falla cualquiera de las reglas del ruleset DQDL,
+    incluidas las dos de regla de negocio: un libro descuadrado liquidaria mal al
+    comercio, y una captura sin aprobacion del emisor acaba en contracargo. Las
+    dos exigen revision manual, asi que se apartan en vez de pasar a curated.
+
     Las metricas las calcula measure_rules sobre el mismo dataframe.
     """
     total = len(df)
@@ -347,22 +428,40 @@ def apply_data_quality(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, di
     mask_null_amount    = df["amount"].isna()
     mask_null_txn_id    = df["transaction_id"].isna()
     mask_null_cust_id   = df["customer_id"].isna()
-    mask_invalid_type   = ~df["transaction_type"].isin(VALID_TRANSACTION_TYPES)
+    mask_invalid_method = ~df["payment_method"].isin(VALID_PAYMENT_METHODS)
     mask_invalid_status = ~df["status"].isin(VALID_STATUSES)
     mask_invalid_curr   = ~df["currency"].isin(VALID_CURRENCIES)
 
     # Duplicados: marcar TODAS las ocurrencias del ID duplicado como rechazadas
     dup_mask            = df.duplicated(subset=["transaction_id"], keep=False)
 
+    # ── Reglas de negocio: tambien se rechazan, y por razones de dinero ──────
+    # Una fila cuyo libro no cuadra liquidaria al comercio un importe equivocado.
+    # Una capturada sin aprobacion del emisor es un contracargo esperando. Las dos
+    # exigen revision manual antes de liquidar, asi que van a cuarentena en vez de
+    # pasar a curated.
+    _amount = pd.to_numeric(df["amount"], errors="coerce")
+    _fee    = pd.to_numeric(df.get("fee_amount"), errors="coerce")
+    _net    = pd.to_numeric(df.get("net_amount"), errors="coerce")
+    mask_ledger_broken = (
+        _amount.notna() & _fee.notna() & _net.notna()
+        & ((_amount - _fee - _net).abs() > LEDGER_TOLERANCE)
+    )
+    mask_captured_no_auth = (df["status"] == "CAPTURED") & (
+        df["response_code"] != RESPONSE_CODE_APPROVED
+    )
+
     # Máscara combinada: rechazar si falla ALGUNA regla
     reject_mask = (
         mask_null_amount    |
         mask_null_txn_id    |
         mask_null_cust_id   |
-        mask_invalid_type   |
+        mask_invalid_method |
         mask_invalid_status |
         mask_invalid_curr   |
-        dup_mask
+        dup_mask            |
+        mask_ledger_broken  |
+        mask_captured_no_auth
     )
 
     valid_df    = df[~reject_mask].copy()
@@ -373,10 +472,12 @@ def apply_data_quality(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, di
     reasons[mask_null_amount]    += "NULL_AMOUNT;"
     reasons[mask_null_txn_id]    += "NULL_TXN_ID;"
     reasons[mask_null_cust_id]   += "NULL_CUST_ID;"
-    reasons[mask_invalid_type]   += "INVALID_TYPE;"
+    reasons[mask_invalid_method] += "INVALID_METHOD;"
     reasons[mask_invalid_status] += "INVALID_STATUS;"
     reasons[mask_invalid_curr]   += "INVALID_CURRENCY;"
     reasons[dup_mask]             += "DUPLICATE_TXN_ID;"
+    reasons[mask_ledger_broken]   += "LEDGER_MISMATCH;"
+    reasons[mask_captured_no_auth] += "CAPTURED_WITHOUT_AUTH;"
     rejected_df["rejection_reason"] = reasons[reject_mask].values
 
     # Metricas sobre valid_df, no sobre df: lo que describe la calidad de la

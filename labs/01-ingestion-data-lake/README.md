@@ -114,7 +114,7 @@ s3://fincorp-datalake-{account-id}/
 
 ## Dataset
 
-### transactions.csv (~1000 filas)
+### transactions.csv (1000 operaciones)
 
 | Campo | Tipo | Descripción |
 |-------|------|-------------|
@@ -127,7 +127,7 @@ s3://fincorp-datalake-{account-id}/
 | `transaction_date` | VARCHAR(20) | **Mezcla de YYYY-MM-DD y DD/MM/YYYY (~10%)** |
 | `branch_id` | VARCHAR(10) | BR001-BR020 |
 
-### customers.csv (~200 filas)
+### merchants.csv (200 comercios afiliados)
 
 Tabla de referencia limpia. Sin problemas deliberados. Campos: `customer_id`, `name`, `email`, `country`, `risk_level`, `onboarding_date`.
 

@@ -110,7 +110,7 @@ def seed_raw_zone(root: Path) -> None:
     asi que el nombre exacto da igual. Se usa el de DMS para que la estructura
     local se parezca a la real.
     """
-    for tabla in ("transactions", "customers"):
+    for tabla in ("transactions", "merchants"):
         destino = root / "raw" / tabla / "LOAD00000001.csv"
         destino.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(DATASET / f"{tabla}.csv", destino)

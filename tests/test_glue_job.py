@@ -66,25 +66,30 @@ def test_el_dataset_falla_reglas_en_origen(stages):
     fallan = [n for n, r in stages["raw"]["rules"].items() if not r["passed"]]
     assert fallan, "ninguna regla falla en raw: el dataset perdio sus problemas deliberados"
     assert set(fallan) == {
+        # de forma
         "uniqueness_transaction_id",
-        "validity_transaction_type",
+        "validity_payment_method",
         "validity_status",
+        # de regla de negocio: las propias de un adquirente
+        "ledger_coherence",
+        "captured_implies_approved",
     }
 
 
 # ── El ruleset declarado y lo que el job mide no pueden divergir ─────────────
 
-def test_el_job_mide_las_8_reglas_del_dqdl(stages):
+def test_el_job_mide_las_10_reglas_del_dqdl(stages):
     dqdl = (REPO / "labs/02-transformation-quality-catalog/quality_rules.dqdl").read_text()
     # Solo lineas de regla: las palabras clave tambien salen en los comentarios.
-    palabras = ("Completeness", "IsComplete", "Uniqueness", "ColumnValues", "ColumnLength")
+    palabras = ("Completeness", "IsComplete", "Uniqueness", "ColumnValues",
+                "ColumnLength", "CustomSql")
     declaradas = sum(
         1
         for linea in dqdl.splitlines()
         if (limpia := linea.strip()) and not limpia.startswith("#")
         and limpia.startswith(palabras)
     )
-    assert len(stages["curated"]["rules"]) == declaradas == 8
+    assert len(stages["curated"]["rules"]) == declaradas == 10
 
 
 # ── El relato raw -> transformado -> curated ──────────────────────────────────
@@ -92,19 +97,31 @@ def test_el_job_mide_las_8_reglas_del_dqdl(stages):
 def test_la_calidad_mejora_en_cada_etapa(stages):
     assert stages["raw"]["rules_passed"] == 5
     assert stages["transformed"]["rules_passed"] == 7
-    assert stages["curated"]["rules_passed"] == 8
+    # 10/10 porque las reglas de negocio tambien rechazan: una fila con el libro
+    # descuadrado no debe llegar a liquidacion.
+    assert stages["curated"]["rules_passed"] == 10
 
 
 def test_la_transformacion_resuelve_tipos_y_estados(stages):
     """Valores recuperables: se normalizan y la fila se conserva."""
-    for regla in ("validity_transaction_type", "validity_status"):
+    for regla in ("validity_payment_method", "validity_status"):
         assert not stages["raw"]["rules"][regla]["passed"]
         assert stages["transformed"]["rules"][regla]["passed"]
 
 
-def test_los_duplicados_se_resuelven_rechazando_no_transformando(stages):
-    """No hay forma de inventar cual de dos filas con el mismo id es la buena."""
-    regla = "uniqueness_transaction_id"
+@pytest.mark.parametrize(
+    "regla",
+    [
+        # No hay forma de inventar cual de dos filas con el mismo id es la buena.
+        "uniqueness_transaction_id",
+        # Un libro descuadrado liquidaria mal al comercio: es dinero real.
+        "ledger_coherence",
+        # Capturada sin aprobacion del emisor es un contracargo esperando.
+        "captured_implies_approved",
+    ],
+)
+def test_lo_no_recuperable_se_resuelve_rechazando(stages, regla):
+    """Transformar no puede arreglar esto: exige una decision de negocio."""
     assert not stages["raw"]["rules"][regla]["passed"]
     assert not stages["transformed"]["rules"][regla]["passed"]
     assert stages["curated"]["rules"][regla]["passed"]
@@ -117,10 +134,10 @@ def test_ninguna_fila_se_pierde(stages):
     assert total == len(stages["transformed_df"]) == 1000
 
 
-def test_se_rechazan_100_filas(stages):
+def test_se_rechazan_137_filas(stages):
     """Las cifras de los README dependen de este numero."""
-    assert len(stages["rejected"]) == 100
-    assert len(stages["valid"]) == 900
+    assert len(stages["rejected"]) == 137
+    assert len(stages["valid"]) == 863
 
 
 def test_los_rechazados_llevan_motivo(stages):
@@ -132,7 +149,7 @@ def test_los_rechazados_llevan_motivo(stages):
 @pytest.mark.parametrize(
     "columna,permitidos",
     [
-        ("transaction_type", gj.VALID_TRANSACTION_TYPES),
+        ("payment_method", gj.VALID_PAYMENT_METHODS),
         ("status", gj.VALID_STATUSES),
         ("currency", gj.VALID_CURRENCIES),
     ],
@@ -143,7 +160,7 @@ def test_curated_no_contiene_valores_invalidos(stages, columna, permitidos):
 
 def test_curated_sin_nulos_ni_duplicados(stages):
     valid = stages["valid"]
-    assert not valid["amount"].isna().any()
+    assert not pd.to_numeric(valid["amount"], errors="coerce").isna().any()
     assert not valid["transaction_id"].duplicated().any()
     assert not valid["customer_id"].isna().any()
 
@@ -184,9 +201,12 @@ def test_el_generador_reproduce_la_calibracion():
     spec.loader.exec_module(gen)
 
     assert gen.FRACTION_NULL_AMOUNT == 0.050
-    assert gen.FRACTION_SPANISH_TYPE == 0.020
+    assert gen.FRACTION_LEGACY_METHOD == 0.020
     assert gen.FRACTION_WEIRD_STATUS == 0.080
     assert gen.FRACTION_NON_ISO_DATE == 0.100
+    # Las dos propias de la adquirencia
+    assert gen.FRACTION_LEDGER_MISMATCH == 0.030
+    assert gen.FRACTION_APPROVED_NO_AUTH == 0.015
 
     # La fraccion de nulos es la que pone completeness justo en el umbral.
     completeness = 1 - gen.FRACTION_NULL_AMOUNT
@@ -198,11 +218,40 @@ def test_el_generador_reproduce_la_calibracion():
 
 def test_el_csv_del_repo_coincide_con_la_calibracion(raw):
     """Los CSV commiteados son la referencia: deben tener las cantidades documentadas."""
-    assert raw["amount"].isna().sum() == 50
-    assert (~raw["transaction_type"].isin(gj.VALID_TRANSACTION_TYPES)).sum() == 20
+    assert pd.to_numeric(raw["amount"], errors="coerce").isna().sum() == 50
+    assert (~raw["payment_method"].isin(gj.VALID_PAYMENT_METHODS)).sum() == 20
     assert (~raw["status"].isin(gj.VALID_STATUSES)).sum() == 80
     assert raw["transaction_date"].str.contains("/").sum() == 100
-    assert raw["transaction_id"].duplicated(keep=False).sum() == 55
+    assert raw["transaction_id"].duplicated(keep=False).sum() == 53
+
+
+def test_el_csv_tiene_las_columnas_de_la_vista_del_adquirente(raw):
+    """
+    El contrato del dataset es la vista acquiring.v_transactions_for_ingestion.
+
+    Si divergen, el dataset historico y el flujo en tiempo real dejan de tener la
+    misma forma, y el Lab 2 tendria que distinguirlos.
+    """
+    import re as _re
+
+    sql = (REPO / "payments/schema/001_schema.sql").read_text(encoding="utf-8")
+    bloque = sql.split("CREATE OR REPLACE VIEW v_transactions_for_ingestion")[1]
+    bloque = bloque.split("FROM charges")[0]
+
+    vista = []
+    for linea in bloque.splitlines():
+        linea = _re.sub(r"--.*$", "", linea).strip().rstrip(",")
+        if not linea or linea.startswith("SELECT"):
+            continue
+        alias = _re.search(r"AS\s+([a-z_]+)$", linea)
+        if alias:
+            vista.append(alias.group(1))
+        elif _re.fullmatch(r"[a-z]+\.([a-z_]+)", linea):
+            vista.append(linea.split(".")[1])
+
+    assert list(raw.columns) == vista, (
+        "las columnas del CSV ya no coinciden con la vista del adquirente"
+    )
 
 
 # ── Lab 2 -> Lab 3: los documentos derivados ─────────────────────────────────
@@ -252,7 +301,7 @@ def test_el_pipeline_completo_corre_en_local(tmp_path):
 
     root = tmp_path / "lake"
     root.mkdir()
-    for tabla in ("transactions", "customers"):
+    for tabla in ("transactions", "merchants"):
         destino = root / "raw" / tabla / "LOAD00000001.csv"
         destino.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(REPO / f"labs/01-ingestion-data-lake/dataset/{tabla}.csv", destino)
@@ -280,10 +329,11 @@ def test_el_pipeline_completo_corre_en_local(tmp_path):
 
     # El reporte publica la comparacion por etapas
     report = json.loads((root / "quality-reports/latest/quality_report.json").read_text())
-    assert report["summary"]["total_rows_rejected"] == 100
+    assert report["summary"]["total_rows_rejected"] == 137
     comparacion = report["rules_raw_vs_curated"]
     assert comparacion["validity_status"]["resolved_by"] == "transformacion"
     assert comparacion["uniqueness_transaction_id"]["resolved_by"] == "rechazo"
+    assert comparacion["ledger_coherence"]["resolved_by"] == "rechazo"
 
 
 # ── El puente entre los datos (Labs 1-2) y el corpus (Lab 3) ─────────────────
@@ -304,10 +354,10 @@ def corpus_texto() -> str:
 @pytest.mark.parametrize(
     "valor",
     [
-        # transaction_type
-        "DEPOSIT", "WITHDRAWAL", "TRANSFER",
+        # payment_method
+        "CARD_PRESENT", "QR",
         # status
-        "COMPLETED", "PENDING", "FAILED", "PROCESSING",
+        "CAPTURED", "FAILED", "REFUNDED",
         # currency
         "USD", "PEN", "EUR",
         # risk_level de customers.csv
@@ -326,8 +376,11 @@ def test_el_corpus_usa_el_vocabulario_del_dataset(corpus_texto, valor):
 
 @pytest.mark.parametrize(
     "campo",
-    ["transaction_id", "customer_id", "branch_id", "rejection_reason",
-     "transactions_curated", "curated/", "rejected/"],
+    ["transaction_id", "customer_id", "terminal_id", "device_serial",
+     "rejection_reason", "transactions_curated", "curated/", "rejected/",
+     # Propios del adquirente: si el corpus no los menciona, el analista no puede
+     # interpretar lo que ve en la tabla.
+     "mcc", "response_code", "rrn", "fee_amount", "net_amount"],
 )
 def test_el_corpus_referencia_la_plataforma_de_datos(corpus_texto, campo):
     """El corpus debe hablar de las zonas y campos que producen los Labs 1 y 2."""
@@ -341,7 +394,7 @@ def test_los_valores_del_dataset_estan_todos_cubiertos(raw):
     transaccion nuevo al generador, el test avisa de que falta documentarlo.
     """
     corpus = "\n".join(p.read_text(encoding="utf-8") for p in sorted(CORPUS.rglob("*.md")))
-    for columna in ("transaction_type", "status", "currency"):
+    for columna in ("payment_method", "status", "currency"):
         valores = {v for v in raw[columna].dropna().unique() if v.isascii() and v.isupper()}
         faltan = [v for v in valores if not re.search(rf"\b{re.escape(v)}\b", corpus)]
         assert not faltan, f"valores de {columna} sin documentar en el corpus: {faltan}"

@@ -1,35 +1,60 @@
 Rules = [
-    # ── Completeness ─────────────────────────────────────────────────────────
-    # Al menos el 95% de transacciones deben tener amount.
-    # El dataset del Lab 1 tiene 50 NULLs sobre 1000 filas = exactamente 0.9500,
-    # asi que esta regla PASA por los pelos: con un NULL mas fallaria. Esta
-    # calibrado asi a proposito, para ver lo cerca que se esta del umbral.
+    # =========================================================================
+    # FinCorp Payments — reglas de calidad de las autorizaciones
+    # =========================================================================
+    # Somos el ADQUIRENTE: estas filas son pagos que procesamos para comercios
+    # afiliados, no ventas de un comercio.
+    #
+    # Las ocho primeras validan COLUMNAS. Las dos ultimas comparan CAMPOS ENTRE
+    # SI, y son las que de verdad importan en pagos: ninguna herramienta que mire
+    # columna a columna las detecta.
+    # =========================================================================
+
+    # ── Completeness ──────────────────────────────────────────────────────────
+    # Al menos el 95% de las autorizaciones deben tener importe.
+    # El dataset trae 50 nulos sobre 1000 = exactamente 0.9500, asi que esta
+    # regla PASA por los pelos: con un nulo mas fallaria. Esta calibrado asi a
+    # proposito, para ver lo cerca que se esta del umbral.
     Completeness "amount" >= 0.95,
 
-    # transaction_id y customer_id son obligatorios en todos los registros.
+    # transaction_id y el comercio son obligatorios: sin ellos la operacion no se
+    # puede ni liquidar ni auditar.
     IsComplete "transaction_id",
     IsComplete "customer_id",
 
     # ── Uniqueness ────────────────────────────────────────────────────────────
-    # Cada transaction_id debe ser único (no duplicados).
-    # El dataset del Lab 1 tiene ~3% duplicados → esta regla FALLARÁ.
+    # Un transaction_id duplicado significa doble cobro al tarjetahabiente, o un
+    # proceso de carga sin idempotencia. El dataset trae ~2.7% -> FALLARA.
     Uniqueness "transaction_id" = 1.0,
 
-    # ── Validity — ColumnValues ───────────────────────────────────────────────
-    # transaction_type debe ser uno de los valores canónicos en inglés.
-    # El dataset tiene "DEPÓSITO", "RETIRO", "TRANSFERENCIA" → esta regla FALLARÁ
-    # antes de la normalización. Después del job de Glue, todos deben pasar.
-    ColumnValues "transaction_type" in ["DEPOSIT", "WITHDRAWAL", "TRANSFER"],
+    # ── Validity ──────────────────────────────────────────────────────────────
+    # Canales que procesamos. El core antiguo escribia TARJETA y CODIGO_QR, asi
+    # que esta regla FALLA antes de normalizar y pasa despues.
+    ColumnValues "payment_method" in ["CARD_PRESENT", "QR"],
 
-    # status debe ser uno de los valores canónicos en MAYÚSCULAS.
-    # El dataset tiene "pending", "Completed", etc. → esta regla FALLARÁ
-    # antes de la normalización.
-    ColumnValues "status" in ["PENDING", "COMPLETED", "FAILED", "PROCESSING"],
+    # Estados del ciclo de vida de un cobro. El core antiguo escribia en espanol
+    # y sin normalizar el case -> FALLARA antes de la transformacion.
+    ColumnValues "status" in ["CAPTURED", "FAILED", "REFUNDED", "REVERSED"],
 
-    # currency debe ser uno de los valores permitidos.
-    ColumnValues "currency" in ["USD", "PEN", "EUR"],
+    # Monedas en las que liquidamos.
+    ColumnValues "currency" in ["PEN", "USD", "EUR"],
 
     # ── Length ────────────────────────────────────────────────────────────────
-    # transaction_id debe tener entre 1 y 20 caracteres.
-    ColumnLength "transaction_id" between 1 and 20
+    ColumnLength "transaction_id" between 1 and 40,
+
+    # ── Reglas de negocio ─────────────────────────────────────────────────────
+    # Estas dos son las propias de un adquirente, y las unicas que no se pueden
+    # expresar mirando una sola columna.
+
+    # El libro mayor tiene que cuadrar: neto = importe - comision. Si no cuadra,
+    # la liquidacion al comercio paga un importe equivocado. Es dinero real.
+    # Se comprueba solo sobre las filas que tienen los tres importes: una fila sin
+    # comision no esta descuadrada, simplemente no tiene libro todavia.
+    CustomSql "SELECT COUNT(*) FROM primary WHERE amount IS NOT NULL AND fee_amount IS NOT NULL AND net_amount IS NOT NULL AND ABS(amount - fee_amount - net_amount) > 0.01" = 0,
+
+    # Una operacion capturada tiene que tener la aprobacion del emisor
+    # (ISO 8583 DE 39 = 00). Si dice estar cobrada y el emisor la rechazo, una de
+    # las dos afirmaciones es falsa, y cobrar sin autorizacion acaba en
+    # contracargo.
+    CustomSql "SELECT COUNT(*) FROM primary WHERE status = 'CAPTURED' AND response_code <> '00'" = 0
 ]

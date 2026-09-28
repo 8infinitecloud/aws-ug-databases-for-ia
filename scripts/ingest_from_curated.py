@@ -166,17 +166,29 @@ def doc_monthly_summary(df: pd.DataFrame) -> str:
             )
         lines.append("")
 
-        por_tipo = grupo["transaction_type"].value_counts()
-        lines.append("Desglose por tipo de transaccion:")
-        for tipo, n in por_tipo.items():
-            lines.append(f"- {tipo}: {n} transacciones ({n / len(grupo):.1%})")
+        por_canal = grupo["payment_method"].value_counts()
+        lines.append("Desglose por canal de pago:")
+        for canal, n in por_canal.items():
+            lines.append(f"- {canal}: {n} operaciones ({n / len(grupo):.1%})")
         lines.append("")
 
         por_estado = grupo["status"].value_counts()
         lines.append("Desglose por estado:")
         for estado, n in por_estado.items():
-            lines.append(f"- {estado}: {n} transacciones ({n / len(grupo):.1%})")
+            lines.append(f"- {estado}: {n} operaciones ({n / len(grupo):.1%})")
         lines.append("")
+
+        # Lo que de verdad le importa a un adquirente: cuanto se cobro de
+        # comision y cuanto se liquida al comercio.
+        if "fee_amount" in grupo.columns:
+            fees = pd.to_numeric(grupo["fee_amount"], errors="coerce").sum()
+            nets = pd.to_numeric(grupo["net_amount"], errors="coerce").sum()
+            if fees > 0:
+                lines.append(
+                    f"Comisiones cobradas en el periodo: {_money(fees)}. "
+                    f"Liquidado a los comercios: {_money(nets)}."
+                )
+                lines.append("")
 
     return "\n".join(lines)
 
@@ -360,9 +372,9 @@ def main() -> int:
     )
 
     documentos = {
-        "transacciones-resumen-mensual.md": doc_monthly_summary(df),
-        "transacciones-calidad-datos.md": doc_quality_summary(report, df),
-        "transacciones-perfil-riesgo.md": doc_risk_profile(df),
+        "operaciones-resumen-mensual.md": doc_monthly_summary(df),
+        "operaciones-calidad-datos.md": doc_quality_summary(report, df),
+        "operaciones-perfil-riesgo.md": doc_risk_profile(df),
     }
 
     print()

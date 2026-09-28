@@ -115,39 +115,62 @@ S3 raw/transactions/        ← Output del Lab 1 (DMS)
 
 ## Reglas de Calidad (DQDL)
 
-El job mide las 8 reglas **tres veces**, una por etapa del pipeline. Sin las tres
+El job mide las **10 reglas tres veces**, una por etapa del pipeline. Sin las tres
 no se puede distinguir qué arregló la normalización de qué se arregló apartando
 filas, y esa distinción es la lección del lab.
 
-| ID | Regla | Columna | Condición | raw | transformado | curated | resuelto por |
-|----|-------|---------|-----------|-----|--------------|---------|--------------|
-| R01 | Completeness | `amount` | >= 0.95 | ✅ 0.9500 | ✅ 0.9500 | ✅ 1.0000 | — |
-| R02 | IsComplete | `transaction_id` | = 1.0 | ✅ | ✅ | ✅ | — |
-| R03 | IsComplete | `customer_id` | = 1.0 | ✅ | ✅ | ✅ | — |
-| R04 | Uniqueness | `transaction_id` | = 1.0 | ❌ 0.9720 | ❌ 0.9720 | ✅ 1.0000 | **rechazo** |
-| R05 | ColumnValues | `transaction_type` | in `[DEPOSIT…]` | ❌ 0.9800 | ✅ 1.0000 | ✅ | **transformación** |
-| R06 | ColumnValues | `status` | in `[PENDING…]` | ❌ 0.9200 | ✅ 1.0000 | ✅ | **transformación** |
-| R07 | ColumnValues | `currency` | in `[USD,PEN,EUR]` | ✅ | ✅ | ✅ | — |
-| R08 | ColumnLength | `transaction_id` | between 1 and 20 | ✅ | ✅ | ✅ | — |
+**Ocho reglas validan columnas. Las dos últimas comparan campos entre sí**, y son
+las propias de un adquirente: ninguna herramienta que mire columna a columna las
+detecta.
 
-**Total: 5/8 en raw → 7/8 tras transformar → 8/8 en curated.**
+| ID | Regla | Campo | raw | transf. | curated | resuelto por |
+|----|-------|-------|-----|---------|---------|--------------|
+| R01 | Completeness | `amount` >= 0.95 | ✅ 0.9500 | ✅ | ✅ | — |
+| R02 | IsComplete | `transaction_id` | ✅ | ✅ | ✅ | — |
+| R03 | IsComplete | `customer_id` | ✅ | ✅ | ✅ | — |
+| R04 | Uniqueness | `transaction_id` | ❌ | ❌ | ✅ | **rechazo** |
+| R05 | ColumnValues | `payment_method` | ❌ | ✅ | ✅ | **transformación** |
+| R06 | ColumnValues | `status` | ❌ | ✅ | ✅ | **transformación** |
+| R07 | ColumnValues | `currency` | ✅ | ✅ | ✅ | — |
+| R08 | ColumnLength | `transaction_id` | ✅ | ✅ | ✅ | — |
+| **R09** | **CustomSql** | `net = amount - fee` | ❌ | ❌ | ✅ | **rechazo** |
+| **R10** | **CustomSql** | `CAPTURED` ⇒ `response_code = 00` | ❌ | ❌ | ✅ | **rechazo** |
 
-Las dos formas de resolver un problema de calidad, y cuándo usar cada una:
+**Total: 5/10 en raw → 7/10 tras transformar → 10/10 en curated.**
+**1000 operaciones → 863 válidas / 137 apartadas.**
 
-- **Transformación** (R05, R06) — el dato es recuperable. `DEPOSITO` en español
-  es claramente un `DEPOSIT`; `completed` en minúsculas es `COMPLETED`. Se
-  normaliza y la fila se conserva.
-- **Rechazo** (R04) — el dato no es recuperable sin decidir por el negocio. Ante
-  dos transacciones con el mismo `transaction_id`, ¿cuál es la buena? El job no
-  lo inventa: aparta **todas** las ocurrencias a `rejected/` con su motivo.
+### Dos clases de problema, y por qué importa la diferencia
 
-> **R01 pasa por los pelos.** 50 nulos sobre 1000 filas dan exactamente 0.9500,
-> y el umbral es `>= 0.95`. Con un nulo más fallaría. Está calibrado así a
-> propósito: un umbral no es una verdad, es una decisión de negocio, y conviene
-> ver lo cerca que se está del borde.
+**Problemas de forma** (R05, R06) — el dato es recuperable. `TARJETA` es
+inequívocamente `CARD_PRESENT`; `capturada` es `CAPTURED`. Se normaliza y la fila
+se conserva.
 
-**Lo que no se debe leer mal:** que curated pase 8/8 no significa que los datos
-estuvieran bien. Significa que 100 filas problemáticas están en `rejected/`,
+**Problemas de regla de negocio** (R09, R10) — no se pueden arreglar
+transformando, porque exigen una decisión que el pipeline no puede tomar:
+
+- **R09, el libro descuadrado.** Si `net_amount` no es `amount - fee_amount`,
+  ¿cuál de los tres está mal? Liquidar así paga al comercio un importe equivocado.
+  **Es dinero real.**
+- **R10, capturada sin autorización.** La operación dice estar cobrada y el emisor
+  dice que no la aprobó. Una de las dos afirmaciones es falsa, y cobrar sin
+  aprobación acaba en contracargo.
+
+Las dos se apartan a `rejected/` para revisión manual.
+
+| Motivo | Filas | Clase |
+|--------|-------|-------|
+| `DUPLICATE_TXN_ID` | 53 | forma |
+| `NULL_AMOUNT` | 50 | forma |
+| `LEDGER_MISMATCH` | 24 | **regla de negocio** |
+| `CAPTURED_WITHOUT_AUTH` | 16 | **regla de negocio** |
+
+> **R01 pasa por los pelos.** 50 nulos sobre 1000 dan exactamente 0.9500, y el
+> umbral es `>= 0.95`. Con un nulo más fallaría. Está calibrado así a propósito:
+> un umbral no es una verdad, es una decisión de negocio, y conviene ver lo cerca
+> que se está del borde.
+
+**Lo que no se debe leer mal:** que curated pase 10/10 no significa que los datos
+estuvieran bien. Significa que 137 filas problemáticas están en `rejected/`,
 fuera de curated pero **sin borrarse**. Eso es auditable; un `DELETE` no lo es.
 
 ---
@@ -255,7 +278,7 @@ ORDER BY n DESC;
 
   Filas procesadas : 1000
   Filas válidas    : ~820
-  Filas rechazadas : 100
+  Filas rechazadas : 137
   Score DQ         : 62.5%
   Reglas pasadas   : 5/8
   Recomendación    : REVIEW: Se recomienda revisar los registros rechazados

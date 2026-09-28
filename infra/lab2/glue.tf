@@ -98,21 +98,29 @@ resource "aws_glue_crawler" "curated" {
 # mismas reglas.
 resource "aws_glue_data_quality_ruleset" "main" {
   name        = "${var.project_name}-${var.environment}-dq-ruleset"
-  description = "Reglas de calidad para transactions_curated"
+  description = "Calidad de las autorizaciones de pago. 8 reglas de columna + 2 de regla de negocio"
 
+  # Este ruleset DUPLICA labs/02-.../quality_rules.dqdl. Los dos tienen que
+  # decir lo mismo, y un test lo comprueba.
   ruleset = <<-DQDL
     Rules = [
       Completeness "amount" >= 0.95,
       IsComplete "transaction_id",
       IsComplete "customer_id",
       Uniqueness "transaction_id" = 1.0,
-      ColumnValues "transaction_type" in ["DEPOSIT", "WITHDRAWAL", "TRANSFER"],
-      ColumnValues "status" in ["PENDING", "COMPLETED", "FAILED", "PROCESSING"],
-      ColumnValues "currency" in ["USD", "PEN", "EUR"],
-      ColumnLength "transaction_id" between 1 and 20
+      ColumnValues "payment_method" in ["CARD_PRESENT", "QR"],
+      ColumnValues "status" in ["CAPTURED", "FAILED", "REFUNDED", "REVERSED"],
+      ColumnValues "currency" in ["PEN", "USD", "EUR"],
+      ColumnLength "transaction_id" between 1 and 40,
+      CustomSql "SELECT COUNT(*) FROM primary WHERE amount IS NOT NULL AND fee_amount IS NOT NULL AND net_amount IS NOT NULL AND ABS(amount - fee_amount - net_amount) > 0.01" = 0,
+      CustomSql "SELECT COUNT(*) FROM primary WHERE status = 'CAPTURED' AND response_code <> '00'" = 0
     ]
   DQDL
 
+  # Sin target_table a proposito: transactions_curated no existe hasta que corre
+  # el Crawler, y declararla aqui falla con EntityNotFoundException. TargetTable
+  # solo se puede fijar al crear el ruleset, asi que queda standalone. No afecta
+  # al lab: la validacion efectiva la ejecuta glue_job.py sobre estas mismas reglas.
   tags = { Name = "${var.project_name}-${var.environment}-dq-ruleset" }
 
   depends_on = [aws_glue_catalog_database.main]

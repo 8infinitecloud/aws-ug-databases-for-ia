@@ -39,9 +39,9 @@ CATALOG → CURATED DATA → ANALYTICS + IA → RAG → AGENTES
 Al terminar tendrás corriendo en tu cuenta:
 
 - Una base de datos MySQL replicándose a un **data lake en S3** con AWS DMS
-- Un pipeline de **AWS Glue** que transforma esos datos y mide **8 reglas de
-  calidad en tres etapas** (raw → transformado → curado), para ver qué arregló
-  la normalización y qué hubo que apartar: 100 de 1000 filas van a `rejected/`
+- Un pipeline de **AWS Glue** que mide **10 reglas de calidad en tres etapas**
+  (raw → transformado → curado) — ocho de columna y **dos de regla de negocio**
+  que comparan campos entre sí: 137 de 1000 operaciones van a `rejected/`
 - Un **catálogo de datos** con esquema y metadata de negocio, consultable con SQL
 - Un **asistente de compliance** con RAG sobre Amazon Bedrock, con tres capas de
   memoria (sesión, persistente y semántica)
@@ -143,11 +143,18 @@ y los ingesta al vector store. Ver [ADR-013](DECISIONS.md).
 
 ## La historia: FinCorp
 
-FinCorp es una empresa ficticia de servicios financieros. Tiene sus
-transacciones en un MySQL de producción, los datos vienen con problemas reales
-(importes nulos, IDs duplicados, estados en minúsculas, tipos inválidos), y su
-equipo de compliance necesita un asistente que responda preguntas sobre
-políticas internas.
+**FinCorp Payments es un adquirente**: procesa pagos con tarjeta y QR para
+comercios afiliados. No es el comercio — es quien autoriza, captura, liquida y
+cobra la comisión.
+
+Uno de sus comercios es **Smart Coffee**, una cafetería cuyo terminal físico
+genera los pagos de la demo. Los datos vienen con problemas reales: importes
+ausentes, IDs duplicados, códigos heredados del core antiguo, y dos que solo
+existen en pagos — **un libro mayor que no cuadra** y **operaciones cobradas sin
+aprobación del emisor**.
+
+Su equipo de compliance necesita un asistente que responda sobre monitoreo
+transaccional y AML de comercios.
 
 El dataset trae **problemas deliberados**. No es un descuido: son lo que hace
 que el Lab 2 tenga algo que detectar. Un reporte de calidad todo en verde no
@@ -172,7 +179,7 @@ enseñaría nada.
                          ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  TRANSFORMATION + DATA QUALITY + CATALOG                                  │
-│  Glue Data Quality → 8 reglas × 3 etapas → 100 registros rechazados      │
+│  Glue Data Quality → 10 reglas × 3 etapas → 137 operaciones apartadas    │
 │  Glue Data Catalog → financial_platform.transactions_curated             │
 └────────────────────────┬─────────────────────────────────────────────────┘
                          │
@@ -240,12 +247,12 @@ aws-ug-databases-for-ia/
 ├── labs/                        ← La guía y el código de cada lab
 │   ├── 01-ingestion-data-lake/
 │   │   ├── README.md            ← Guía paso a paso
-│   │   ├── dataset/             ← CSV, seed.sql y generate_dataset.py
+│   │   ├── dataset/             ← transactions.csv, merchants.csv, generate_dataset.py
 │   │   └── scripts/             ← setup.sh, validate.sh, cleanup.sh
 │   ├── 02-transformation-quality-catalog/
 │   │   ├── README.md
 │   │   ├── glue_job.py          ← El ETL que corre en Glue
-│   │   ├── quality_rules.dqdl   ← Las 8 reglas de calidad
+│   │   ├── quality_rules.dqdl   ← Las 10 reglas de calidad
 │   │   └── scripts/             ← setup.sh, run_job.sh, validate.sh, cleanup.sh
 │   └── 03-data-to-ai/
 │       ├── README.md
