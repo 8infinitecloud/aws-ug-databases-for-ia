@@ -132,7 +132,30 @@ nada.
 
 ## Estado
 
-Compila y el binario está verificado. **No se ha grabado en el dispositivo
-todavía**, así que el comportamiento en pantalla —posiciones, tamaños de fuente,
-si el táctil cae donde debe— está sin comprobar. Es lo primero que hay que hacer
-con el Core2 delante.
+**Grabado y arrancando en el dispositivo** (2026-09-28, Core2 con ESP32-D0WDQ6-V3).
+
+Lo verificado con el hardware delante:
+
+| | |
+|---|---|
+| Grabado | 1.048.496 bytes, hash verificado |
+| Arranque | `Project name: FinCorp_POS`, PSRAM de 4 MB inicializada |
+| Pantalla | ILI9341 en orientación LANDSCAPE |
+| **ATECC608** | inicializado, zona de datos `locked`, tipo `60 03` |
+| UI | `pos_ui: interfaz lista` |
+| Táctil | responde y acierta los botones |
+| Flujo | catálogo → producto → COBRAR → QR → crea la intención |
+| WiFi | reintenta 8 veces y cae en el camino de error diseñado |
+
+**Un solo toque genera siete eventos de LVGL** —PRESSED, PRESSING ×2,
+SHORT_CLICKED, CLICKED, RELEASED y alguno más—. El filtro por
+`LV_EVENT_CLICKED` de los callbacks es lo que hace que un toque produzca
+exactamente **una** intención de cobro y no siete. Comprobado instrumentando los
+callbacks en el dispositivo.
+
+Lo que sigue sin comprobar es lo visual: si las posiciones, los tamaños de
+fuente y los importes se leen bien en una pantalla de 2 pulgadas. Eso necesita
+mirarla, no leer un log.
+
+Y el flujo completo contra la API real está pendiente de configurar
+`API_BASE_URL` y la red con `pio run -t menuconfig`.

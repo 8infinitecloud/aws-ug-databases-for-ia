@@ -273,6 +273,13 @@ static void tarea_crear_intencion(void *arg)
 
 static void on_metodo(lv_obj_t *obj, lv_event_t e)
 {
+    /*
+     * El filtro por LV_EVENT_CLICKED no es decorativo. Un solo toque genera
+     * siete eventos —PRESSED, PRESSING x2, SHORT_CLICKED, CLICKED, RELEASED y
+     * alguno mas— y sin el filtro cada toque crearia siete intenciones de cobro.
+     * Verificado en el dispositivo el 2026-09-28: con el filtro, un toque
+     * produce exactamente una.
+     */
     if (e != LV_EVENT_CLICKED) {
         return;
     }
