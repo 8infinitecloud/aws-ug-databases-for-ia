@@ -8,7 +8,7 @@
 #   1. Verifica que el stack del Lab 1 existe y tiene outputs
 #   2. Obtiene el S3 bucket del Lab 1
 #   3. Sube glue_job.py al bucket S3
-#   4. Valida y despliega lab2-cfn.yaml
+#   4. Aplica el modulo Terraform infra/lab2
 #   5. Muestra los outputs (glue_job_name, crawler_name)
 #   NO ejecuta el job — eso lo hace run_job.sh
 #

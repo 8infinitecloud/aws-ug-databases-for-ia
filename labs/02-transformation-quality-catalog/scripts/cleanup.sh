@@ -8,7 +8,7 @@
 # Acciones:
 #   1. Elimina tablas del Glue Catalog (financial_platform)
 #   2. Elimina curated/, rejected/ y quality-reports/ del S3
-#   3. Elimina el stack CloudFormation del Lab 2
+#   3. Destruye el modulo Terraform del Lab 2
 #   NOTA: NO elimina el bucket S3 ni los datos raw/ (pertenecen al Lab 1)
 # =============================================================================
 

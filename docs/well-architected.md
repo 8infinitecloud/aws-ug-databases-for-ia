@@ -216,3 +216,45 @@ Si este workshop se convirtiera en la base de algo real, en este orden:
 5. **VPC Flow Logs y CloudTrail** con retención y alarmas.
 6. **Lake Formation** para control de acceso a nivel de fila y columna sobre el
    catálogo, que en el workshop solo se menciona.
+
+---
+
+## Auditoría de destruibilidad
+
+Un taller que se despliega en la cuenta de otra persona tiene una obligación que
+no aparece en los pilares: **todo lo que se crea tiene que poder borrarse**. Un
+recurso que sobrevive al `destroy` es una factura que alguien descubre semanas
+después.
+
+Verificado el 2026-09-28 inspeccionando el plan en JSON, no el HCL — leer la
+configuración con `grep` daba falsos positivos y falsos negativos.
+
+| Riesgo | Dónde aparecería | Estado |
+|---|---|---|
+| `prevent_destroy` | cualquier recurso | Sólo en el bucket de state de `bootstrap`, **a propósito** |
+| `deletion_protection` | Aurora, ALB, DynamoDB | `false` en todos |
+| `skip_final_snapshot = false` | Aurora | `true` en los dos clusters: no deja snapshots que cuesten |
+| `recovery_window_in_days` | Secrets Manager | **`0`** en los dos secretos — sin esto, un secreto queda 30 días en ventana de recuperación e **impide recrear el lab con el mismo nombre** |
+| Bucket no vaciable | S3 | `force_destroy = true` en el lago (lab1) y en los documentos (lab3) |
+| Repositorio con imágenes | ECR | `force_delete = true`: sin él, `destroy` falla en cuanto se sube la imagen del backend |
+| Workgroup con resultados | Athena | `force_destroy = true` |
+| EIP o NAT huérfanos | red | **No existen**: la concesión de `assign_public_ip` en Fargate evita el NAT Gateway, y de paso este problema |
+| PITR / backups continuos | DynamoDB | Desactivado: son contadores que expiran en minutos |
+
+**Lo único que sobrevive a propósito** es `fincorp-datalake-tfstate-<account>`,
+que guarda el state de todo lo demás y cuesta céntimos al mes. Tiene
+`prevent_destroy` para que un `destroy` distraído no se lleve por delante la
+capacidad de destruir el resto.
+
+### Orden de destrucción
+
+No es arbitrario:
+
+```
+lab4 → lab2 → lab1 → lab3 → payments
+```
+
+- **lab4 primero**: su Firehose escribe en el bucket del lab1
+- **lab2 antes que lab1**: escribe en su bucket
+- **lab1 antes que payments**: las ENIs de DMS bloquean el borrado de las subnets
+- **lab3 en cualquier momento**: es independiente
