@@ -3,7 +3,7 @@
 -- =============================================================================
 -- Datos minimos para que la demo arranque. Idempotente: ON CONFLICT DO NOTHING.
 --
--- DEMO: la tarjeta y el token son ficticios. Ver smart-coffee/README.md.
+-- DEMO: la tarjeta y el token son ficticios. Ver payments/README.md.
 -- =============================================================================
 
 BEGIN;

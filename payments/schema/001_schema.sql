@@ -40,7 +40,7 @@
 --   *_bps     Tasas en puntos basicos. 18% de IGV = 1800 bps. MDR de 2.99% = 299.
 --
 -- DEMO: no se procesan pagos reales. No hay PAN, no hay CVV real, no hay
--- conexion con ninguna red de tarjetas. Ver smart-coffee/README.md.
+-- conexion con ninguna red de tarjetas. Ver payments/README.md.
 --
 -- Idempotente: se puede reejecutar.
 -- =============================================================================

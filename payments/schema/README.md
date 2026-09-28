@@ -34,6 +34,8 @@ caja. A nosotros nada de eso. A un adquirente le importa:
 | Liquidar al comercio | `payouts` |
 | Devoluciones y contracargos | `refunds`, `disputes` |
 | No cobrar dos veces cuando el POS reintenta | `idempotency_keys` |
+| Que el comercio consulte SUS operaciones | `merchant_api_keys` |
+| Avisar al comercio de lo que pasa cuando su POS está apagado | `webhook_endpoints`, `webhook_events`, `webhook_deliveries` |
 
 > La tabla que de verdad define a un adquirente es **`balance_transactions`**. Un
 > comercio no necesita un libro mayor de comisiones; nosotros vivimos de él.
@@ -76,12 +78,30 @@ Los pagos con tarjeta presencial hablan [ISO 8583](https://en.wikipedia.org/wiki
 Usar estos nombres no es decoración: es el vocabulario con el que un equipo de
 pagos habla, y hace que el modelo sea reconocible para quien viene del sector.
 
-### Lo que se dejó fuera
+### Tres necesidades distintas que es fácil confundir
 
-`webhook_endpoints`, `webhook_events` y `webhook_deliveries`. Son el mecanismo por
-el que el comercio se entera de lo que pasa, y en esta demo eso lo hace **AWS IoT
-Core**: el POS se suscribe a un topic y recibe el resultado. Modelarlo dos veces
-no aportaría nada.
+Primero dejé fuera las tablas de webhooks razonando que «AWS IoT Core ya notifica
+al comercio». **Era un error**: son tres cosas diferentes.
+
+| Necesidad | Quién recibe | Cuándo | Mecanismo |
+|---|---|---|---|
+| Resultado de *este* pago | El **terminal** | En el momento | **AWS IoT Core** (MQTT) |
+| Un contracargo, una liquidación acreditada, un reembolso del backoffice | El **sistema** del comercio | Días después, con el POS apagado | **Webhooks** (`webhook_*`) |
+| «Enséñame mis operaciones de ayer» | Una **persona o sistema** que pregunta | Cuando quiera | **API de lectura** + `merchant_api_keys` |
+
+Un contracargo llega 30 días después y una liquidación se acredita de madrugada.
+El POS no está encendido para ninguno de los dos, así que IoT Core no puede
+entregarlos. Por eso las tres tablas de webhooks vuelven al modelo, en
+`003_merchant_interface.sql`.
+
+La tercera necesidad —consultar— no requería tablas de datos nuevas: se consulta
+`charges`, `balance_transactions` y `disputes`, que ya existían. Lo que faltaba era
+**cómo autenticar al comercio**, y de ahí `merchant_api_keys`.
+
+> **Modelado, no implementado.** Las tablas de webhooks están en el schema porque
+> el modelo sin ellas es incompleto y engañoso. El *worker* de entregas con
+> reintentos y firma no está escrito: no aporta nada a la demo y sería mucha
+> maquinaria. Queda documentado para que nadie lo dé por hecho.
 
 ---
 
@@ -213,8 +233,22 @@ historia de principio a fin.
 
 | Fichero | Qué |
 |---|---|
-| `001_schema.sql` | DDL. Idempotente, se puede reejecutar |
+| `001_schema.sql` | Núcleo transaccional: comercios, terminales, intenciones, cobros, libro mayor, liquidaciones |
 | `002_seed.sql` | Smart Coffee como comercio afiliado, su terminal y la tarjeta de demo |
+| `003_merchant_interface.sql` | Interfaz con el comercio: claves de API y webhooks |
+
+Las tres son idempotentes: se pueden reejecutar sin romper nada.
+
+### Vistas
+
+| Vista | Consumidor | Qué expone |
+|---|---|---|
+| `v_transactions_for_ingestion` | **DMS → data lake** (Lab 1) | Una fila por cobro, con comisión y neto resueltos |
+| `v_merchant_operations` | **El comercio** | Sus operaciones, con lo que le queda tras el MDR, el RRN para reclamar, y el contracargo si lo hay |
+
+> El filtro por comercio **no va en la vista**: lo aplica la API con el
+> `merchant_id` de la clave autenticada. Una vista sin filtro que se consulta con
+> el filtro puesto es más segura que una vista que intenta «saber» quién pregunta.
 
 ---
 
