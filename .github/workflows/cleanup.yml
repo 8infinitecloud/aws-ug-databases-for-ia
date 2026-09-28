@@ -14,7 +14,7 @@ on:
       labs:
         description: "Labs a limpiar"
         type: choice
-        options: [all, lab1, lab2, lab3]
+        options: [all, lab1, lab2, lab3, lab4]
         default: all
       environment:
         description: "Ambiente"
@@ -160,6 +160,14 @@ jobs:
           echo "✓ Lab 1 destruido"
 
       # ── Lab 3 ────────────────────────────────────────────────────────────────
+      - name: terraform destroy — Lab 4
+        if: inputs.labs == 'all' || inputs.labs == 'lab4'
+        continue-on-error: true
+        working-directory: .
+        run: |
+          terraform -chdir=infra/lab4 init -backend-config=../backend.hcl -reconfigure
+          terraform -chdir=infra/lab4 destroy -auto-approve
+
       - name: terraform destroy — Lab 3
         if: inputs.labs == 'all' || inputs.labs == 'lab3'
         env:
@@ -179,7 +187,7 @@ jobs:
             echo ""
             echo "| Modulo | Recursos restantes en el state |"
             echo "|--------|-------------------------------|"
-            for MODULE in lab1 lab2 lab3; do
+            for MODULE in payments lab1 lab2 lab3 lab4; do
               COUNT=$(terraform -chdir="infra/${MODULE}" state list 2>/dev/null | wc -l | tr -d ' ')
               echo "| ${MODULE} | ${COUNT} |"
             done

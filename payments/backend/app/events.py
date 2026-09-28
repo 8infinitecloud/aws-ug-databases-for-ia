@@ -28,6 +28,8 @@ def build_payment_event(
     terminal_code: str | None,
     device_serial: str | None,
     line_items: list[dict] | None = None,
+    mcc: str | None = None,
+    risk_level: str | None = None,
 ) -> dict:
     """
     Construye el evento normalizado.
@@ -42,6 +44,12 @@ def build_payment_event(
         "transaction_id": charge.get("charge_reference") or intent_reference,
         "intent_reference": intent_reference,
         "merchant_id": merchant_code,
+        # El MCC dice a que se dedica el comercio, y es una senal de riesgo: sin
+        # el, una fila del stream llega al lago sin lo que hace falta para
+        # analizarla, y el scoring online no puede distinguir una casa de cambio
+        # de una cafeteria.
+        "mcc": mcc,
+        "risk_level": risk_level,
         "pos_id": terminal_code,
         "device_id": device_serial,
         "payment_method": charge.get("channel") or charge.get("payment_method"),

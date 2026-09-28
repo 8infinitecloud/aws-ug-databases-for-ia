@@ -331,6 +331,8 @@ def _publish(charge: dict, intent: dict, terminal: dict) -> None:
         terminal_code=terminal.get("terminal_code"),
         device_serial=terminal.get("device_serial"),
         line_items=intent.get("line_items") or [],
+        mcc=intent.get("mcc"),
+        risk_level=intent.get("risk_level"),
     )
     publisher.publish(event, device_serial=terminal.get("device_serial"))
 

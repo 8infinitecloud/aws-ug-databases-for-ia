@@ -46,7 +46,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 INFRA_DIR = REPO_ROOT / "infra"
 
 GLUE_DATABASE = "financial_platform"
-GLUE_TABLE = "transactions_curated"
+GLUE_TABLE = "transactions"
 DYNAMO_TABLE = os.getenv("DYNAMODB_TABLE", "rag_user_memory")
 
 EMBEDDING_MODEL = os.getenv("BEDROCK_EMBEDDING_MODEL", "amazon.titan-embed-text-v2:0")

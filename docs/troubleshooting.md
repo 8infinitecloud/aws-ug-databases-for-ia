@@ -175,7 +175,7 @@ aws s3 cp labs/02-transformation-quality-catalog/glue_job.py \
 reglas los detecten. Un report con todo en verde significaría que la validación
 no está mirando de verdad.
 
-### El Crawler no crea la tabla `transactions_curated`
+### El Crawler no crea la tabla `transactions`
 
 El Crawler necesita Parquet en `curated/transactions/`. Si el Glue Job no
 escribió nada, no hay esquema que descubrir. Mira los logs del job en
@@ -288,7 +288,7 @@ aws dms stop-replication-task \
 ### Quiero estar seguro de que no queda nada cobrando
 
 ```bash
-for M in lab1 lab2 lab3; do
+for M in payments lab1 lab2 lab3 lab4; do
   echo -n "infra/$M: "
   terraform -chdir="infra/$M" state list 2>/dev/null | wc -l
 done
@@ -319,7 +319,7 @@ python scripts/run_pipeline_local.py --keep
 pytest tests/ -v
 
 # La infraestructura compila y el grafo resuelve
-for M in bootstrap lab1 lab2 lab3; do
+for M in bootstrap payments lab1 lab2 lab3 lab4; do
   terraform -chdir="infra/$M" init -backend=false
   terraform -chdir="infra/$M" validate
 done

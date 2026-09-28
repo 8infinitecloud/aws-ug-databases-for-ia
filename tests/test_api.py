@@ -518,3 +518,21 @@ def test_la_pagina_llama_a_las_rutas_que_la_api_expone():
     assert '"Idempotency-Key"' in html, "sin clave, un doble toque cobraria dos veces"
     assert '{ channel: "QR" }' in html
 
+
+
+def test_el_evento_lleva_el_mcc_del_comercio(client, ref, eventos):
+    """
+    Sin MCC, una fila del stream llega al lago sin la señal de riesgo.
+
+    El Lab 2 lo usa como columna, Athena agrupa por él, y el scoring online del
+    Lab 4 lo necesita para distinguir una casa de cambio de una cafetería. Es el
+    mismo tipo de hueco que tuvo `payment_method`.
+    """
+    _crear(client, ref)
+    _confirmar(client, ref)
+
+    evento = eventos[0]
+    # Smart Coffee está afiliado con MCC 5812 (restaurantes), que es lo que
+    # siembra 002_seed.sql.
+    assert evento["mcc"] == "5812"
+    assert evento["risk_level"] in {"LOW", "MEDIUM", "HIGH"}

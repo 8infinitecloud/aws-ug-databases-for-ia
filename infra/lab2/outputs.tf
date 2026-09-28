@@ -37,3 +37,18 @@ output "quality_report_s3_path" {
   description = "Ruta S3 del quality report mas reciente"
   value       = "s3://${local.s3_bucket}/quality-reports/latest/quality_report.json"
 }
+
+output "athena_workgroup" {
+  description = "Workgroup de Athena para consultar la zona curada"
+  value       = aws_athena_workgroup.main.name
+}
+
+output "athena_results_path" {
+  description = "Donde deja Athena los resultados de cada consulta"
+  value       = "s3://${local.s3_bucket}/athena-results/"
+}
+
+output "athena_table" {
+  description = "Tabla que crea el Crawler y que consulta Athena"
+  value       = "${aws_glue_catalog_database.main.name}.transactions"
+}

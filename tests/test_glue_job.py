@@ -377,7 +377,7 @@ def test_el_corpus_usa_el_vocabulario_del_dataset(corpus_texto, valor):
 @pytest.mark.parametrize(
     "campo",
     ["transaction_id", "customer_id", "terminal_id", "device_serial",
-     "rejection_reason", "transactions_curated", "curated/", "rejected/",
+     "rejection_reason", "transactions", "curated/", "rejected/",
      # Propios del adquirente: si el corpus no los menciona, el analista no puede
      # interpretar lo que ve en la tabla.
      "mcc", "response_code", "rrn", "fee_amount", "net_amount"],

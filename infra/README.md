@@ -5,8 +5,9 @@ infra/
 ├── bootstrap/   ← META: el backend de Terraform. Se ejecuta UNA vez.
 ├── payments/    ← EL CORE: el sistema transaccional. Todo orbita aquí.
 ├── lab1/        ← Ingesta: del core al data lake
-├── lab2/        ← Transformación, calidad y catálogo
-└── lab3/        ← IA sobre los datos curados
+├── lab2/        ← Transformación, calidad, catálogo y Athena
+├── lab3/        ← IA sobre los datos curados
+└── lab4/        ← Streaming: scoring de riesgo online
 ```
 
 ---
@@ -19,13 +20,13 @@ Es una pregunta razonable, porque los tres niveles son distintos:
 |-------|--------|--------|
 | **Meta** | `bootstrap/` | Infraestructura **para Terraform**, no para la aplicación |
 | **Core** | `payments/` | El sistema transaccional. El origen del dato |
-| **Soluciones** | `lab1/`, `lab2/`, `lab3/` | Lo que se construye **sobre** el core |
+| **Soluciones** | `lab1/`…`lab4/` | Lo que se construye **sobre** el core |
 
 ### ¿Por qué `bootstrap/` no va dentro de `payments/`?
 
 Porque su `backend.hcl` lo consumen **los cuatro módulos**, el helper
 `scripts/lib/tf.sh` y dos workflows. Si viviera dentro de `payments/`, entonces
-`lab1`, `lab2` y `lab3` dependerían de payments **solo para tener dónde guardar su
+los cuatro labs dependerían de payments **solo para tener dónde guardar su
 state** — una dependencia falsa que además invertiría el orden de arranque.
 
 El state bucket no es una preocupación de pagos: es una preocupación de Terraform.
@@ -46,10 +47,18 @@ payments  ◀── EL CORE: Aurora Serverless, Fargate, API Gateway
   lab1    ── DMS desde Aurora ──▶ S3 raw/
     │
     ▼
-  lab2    ── Glue: raw/ ──▶ curated/ + catálogo
+  lab2    ── Glue: raw/ ──▶ curated/ + Athena sobre el catálogo
 
   lab3    ── independiente: su propio Aurora con pgvector para el RAG
+
+  lab4    ── IoT Rule ──┬─▶ Lambda ──▶ DynamoDB   (reaccionar, ms)
+                        └─▶ Firehose ──▶ S3 raw/events/  (recordar, 60 s)
 ```
+
+Los labs 1 y 4 son las **dos velocidades de ingesta** del mismo origen: uno trae
+la historia por lotes, el otro el presente por streaming. No compiten; se
+complementan, y por eso el Lab 4 escribe en `raw/events/` y no en
+`raw/transactions/`, donde rompería la calibración del Lab 2.
 
 | Módulo | Lee el state de | Por qué |
 |--------|-----------------|---------|
@@ -57,6 +66,7 @@ payments  ◀── EL CORE: Aurora Serverless, Fargate, API Gateway
 | `lab1` | **`payments`** | VPC, subnets, endpoint de Aurora y su secreto |
 | `lab2` | `lab1` | El bucket del data lake |
 | `lab3` | — | Tiene su propia infraestructura para el vector store |
+| `lab4` | `lab1` | El bucket del data lake, donde Firehose aterriza los eventos |
 
 > `lab3` es independiente a propósito: si el core falla en la charla, el Lab 3
 > arranca igual. Ver ADR-016.
@@ -83,6 +93,7 @@ for f in ../../payments/schema/00*.sql; do psql "$CONN" -f "$f"; done
 cd ../lab1 && terraform init -backend-config=../backend.hcl && terraform apply
 cd ../lab2 && terraform init -backend-config=../backend.hcl && terraform apply
 cd ../lab3 && terraform init -backend-config=../backend.hcl && terraform apply
+cd ../lab4 && terraform init -backend-config=../backend.hcl && terraform apply
 ```
 
 Los scripts de cada lab (`labs/*/scripts/setup.sh`) hacen los pasos 4 y siguientes,
@@ -93,7 +104,9 @@ y comprueban que el core exista antes de empezar.
 ## Orden de destrucción: inverso, y con un matiz
 
 ```bash
-cd infra/lab2 && terraform destroy     # antes que lab1: escribe en su bucket
+cd infra/lab4 && terraform destroy     # primero: libera la regla de IoT, y su
+                                       # Firehose escribe en el bucket del lab1
+cd ../lab2    && terraform destroy     # antes que lab1: escribe en su bucket
 cd ../lab1    && terraform destroy     # antes que payments: sus ENIs de DMS
                                        # bloquearían el borrado de las subnets
 cd ../lab3    && terraform destroy     # independiente, en cualquier momento

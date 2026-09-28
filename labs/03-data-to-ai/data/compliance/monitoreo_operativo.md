@@ -271,13 +271,13 @@ existió y que no está siendo vigilada.
 
 ## 8. Consultas de referencia
 
-Sobre la tabla `financial_platform.transactions_curated` del catálogo de datos.
+Sobre la tabla `financial_platform.transactions` del catálogo de datos.
 
 **Operaciones sobre umbral de comercios de alto riesgo:**
 ```sql
 SELECT t.transaction_id, t.customer_id, t.merchant_name, t.mcc,
        t.terminal_id, t.amount, t.currency, t.payment_method, t.rrn
-FROM transactions_curated t
+FROM transactions t
 WHERE t.risk_level = 'HIGH'
   AND t.status = 'CAPTURED'
   AND (   (t.currency = 'PEN' AND t.amount >= 38000)
@@ -290,7 +290,7 @@ ORDER BY t.amount DESC;
 ```sql
 SELECT customer_id, merchant_name, currency, payment_method,
        COUNT(*) AS operaciones, SUM(amount) AS total
-FROM transactions_curated
+FROM transactions
 WHERE amount < 38000 AND currency = 'PEN' AND status = 'CAPTURED'
 GROUP BY customer_id, merchant_name, currency, payment_method
 HAVING COUNT(*) >= 3 AND SUM(amount) >= 76000
@@ -303,7 +303,7 @@ SELECT customer_id, merchant_name,
        COUNT(*) AS total,
        SUM(CASE WHEN status = 'REFUNDED' THEN 1 ELSE 0 END) AS devueltas,
        ROUND(100.0 * SUM(CASE WHEN status = 'REFUNDED' THEN 1 ELSE 0 END) / COUNT(*), 2) AS pct
-FROM transactions_curated
+FROM transactions
 GROUP BY customer_id, merchant_name
 HAVING COUNT(*) >= 20
    AND 100.0 * SUM(CASE WHEN status = 'REFUNDED' THEN 1 ELSE 0 END) / COUNT(*) > 5
@@ -315,7 +315,7 @@ ORDER BY pct DESC;
 SELECT customer_id, merchant_name, mcc,
        COUNT(*) AS operaciones,
        ROUND(AVG(amount), 2) AS ticket_medio
-FROM transactions_curated
+FROM transactions
 WHERE mcc IN ('5812', '5814') AND currency = 'PEN' AND status = 'CAPTURED'
 GROUP BY customer_id, merchant_name, mcc
 HAVING AVG(amount) > 500
@@ -329,7 +329,7 @@ SELECT date_trunc('month', transaction_date) AS mes,
        SUM(amount)       AS bruto,
        SUM(fee_amount)   AS comisiones,
        SUM(net_amount)   AS liquidado
-FROM transactions_curated
+FROM transactions
 WHERE status = 'CAPTURED'
 GROUP BY 1 ORDER BY 1;
 ```

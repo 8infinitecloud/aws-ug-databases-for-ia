@@ -128,7 +128,7 @@ flowchart TD
     subgraph CATALOG_BLOCK["Glue Data Catalog"]
         CRAWLER[Crawler\nauto-descubre schema]
         DB[Database\nfinancial_platform]
-        TABLE[Table\ntransactions_curated]
+        TABLE[Table\ntransactions]
         META[Metadata\nowner, quality score, source]
     end
 

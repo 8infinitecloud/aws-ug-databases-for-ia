@@ -7,7 +7,7 @@ on:
       labs:
         description: "Labs a desplegar"
         type: choice
-        options: [all, lab1, lab2, lab3]
+        options: [all, lab1, lab2, lab3, lab4]
         default: all
       environment:
         description: "Ambiente"
@@ -252,4 +252,72 @@ jobs:
             echo "**Streamlit URL:** ${STREAMLIT_URL}"
             echo ""
             echo "**Siguiente:** desplegar la app (workflow \`Deploy App\`)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Lab 4: streaming e insight online ───────────────────────────────────────
+  deploy-lab4:
+    name: Deploy Lab 4 (Streaming)
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    # Necesita el bucket del Lab 1: Firehose aterriza ahi los eventos.
+    needs: [deploy-lab1]
+    if: |
+      (inputs.labs == 'all' || inputs.labs == 'lab4') &&
+      (needs.deploy-lab1.result == 'success' || needs.deploy-lab1.result == 'skipped')
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION || env.AWS_REGION }}
+          role-session-name: gha-lab4-${{ github.run_id }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Reconstruir backend.hcl
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          REGION="${{ secrets.AWS_REGION || env.AWS_REGION }}"
+          cat > infra/backend.hcl <<EOF
+          bucket         = "${{ env.PROJECT_NAME }}-tfstate-${ACCOUNT_ID}"
+          dynamodb_table = "${{ env.PROJECT_NAME }}-tflock"
+          region         = "$REGION"
+          encrypt        = true
+          EOF
+
+      - name: terraform init — Lab 4
+        run: terraform -chdir=infra/lab4 init -backend-config=../backend.hcl -reconfigure
+
+      - name: terraform apply — Lab 4
+        env:
+          TF_VAR_aws_region: ${{ secrets.AWS_REGION || env.AWS_REGION }}
+          TF_VAR_environment: ${{ inputs.environment }}
+        run: terraform -chdir=infra/lab4 apply -auto-approve
+
+      - name: Resumen
+        run: |
+          {
+            echo "### Lab 4 desplegado"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Tabla de velocidad | \`$(terraform -chdir=infra/lab4 output -raw velocity_table_name)\` |"
+            echo "| Lambda del scoring | \`$(terraform -chdir=infra/lab4 output -raw scorer_function_name)\` |"
+            echo "| Topic MQTT | \`$(terraform -chdir=infra/lab4 output -raw iot_topic_filter)\` |"
+            echo "| Eventos en el lago | \`$(terraform -chdir=infra/lab4 output -raw events_s3_path)\` |"
+            echo ""
+            echo "Ver el scoring en vivo:"
+            echo '```bash'
+            echo "aws logs tail $(terraform -chdir=infra/lab4 output -raw scorer_log_group) --follow"
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

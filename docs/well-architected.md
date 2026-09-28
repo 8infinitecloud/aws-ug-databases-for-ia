@@ -7,7 +7,7 @@ Well-Architected no pide perfección: pide **decisiones informadas**.
 Esta página dice qué se cumple, qué se concede, y qué habría que cambiar el día
 que esto dejara de ser un lab.
 
-> Verificado con `checkov` (62 hallazgos abiertos, todos revisados abajo) y
+> Verificado con `checkov` (94 hallazgos abiertos, todos revisados abajo) y
 > `terraform plan` contra una cuenta real.
 
 ---
@@ -168,7 +168,7 @@ que esto dejara de ser un lab.
 
 ## Hallazgos de `checkov` que quedan abiertos
 
-62 hallazgos, todos revisados. Se agrupan en:
+94 hallazgos, todos revisados. Se agrupan en:
 
 | Grupo | Nº aprox. | Decisión |
 |-------|-----------|----------|
@@ -180,7 +180,20 @@ que esto dejara de ser un lab.
 | Rotación automática de secretos | ~2 | Concedido: el lab vive 2 h |
 | `Resource = "*"` en acciones que no admiten ARN (`ec2:Describe*`) | ~4 | Inevitable |
 | `zone_ids` en vez de `names` en el data source de AZs | 2 | Concedido: los nombres de AZ son por cuenta, pero para un lab de una sola cuenta da igual |
+| Lambda fuera de VPC (Lab 4) | 1 | Concedido: sólo habla con DynamoDB, y meterla en la VPC exige un endpoint o NAT, coste y arranque en frío |
+| Lambda sin DLQ (Lab 4) | 1 | Concedido **por diseño**: el scorer traga sus errores a propósito, porque reintentar un scoring ya contado inflaría los contadores y dispararía alertas falsas. Una DLQ contradiría esa decisión |
+| Firma de código en Lambda | 1 | Concedido: el binario lo construye el propio `terraform apply` desde el repo |
 | Otros de endurecimiento avanzado | resto | Concedido |
+
+### Lo que sí se corrigió en el Lab 4, y por qué
+
+Tres hallazgos no eran concesiones razonables y se arreglaron:
+
+| Hallazgo | Qué se hizo | Por qué merecía la pena |
+|---|---|---|
+| `CKV_AWS_115` — sin límite de concurrencia | `reserved_concurrent_executions = 10` | Un POS con un bucle o una regla de IoT mal filtrada puede invocar miles de veces por minuto, y **cada invocación escribe en DynamoDB**. Un accidente cuesta céntimos en vez de una sorpresa |
+| `CKV_AWS_50` — sin X-Ray | `tracing_config` en modo `Active` | En un lab *sobre latencia* no es burocracia: es lo que permite enseñar cuánto tarda de verdad el camino de reaccionar frente al de recordar |
+| `CKV_AWS_240` — Firehose sin cifrar | `server_side_encryption` | Con clave gestionada por AWS es gratis. No había razón para no tenerlo |
 
 Para reproducir el escaneo:
 

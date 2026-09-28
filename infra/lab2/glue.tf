@@ -91,7 +91,7 @@ resource "aws_glue_crawler" "curated" {
   tags = { Name = "${var.project_name}-${var.environment}-crawler" }
 }
 
-# Sin target_table a proposito: transactions_curated no existe hasta que corre
+# Sin target_table a proposito: la tabla `transactions` no existe hasta que corre
 # el Crawler, y declararla aqui falla con EntityNotFoundException. El target
 # solo se puede fijar al crear el ruleset, asi que queda standalone. No afecta
 # al lab: la validacion efectiva la ejecuta glue_job.py en Python sobre estas
@@ -117,7 +117,7 @@ resource "aws_glue_data_quality_ruleset" "main" {
     ]
   DQDL
 
-  # Sin target_table a proposito: transactions_curated no existe hasta que corre
+  # Sin target_table a proposito: la tabla `transactions` no existe hasta que corre
   # el Crawler, y declararla aqui falla con EntityNotFoundException. TargetTable
   # solo se puede fijar al crear el ruleset, asi que queda standalone. No afecta
   # al lab: la validacion efectiva la ejecuta glue_job.py sobre estas mismas reglas.

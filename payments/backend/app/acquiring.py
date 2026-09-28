@@ -135,7 +135,11 @@ def get_intent(conn: Connection, intent_reference: str) -> dict:
         cur.execute(
             """
             SELECT pi.*, m.trade_name, m.merchant_id AS merchant_code,
-                   m.mdr_bps, m.fixed_fee_minor, m.payout_delay_days
+                   m.mdr_bps, m.fixed_fee_minor, m.payout_delay_days,
+                   -- Viajan hasta el evento: el MCC es la senal de riesgo con la
+                   -- que se analiza la operacion, tanto en el lago como en el
+                   -- scoring online del Lab 4.
+                   m.mcc, m.risk_level
             FROM acquiring.payment_intents pi
             JOIN acquiring.merchants m ON m.id = pi.merchant_id
             WHERE pi.intent_reference = %s

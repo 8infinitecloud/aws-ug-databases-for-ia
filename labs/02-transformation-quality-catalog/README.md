@@ -102,7 +102,7 @@ S3 raw/transactions/        ← Output del Lab 1 (DMS)
 ┌─────────────────────────────────────┐
 │   Glue Data Catalog                 │
 │   Database: financial_platform      │
-│   Table: transactions_curated       │
+│   Table: transactions              │
 │   + Metadata de negocio             │
 └─────────────────────────────────────┘
            │
@@ -247,7 +247,7 @@ aws s3 ls "s3://$BUCKET/rejected/" --recursive               # al menos 1 ficher
 
 # 3. La tabla existe en el catálogo
 aws glue get-table --database-name financial_platform \
-  --name transactions_curated --query "Table.StorageDescriptor.Columns[].Name"
+  --name transactions --query "Table.StorageDescriptor.Columns[].Name"
 
 # 4. El reporte de calidad
 aws s3 cp "s3://$BUCKET/quality-reports/latest/quality_report.json" - | jq .
@@ -257,13 +257,47 @@ aws s3 cp "s3://$BUCKET/quality-reports/latest/quality_report.json" - | jq .
 problemas deliberados. Si todo saliera en verde, la validación no estaría
 mirando de verdad.
 
-Y si quieres verlo como SQL, ya puedes consultarlo en Athena:
+### Consultarlo como SQL
+
+El Catalog por sí solo no consulta nada: es un índice. **Athena** es lo que lo
+convierte en SQL sobre el Parquet, sin mover los datos ni levantar un cluster.
+Eso es lo que hace que esto sea un *lakehouse* y no sólo un lago.
+
+El workgroup se crea con el lab, y trae **cuatro consultas ya guardadas**. En la
+consola de Athena: *Query editor* → workgroup `fincorp-dev` → pestaña *Saved
+queries*.
 
 ```sql
-SELECT transaction_type, status, COUNT(*) AS n
-FROM "financial_platform"."transactions_curated"
-GROUP BY transaction_type, status
-ORDER BY n DESC;
+-- La vista del negocio del adquirente: quién mueve volumen y qué margen deja.
+SELECT
+    customer_id AS merchant_id,
+    merchant_name,
+    COUNT(*)                  AS transacciones,
+    ROUND(SUM(amount), 2)     AS volumen_bruto,
+    ROUND(SUM(fee_amount), 2) AS comision,
+    ROUND(10000.0 * SUM(fee_amount) / NULLIF(SUM(amount), 0), 1) AS mdr_bps
+FROM transactions
+WHERE status = 'CAPTURED'
+GROUP BY customer_id, merchant_name
+ORDER BY volumen_bruto DESC
+LIMIT 10;
+```
+
+Las otras tres: tasa de aprobación por MCC, declinaciones por código ISO 8583, y
+una que compara los bytes escaneados con y sin filtro de partición.
+
+> **Esa última es la que conviene ejecutar.** Athena cobra por byte escaneado,
+> así que el particionado no es orden: es la factura. Ejecuta las dos variantes
+> y mira *Data scanned* en cada una.
+
+El workgroup lleva un `bytes_scanned_cutoff_per_query` de 1 GB. No molesta a este
+dataset —son unos pocos MB— pero deja a la vista el freno de mano que en
+producción evita que un `SELECT *` sin filtro se lleve por delante el
+presupuesto del mes.
+
+```bash
+# Los resultados de cada consulta quedan en S3:
+terraform -chdir=infra/lab2 output athena_results_path
 ```
 
 ¿Algo no cuadra? → [docs/troubleshooting.md](../../docs/troubleshooting.md#lab-2--transformation--quality--catalog)
@@ -362,7 +396,7 @@ S3 (Data Lake) ────────┘         │
                           sin mover los datos)
 ```
 
-El Glue Catalog no es solo un registro de tablas. Puede ser el índice unificado de toda una organización, permitiendo queries federadas sin duplicación. En el Lab 2 vemos la base de esa capacidad: la tabla `transactions_curated` en el Catalog ya está disponible para consultas con Athena sin configuración adicional.
+El Glue Catalog no es solo un registro de tablas. Puede ser el índice unificado de toda una organización, permitiendo queries federadas sin duplicación. En el Lab 2 vemos la base de esa capacidad: la tabla `transactions` en el Catalog queda disponible para Athena en cuanto el Crawler termina.
 
 **Referencia:** United Airlines, AWS re:Invent 2023 (sesión ANT335)
 

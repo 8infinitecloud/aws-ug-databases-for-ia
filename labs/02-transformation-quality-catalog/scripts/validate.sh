@@ -4,7 +4,7 @@
 # =============================================================================
 # Verifica:
 #   1. Archivos Parquet en s3://bucket/curated/transactions/
-#   2. Tabla transactions_curated en Glue Catalog (financial_platform)
+#   2. Tabla transactions en Glue Catalog (financial_platform)
 #   3. Quality report en s3://bucket/quality-reports/latest/
 #   4. Archivos rechazados en s3://bucket/rejected/
 # =============================================================================
@@ -72,25 +72,25 @@ info "[2/4] Verificando tabla en Glue Catalog (${DB_NAME})..."
 
 TABLE_EXISTS=$(aws glue get-table \
   --database-name "${DB_NAME}" \
-  --name          "transactions_curated" \
+  --name          "transactions" \
   --region        "${REGION}" \
   --query         "Table.Name" \
   --output        text 2>/dev/null || echo "")
 
-if [ "${TABLE_EXISTS}" = "transactions_curated" ]; then
-  pass "Tabla ${DB_NAME}.transactions_curated existe en el Catalog"
+if [ "${TABLE_EXISTS}" = "transactions" ]; then
+  pass "Tabla ${DB_NAME}.transactions existe en el Catalog"
 
   # Mostrar schema de la tabla
   echo ""
   echo "  Schema de la tabla:"
   aws glue get-table \
     --database-name "${DB_NAME}" \
-    --name          "transactions_curated" \
+    --name          "transactions" \
     --region        "${REGION}" \
     --query         "Table.StorageDescriptor.Columns[*].[Name,Type]" \
     --output        table 2>/dev/null | sed 's/^/  /'
 else
-  fail "Tabla transactions_curated no encontrada en ${DB_NAME}"
+  fail "Tabla transactions no encontrada en ${DB_NAME}"
   echo "       ¿Ejecutaste el Crawler? (run_job.sh lo hace automáticamente)"
 fi
 

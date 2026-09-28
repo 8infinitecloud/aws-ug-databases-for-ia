@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **Duración** | ~2 h en total (Lab 1: 25 min · Lab 2: 15 min · Lab 3: 40 min) |
+| **Duración** | ~2 h 20 en total (Lab 1: 25 min · Lab 2: 15 min · Lab 3: 40 min · Lab 4: 20 min) |
 | **Coste** | ~$0.50 si haces cleanup al terminar ([desglose](COST_ESTIMATE.md)) |
 | **Nivel** | Básico-intermedio. Necesitas soltura con la terminal y nociones de SQL. |
 | **Requisitos** | Cuenta AWS con permisos de admin, AWS CLI v2, Terraform ≥ 1.6 |
@@ -108,7 +108,7 @@ python scripts/run_pipeline_local.py --keep
 pytest tests/ -v
 
 # La infraestructura compila y el grafo resuelve
-for M in bootstrap lab1 lab2 lab3; do
+for M in bootstrap payments lab1 lab2 lab3 lab4; do
   terraform -chdir="infra/$M" init -backend=false && terraform -chdir="infra/$M" validate
 done
 ```
@@ -124,13 +124,18 @@ Detalle de qué es local y qué no: [docs/local-development.md](docs/local-devel
 
 | Lab | Pregunta que responde | Qué despliegas | Tiempo | Coste |
 |-----|----------------------|----------------|--------|-------|
-| **[1 — Ingestion + Data Lake](labs/01-ingestion-data-lake/)** | ¿Cómo llevo datos de producción a una plataforma sin tocar el origen? | RDS MySQL, AWS DMS, S3 | ~25 min | ~$0.09/h |
-| **[2 — Transformation + Quality + Catalog](labs/02-transformation-quality-catalog/)** | ¿Puedo confiar en esos datos? ¿Alguien sabe qué significan? | Glue Job, Glue Data Quality, Glue Catalog | ~15 min | ~$0.01 total |
+| **[1 — Ingestion + Data Lake](labs/01-ingestion-data-lake/)** | ¿Cómo llevo datos de producción a una plataforma sin tocar el origen? | AWS DMS desde el Aurora del core, S3 | ~25 min | ~$0.09/h |
+| **[2 — Transformation + Quality + Catalog](labs/02-transformation-quality-catalog/)** | ¿Puedo confiar en esos datos? ¿Alguien sabe qué significan? | Glue Job, Glue Data Quality, Glue Catalog, Athena | ~15 min | ~$0.01 total |
 | **[3 — Data to AI](labs/03-data-to-ai/)** | ¿Cómo alimento una IA con datos en los que confío? | Bedrock, Aurora pgvector, DynamoDB, Redis, Streamlit | ~40 min | ~$0.12/h |
+| **[4 — Streaming + Insight Online](labs/04-streaming-online-insight/)** | ¿Puedo reaccionar *ahora*, no mañana? | IoT Core, Lambda, DynamoDB, Firehose | ~20 min | ~$0.00 en reposo |
 
-**Los tres forman una historia progresiva**, pero son técnicamente
-independientes: el Lab 3 se puede hacer solo. La única dependencia real es que
-el Lab 2 necesita el Lab 1 desplegado, porque lee su bucket.
+**Los cuatro forman una historia progresiva**, y el recorrido tiene una forma:
+los tres primeros responden **qué pasó**; el cuarto, **si podemos reaccionar
+ahora**. Esa no es la misma pregunta hecha más rápido — es otra arquitectura, y
+por eso el Lab 4 guarda en DynamoDB y no en S3.
+
+Son técnicamente independientes: el Lab 3 se puede hacer solo. Las dependencias
+reales son que el Lab 2 y el Lab 4 necesitan el bucket del Lab 1.
 
 > Puedes hacerlos en días distintos y destruir cada uno al acabar. Es más
 > barato que dejarlos encendidos.
@@ -180,7 +185,7 @@ enseñaría nada.
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  TRANSFORMATION + DATA QUALITY + CATALOG                                  │
 │  Glue Data Quality → 10 reglas × 3 etapas → 137 operaciones apartadas    │
-│  Glue Data Catalog → financial_platform.transactions_curated             │
+│  Glue Data Catalog → financial_platform.transactions             │
 └────────────────────────┬─────────────────────────────────────────────────┘
                          │
                          ▼
@@ -254,13 +259,16 @@ aws-ug-databases-for-ia/
 │   │   ├── glue_job.py          ← El ETL que corre en Glue
 │   │   ├── quality_rules.dqdl   ← Las 10 reglas de calidad
 │   │   └── scripts/             ← setup.sh, run_job.sh, validate.sh, cleanup.sh
-│   └── 03-data-to-ai/
+│   ├── 03-data-to-ai/
+│   │   ├── README.md
+│   │   ├── ingestion/           ← Pipeline de embeddings
+│   │   ├── query/               ← RAG chain + 3 capas de memoria
+│   │   ├── app/                 ← UI en Streamlit
+│   │   ├── data/                ← Corpus de compliance (8 documentos)
+│   │   └── infrastructure/      ← setup.sh, deploy-app.sh, cleanup.sh
+│   └── 04-streaming-online-insight/
 │       ├── README.md
-│       ├── ingestion/           ← Pipeline de embeddings
-│       ├── query/               ← RAG chain + 3 capas de memoria
-│       ├── app/                 ← UI en Streamlit
-│       ├── data/                ← Corpus de compliance (8 documentos)
-│       └── infrastructure/      ← setup.sh, deploy-app.sh, cleanup.sh
+│       └── risk_scorer.py       ← Las reglas de fraude + el handler de Lambda
 │
 ├── docs/
 │   ├── setup.md                 ← Instalación detallada por SO
@@ -291,7 +299,7 @@ bash labs/03-data-to-ai/infrastructure/cleanup.sh
 Comprueba que no queda nada:
 
 ```bash
-for M in lab1 lab2 lab3; do
+for M in payments lab1 lab2 lab3 lab4; do
   echo -n "infra/$M: "
   terraform -chdir="infra/$M" state list 2>/dev/null | wc -l
 done

@@ -47,7 +47,7 @@ jobs:
 
       - name: Lint with ruff — API de adquirencia (payments)
         run: |
-          ruff check payments/backend/ tests/ \
+          ruff check payments/backend/ tests/ labs/04-streaming-online-insight/ \
             --ignore E501,F401 \
             --output-format=concise
 
@@ -177,7 +177,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [bootstrap, lab1, lab2, lab3]
+        module: [bootstrap, payments, lab1, lab2, lab3, lab4]
     steps:
       - uses: actions/checkout@v4
 

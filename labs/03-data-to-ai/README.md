@@ -61,7 +61,7 @@ Lab 2: Glue ETL ─────────────────────�
          │ transforma + valida + cataloga
          ▼
        S3 curated/transactions/     ← datos confiables
-       Glue Catalog: financial_platform.transactions_curated
+       Glue Catalog: financial_platform.transactions
                           │
                           │  (narrativamente: "este es el tipo de dato
                           │   que la IA consume — datos preparados")
@@ -416,7 +416,7 @@ bash labs/01-ingestion-data-lake/scripts/cleanup.sh
 Comprueba que no queda nada:
 
 ```bash
-for M in lab1 lab2 lab3; do
+for M in payments lab1 lab2 lab3 lab4; do
   echo -n "infra/$M: "
   terraform -chdir="infra/$M" state list 2>/dev/null | wc -l
 done

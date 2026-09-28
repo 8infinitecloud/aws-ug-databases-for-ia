@@ -116,23 +116,44 @@ docker run -p 8099:8080 -e DB_HOST=host.docker.internal -e DB_PORT=55433 \
 Si la base no está, `/health` responde `degraded` en vez de morir: un 503 ahí
 haría que ECS reciclara la tarea en bucle y el log se perdería con ella.
 
+### El Lab 4 entero
+
+El scoring de riesgo corre en local contra un doble de DynamoDB en memoria — el
+mismo `lambda_handler` que va a Lambda:
+
+```bash
+python scripts/run_streaming_local.py
+python scripts/run_streaming_local.py --escenario card-testing
+```
+
+Tres escenarios: una mañana normal de cafetería, una ráfaga de card testing y un
+importe alto en un MCC de riesgo. El interesante es el segundo, donde se ve que
+la regla del ratio de declinaciones detecta el ataque antes que la de volumen.
+
+Calibrar es cambiar una variable y volver a ejecutar:
+
+```bash
+MAX_TX_PER_WINDOW=3 python scripts/run_streaming_local.py --escenario cafeteria
+```
+
 ### Los tests
 
 ```bash
 pytest tests/ -v
 ```
 
-77 tests que ejecutan el código real, no dobles:
+99 tests que ejecutan el código real, no dobles:
 
 | | Qué fijan |
 |---|---|
 | `test_glue_job.py` (49) | los números que citan los README: que en raw fallen reglas, cuáles resuelve la transformación y cuáles el rechazo, y que no se pierda ninguna fila |
-| `test_api.py` (25) | que el ledger cuadre, que la idempotencia no permita el doble cobro, que el evento publicado pase las reglas del Lab 2, y que la página del QR siga hablando con las rutas que existen |
+| `test_api.py` (26) | que el ledger cuadre, que la idempotencia no permita el doble cobro, que el evento publicado pase las reglas del Lab 2, y que la página del QR siga hablando con las rutas que existen |
 | `test_firmware.py` (3) | que la URL de pago siga cabiendo en un QR legible en una pantalla de 2″. No necesita base de datos ni el toolchain de ESP-IDF |
+| `test_risk_scorer.py` (21) | las reglas de fraude del Lab 4: umbrales, ventanas y el mínimo de muestras del ratio de declinaciones |
 
 Los de la API necesitan el PostgreSQL de la sección anterior en el puerto 55433.
 **Sin él se saltan**, y el resto de la suite pasa igual — así que si te salen 49
-en vez de 52, es que falta la base.
+en vez de 73, es que falta la base.
 
 Ese último grupo cubre un fallo que ya ocurrió: el evento salía con
 `payment_method: null` y el Lab 2 habría rechazado el 100% de las filas del
@@ -154,7 +175,7 @@ python labs/01-ingestion-data-lake/dataset/generate_dataset.py --rows 500000
 referencias y tipos contra el esquema del proveedor, que se descarga en el `init`.
 
 ```bash
-for M in bootstrap payments lab1 lab2 lab3; do
+for M in bootstrap payments lab1 lab2 lab3 lab4; do
   terraform -chdir="infra/$M" init -backend=false -input=false
   terraform -chdir="infra/$M" validate
 done
@@ -268,7 +289,7 @@ ruff check labs/ scripts/ tests/ payments/backend/ --ignore E501,F401
 shellcheck -x --severity=warning scripts/*.sh scripts/lib/*.sh labs/*/scripts/*.sh
 pytest tests/ -v
 checkov -d infra --framework terraform --compact --soft-fail
-for M in bootstrap payments lab1 lab2 lab3; do
+for M in bootstrap payments lab1 lab2 lab3 lab4; do
   terraform -chdir="infra/$M" fmt -check
   terraform -chdir="infra/$M" init -backend=false -input=false
   terraform -chdir="infra/$M" validate

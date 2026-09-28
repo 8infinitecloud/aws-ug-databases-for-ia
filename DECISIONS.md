@@ -829,3 +829,115 @@ referencia con HTML dentro sería un XSS en una página de pagos.
   añade porque quien abre la URL es un navegador móvil, que usa GET.
 - Si algún día la página crece hasta justificar CDN, volver a S3 exige recuperar
   el CORS. La decisión se revisa entera, no a medias.
+
+---
+
+## ADR-022: Athena cierra el lakehouse, y la tabla se llama `transactions`
+
+**Fecha:** 2026-09-28 · **Estado:** Aceptada
+
+### Contexto
+
+El README del Lab 2 prometía en tres sitios que la zona curada «ya se puede
+consultar en Athena». **No era cierto**: no había un solo recurso de Athena en
+ningún `.tf`. El Crawler creaba la tabla en el Catalog y ahí se acababa.
+
+Y había un segundo desajuste, más sutil: el README llamaba a la tabla
+`transactions_curated`, pero el Crawler la nombra a partir del último segmento
+de la ruta —`curated/transactions/`— así que la tabla real es `transactions`.
+Quien siguiera el README copiaría una consulta que falla.
+
+### Decisión Tomada
+
+**Athena, no Redshift.** En un lakehouse, Athena *es* la capa de consulta del
+warehouse. Cuesta ~5 USD/TB escaneado, que a este volumen son céntimos, y no
+necesita modelo dimensional ni cluster.
+
+El workgroup trae cuatro consultas guardadas, para que quien sigue el taller no
+copie SQL a mano —que es donde se pierde el tiempo y aparecen las erratas— y
+lleva `bytes_scanned_cutoff_per_query = 1 GB`: no molesta a este dataset, pero
+deja a la vista el freno de mano.
+
+**La tabla se llama `transactions`.** Se renombraron las 27 referencias en vez
+de forzar el nombre del Crawler, porque `financial_platform.transactions` es más
+limpio —la base de datos ya dice de qué plataforma es, y «curated» es una zona,
+no parte de la entidad— y porque el Lab 4 añade `events` al lado, con lo que el
+par queda coherente.
+
+### Alternativas Consideradas
+
+| Alternativa | Por qué no |
+|-------------|-----------|
+| **Redshift Serverless** | ~0,36 USD/RPU-hora con mínimo de 8 RPU, un cuarto servicio que enseñar, y un modelo dimensional que hoy no existe |
+| **`table_prefix` en el Crawler** para forzar `transactions_curated` | Sólo antepone, no añade sufijo. Daría `curated_transactions`, que tampoco coincide con el README |
+| **Cambiar el prefijo de S3** a `curated/transactions_curated/` | Feo, y esa ruta está en los scripts, el job de Glue y el runner local |
+| **Definir la tabla con `aws_glue_catalog_table`** en vez del Crawler | Que la tabla *aparezca* al correr el Crawler es un punto explícito del Lab 2 |
+
+### Consecuencias
+
+- El corpus de compliance del Lab 3 también cambió: el test del puente léxico
+  (ADR-017) comprueba que el corpus mencione el nombre de la tabla, y un corpus
+  que nombrara una tabla inexistente enviaría al analista a buscar lo que no hay.
+- Los registros históricos de `docs/internal/` conservan el nombre viejo:
+  describen la era CloudFormation y reescribirlos sería falsear el registro.
+
+---
+
+## ADR-023: El streaming es el Lab 4, y su columna vertebral no es Firehose
+
+**Fecha:** 2026-09-28 · **Estado:** Aceptada
+
+### Contexto
+
+La propuesta de la demo (SC-01) resolvía «Firehose, porque cuesta 0 USD/hora y
+no hay que escribir un consumidor», con el buffer de 60 s como contrapeso
+aceptable.
+
+Esa respuesta es correcta **para aterrizar eventos en el lago**. Pero al
+convertir el streaming en un lab cuya tesis es *insight online*, deja de serlo:
+Firehose pone 60 s de suelo, y con el Glue del Lab 2 por detrás la latencia real
+ronda los 4 minutos. Eso es batch rápido, no online.
+
+### Decisión Tomada
+
+**El Lab 4 existe, y su camino crítico es IoT Rule → Lambda → DynamoDB.**
+Milisegundos, sin S3 en medio. Firehose se queda, pero como *derivación* hacia
+`raw/events/`, no como columna vertebral.
+
+Un evento, dos destinos, y la diferencia entre ellos es el lab:
+
+```
+IoT Rule ──┬──► Lambda ──► DynamoDB      ~ms      REACCIONAR
+           └──► Firehose ──► S3          ~60 s    RECORDAR
+```
+
+**El contenido son *velocity checks***, que son controles de fraude reales de un
+adquirente. La regla que importa es `DECLINE_RATIO`: quien prueba tarjetas
+robadas acumula rechazos, así que el ataque se detecta por el patrón de
+declinaciones antes que por el volumen. Eso es lo que el lab enseña.
+
+El currículo queda cerrado: los labs 1-3 responden **qué pasó**; el 4, **si
+podemos reaccionar ahora**.
+
+### Alternativas Consideradas
+
+| Alternativa | Por qué no |
+|-------------|-----------|
+| **KDS → Managed Flink** | Es el *streaming analytics* de verdad —agregación por ventanas deslizantes— pero ~0,11 USD/KPU-hora y demasiada superficie para un lab de taller |
+| **Firehose como camino único**, con Athena encima | Los 60 s de buffer hacen que «online» sea falso, y el lab enseñaría lo contrario de su título |
+| **Scoring dentro del flujo de autorización** (bloquear, no marcar) | Mete la latencia en el camino crítico del cobro y exige un plan para cuando falle. Es otra conversación, y está dicho en el README |
+| **Ventanas deslizantes** | Exigen guardar cada evento y recontar. Un contador por cubo es una escritura y ninguna lectura; la contrapartida —un ataque a caballo entre dos cubos se reparte— se asume |
+
+### Consecuencias
+
+- Los eventos aterrizan en `raw/events/`, **no** en `raw/transactions/`: meterlos
+  ahí rompería la calibración del Lab 2, que está fijada por tests.
+- El scorer **no devuelve error aunque falle**. Una excepción haría que IoT
+  reintentara, y reintentar un scoring ya contado inflaría los contadores y
+  dispararía alertas falsas. Por eso tampoco lleva DLQ, y el hallazgo de
+  `checkov` queda concedido por diseño.
+- Los contadores van por **terminal**, no por comercio: un local con diez cajas
+  mueve diez veces más, y el mismo umbral no significaría lo mismo.
+- Hizo falta añadir `mcc` y `risk_level` al evento. Sin ellos, una fila del
+  stream llegaba al lago sin la señal de riesgo que Athena agrupa y el scoring
+  necesita — el mismo hueco que tuvo `payment_method` (ADR-020).
