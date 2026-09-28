@@ -33,20 +33,26 @@ publicar() {
     local n="$1" monto="$2" codigo="$3" mcc="$4" riesgo="$5"
     local estado="CAPTURED"; [ "$codigo" != "00" ] && estado="FAILED"
 
+    # Una sola linea, sin saltos. Firehose separa los registros con "\n", asi
+    # que un JSON multilinea hace que los limites entre registros dejen de ser
+    # distinguibles y Glue no pueda leer el objeto. El backend real ya emite
+    # compacto (json.dumps sin indent): esto lo imita.
+    local auth="null" motivo="null"
+    if [ "$codigo" = "00" ]; then auth='"MOCK-0000"'; else motivo='"Rechazada por el emisor"'; fi
+
     local payload
-    payload=$(cat <<JSON
-{"event_type":"payment.$([ "$codigo" = "00" ] && echo captured || echo declined)",
- "event_version":"1.0","transaction_id":"ch_DEMO$(printf '%04d' "$n")_1",
- "intent_reference":"PIDEMO$(printf '%04d' "$n")","merchant_id":"MID000000012345",
- "mcc":"${mcc}","risk_level":"${riesgo}","pos_id":"TID00001","device_id":"${SERIAL}",
- "payment_method":"CARD_PRESENT","amount":${monto},"currency":"PEN",
- "status":"${estado}","response_code":"${codigo}",
- "auth_code":$([ "$codigo" = "00" ] && echo '"MOCK-0000"' || echo null),
- "rrn":"$(date +%y%m%d)$(printf '%06d' "$n")","stan":"$(printf '%06d' "$n")",
- "fee_amount":0.00,"net_amount":${monto},"decline_reason":$([ "$codigo" = "00" ] && echo null || echo '"Rechazada por el emisor"'),
- "items":[],"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"}
-JSON
-)
+    payload=$(printf '%s' \
+      "{\"event_type\":\"payment.$([ "$codigo" = "00" ] && echo captured || echo declined)\"," \
+      "\"event_version\":\"1.0\",\"transaction_id\":\"ch_DEMO$(printf '%04d' "$n")_1\"," \
+      "\"intent_reference\":\"PIDEMO$(printf '%04d' "$n")\",\"merchant_id\":\"MID000000012345\"," \
+      "\"mcc\":\"${mcc}\",\"risk_level\":\"${riesgo}\",\"pos_id\":\"TID00001\"," \
+      "\"device_id\":\"${SERIAL}\",\"payment_method\":\"CARD_PRESENT\"," \
+      "\"amount\":${monto},\"currency\":\"PEN\",\"status\":\"${estado}\"," \
+      "\"response_code\":\"${codigo}\",\"auth_code\":${auth}," \
+      "\"rrn\":\"$(date +%y%m%d)$(printf '%06d' "$n")\",\"stan\":\"$(printf '%06d' "$n")\"," \
+      "\"fee_amount\":0.00,\"net_amount\":${monto},\"decline_reason\":${motivo}," \
+      "\"items\":[],\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%S+00:00)\"}")
+
     aws iot-data publish --endpoint-url "https://${ENDPOINT}" \
         --topic "${TOPIC}" --qos 1 --cli-binary-format raw-in-base64-out \
         --payload "${payload}" >/dev/null

@@ -118,8 +118,8 @@ resource "aws_security_group" "alb" {
 
   egress {
     description     = "Hacia las tareas Fargate"
-    from_port       = 8000
-    to_port         = 8000
+    from_port       = local.backend_port
+    to_port         = local.backend_port
     protocol        = "tcp"
     security_groups = [aws_security_group.backend.id]
   }
@@ -152,8 +152,8 @@ resource "aws_security_group" "backend" {
 resource "aws_security_group_rule" "backend_from_alb" {
   type                     = "ingress"
   description              = "Solo desde el ALB, nunca desde internet"
-  from_port                = 8000
-  to_port                  = 8000
+  from_port                = local.backend_port
+  to_port                  = local.backend_port
   protocol                 = "tcp"
   security_group_id        = aws_security_group.backend.id
   source_security_group_id = aws_security_group.alb.id

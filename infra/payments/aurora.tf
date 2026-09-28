@@ -87,6 +87,9 @@ resource "aws_rds_cluster" "aurora" {
 
   enabled_cloudwatch_logs_exports = ["postgresql"]
 
+  # Sin esto RDS crea el log group antes que Terraform y el apply falla.
+  depends_on = [aws_cloudwatch_log_group.aurora_postgresql]
+
   tags = { Name = "${local.name_prefix}-aurora" }
 }
 
@@ -124,4 +127,19 @@ resource "aws_secretsmanager_secret_version" "aurora" {
     dbname   = var.db_name
     engine   = "postgres"
   })
+}
+
+# RDS crea este log group por su cuenta al exportar logs, y con retencion
+# infinita. Al no ser un recurso de Terraform, `destroy` lo deja huerfano: los
+# logs siguen ahi y siguen cobrando, y en el siguiente despliegue se reutiliza
+# con los logs del anterior mezclados.
+#
+# Declararlo aqui hace que Terraform sea su dueno: lo crea con retencion y se lo
+# lleva al destruir. El nombre no es libre — RDS escribe exactamente en
+# /aws/rds/cluster/<identificador>/postgresql — asi que tiene que coincidir.
+resource "aws_cloudwatch_log_group" "aurora_postgresql" {
+  name              = "/aws/rds/cluster/${local.name_prefix}-aurora/postgresql"
+  retention_in_days = 7
+
+  tags = { Name = "${local.name_prefix}-aurora-logs" }
 }

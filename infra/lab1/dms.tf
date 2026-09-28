@@ -110,6 +110,10 @@ resource "aws_security_group" "dms" {
 }
 
 resource "aws_dms_replication_subnet_group" "main" {
+  # Sin esta dependencia Terraform crea el subnet group y el rol en paralelo, y
+  # DMS falla porque el rol todavia no esta.
+  depends_on = [aws_iam_role_policy_attachment.dms_vpc_role]
+
   replication_subnet_group_id          = "${var.project_name}-${var.environment}-dms-subnet"
   replication_subnet_group_description = "Subnets privadas del core para DMS"
   subnet_ids                           = local.private_subnet_ids
@@ -233,4 +237,43 @@ resource "aws_dms_replication_task" "main" {
   start_replication_task = false
 
   tags = { Name = "${var.project_name}-${var.environment}-task" }
+}
+
+# =============================================================================
+# El rol que DMS exige a nivel de cuenta
+# =============================================================================
+# Esto no se descubre con `terraform validate` ni con `plan`: el apply falla con
+#
+#   AccessDeniedFault: The IAM Role arn:aws:iam::<account>:role/dms-vpc-role
+#   is not configured properly
+#
+# DMS busca un rol llamado exactamente `dms-vpc-role` para gestionar las ENIs de
+# los subnet groups. No usa el rol que se le pasa al endpoint ni al task: ese
+# nombre esta cableado en el servicio.
+#
+# Es un recurso de cuenta y no del lab, asi que `create_dms_vpc_role = false`
+# permite reutilizar el que ya exista.
+
+resource "aws_iam_role" "dms_vpc_role" {
+  count = var.create_dms_vpc_role ? 1 : 0
+
+  name = "dms-vpc-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "dms.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+
+  tags = { Name = "dms-vpc-role" }
+}
+
+resource "aws_iam_role_policy_attachment" "dms_vpc_role" {
+  count = var.create_dms_vpc_role ? 1 : 0
+
+  role       = aws_iam_role.dms_vpc_role[0].name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonDMSVPCManagementRole"
 }

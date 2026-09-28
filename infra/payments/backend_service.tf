@@ -142,6 +142,13 @@ data "aws_iot_endpoint" "data" {
 locals {
   # Si no hay imagen, se usa un placeholder y el servicio arranca con 0 tareas.
   # Permite aplicar la infraestructura antes de construir el backend.
+  # El puerto lo fija el Dockerfile (`--port 8080`). Vive aqui una sola vez
+  # porque lo usan el contenedor, su health check, el target group y el
+  # listener: cuatro sitios que, separados, divergen. Ya paso: estaban en 8000
+  # mientras el contenedor escuchaba en 8080, y el ALB mandaba trafico a un
+  # puerto donde no habia nadie. `plan` no puede detectarlo.
+  backend_port = 8080
+
   backend_image   = var.backend_image != "" ? var.backend_image : "${aws_ecr_repository.backend.repository_url}:latest"
   backend_desired = var.backend_image != "" ? 1 : 0
 }
@@ -172,7 +179,7 @@ resource "aws_ecs_task_definition" "backend" {
     essential = true
 
     portMappings = [{
-      containerPort = 8000
+      containerPort = local.backend_port
       protocol      = "tcp"
     }]
 
@@ -198,7 +205,7 @@ resource "aws_ecs_task_definition" "backend" {
     }
 
     healthCheck = {
-      command     = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
+      command     = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:${local.backend_port}/health')\" || exit 1"]
       interval    = 30
       timeout     = 5
       retries     = 3
@@ -226,8 +233,12 @@ resource "aws_lb" "backend" {
 }
 
 resource "aws_lb_target_group" "backend" {
-  name        = "${local.name_prefix}-tg"
-  port        = 8000
+  # name_prefix y no name: cambiar el puerto obliga a recrear el target group, y
+  # con nombre fijo el nuevo colisiona con el viejo antes de que este se borre.
+  # Con prefijo, AWS le pone un sufijo unico y el reemplazo funciona. El limite
+  # del prefijo son 6 caracteres.
+  name_prefix = "fcpay"
+  port        = local.backend_port
   protocol    = "HTTP"
   vpc_id      = aws_vpc.main.id
   target_type = "ip" # obligatorio con awsvpc en Fargate
@@ -277,16 +288,21 @@ resource "aws_ecs_service" "backend" {
   load_balancer {
     target_group_arn = aws_lb_target_group.backend.arn
     container_name   = "backend"
-    container_port   = 8000
+    container_port   = local.backend_port
   }
 
   # Da tiempo a que la tarea arranque antes de que el ALB la marque insana.
   health_check_grace_period_seconds = 60
 
-  # El despliegue de la imagen lo hace un workflow aparte, que actualiza la
-  # task definition. Sin esto, cada terraform apply la revertiria.
+  # Sin ignore_changes, y es deliberado. Antes ignoraba `task_definition` y
+  # `desired_count` "porque la imagen la despliega un workflow aparte" — pero ese
+  # workflow no existe: Terraform es el unico que despliega aqui. El efecto real
+  # era que `backend_image` no hacia nada: se aplicaba, el servicio seguia en 0
+  # tareas con la task definition vieja, y el ALB apuntaba a un contenedor que ya
+  # no correspondia. Si algun dia un CI externo actualiza la task definition,
+  # vuelve a ponerse, pero no antes.
   lifecycle {
-    ignore_changes = [task_definition, desired_count]
+    ignore_changes = []
   }
 
   depends_on = [aws_lb_listener.backend]

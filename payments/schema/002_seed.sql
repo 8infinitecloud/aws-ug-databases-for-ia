@@ -88,9 +88,12 @@ ON CONFLICT (sku) DO NOTHING;
 COMMIT;
 
 -- ── Comprobacion ─────────────────────────────────────────────────────────────
-\echo ''
-\echo 'Seed aplicado:'
+-- Sin meta-comandos de psql (\echo y compania): solo los entiende psql, y este
+-- fichero tambien lo cargan clientes programaticos —una tarea de Fargate, un
+-- Lambda, el CI—. Un `\echo` los rompe con un error de sintaxis que no dice de
+-- que va. La etiqueta viaja como una columna mas, que se ve igual en psql.
 SELECT
+    'Seed aplicado'                        AS resultado,
     (SELECT count(*) FROM merchants)       AS comercios,
     (SELECT count(*) FROM terminals)       AS terminales,
     (SELECT count(*) FROM payment_methods) AS instrumentos,

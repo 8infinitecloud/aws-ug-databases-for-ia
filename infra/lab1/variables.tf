@@ -43,3 +43,19 @@ variable "source_object" {
   type        = string
   default     = "v_transactions_for_ingestion"
 }
+
+variable "create_dms_vpc_role" {
+  description = <<-DESC
+    Crear el rol `dms-vpc-role` de la cuenta.
+
+    DMS exige un rol con ESE nombre exacto para crear subnet groups: no mira el
+    rol del modulo, por muchos permisos que tenga. Es un prerrequisito de cuenta,
+    no de este lab.
+
+    Ponlo a false si tu cuenta ya lo tiene —pasa en cuentas donde alguien uso DMS
+    antes— o el apply fallara con EntityAlreadyExists. Para saberlo:
+        aws iam get-role --role-name dms-vpc-role
+  DESC
+  type        = bool
+  default     = true
+}
