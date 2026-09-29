@@ -101,7 +101,12 @@ CONFIG_SOFTWARE_SDCARD_SUPPORT=
 # Amazon Web Services IoT Platform
 #
 CONFIG_AWS_IOT_USE_HARDWARE_SECURE_ELEMENT=y
-CONFIG_AWS_IOT_MQTT_HOST="a33zf5uf8i1krh-ats.iot.us-east-1.amazonaws.com"
+# Endpoint de IoT Core. Se dejo VACIO a proposito: el valor que traia el
+# sdkconfig.defaults del kit era el endpoint de OTRA cuenta AWS, heredado al
+# copiar el fichero, y este firmware no lo usa —habla con la API por HTTPS, y el
+# endpoint de IoT lo resuelve el backend—. Publicar el identificador de la
+# cuenta de un tercero no aporta nada y confunde.
+CONFIG_AWS_IOT_MQTT_HOST=""
 
 #
 # esp-cryptoauthlib

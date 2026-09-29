@@ -11,10 +11,21 @@ set -euo pipefail
 
 REGION="${AWS_REGION:-us-east-1}"
 PROJECT_NAME="rag-lab"
-# Precedencia: TF_VAR_db_password (lo que pide la guia) > DB_PASSWORD > default.
+# Precedencia: TF_VAR_db_password (lo que pide la guia) > DB_PASSWORD.
 # Antes se exportaba TF_VAR_db_password desde DB_PASSWORD sin mirar si el usuario
 # ya la habia definido, pisandola silenciosamente con el valor por defecto.
-DB_PASSWORD="${TF_VAR_db_password:-${DB_PASSWORD:-RagLab2024!}}"
+#
+# Y SIN valor por defecto, que es lo importante. Antes caia en uno cableado en
+# este mismo fichero: quien seguia el taller y olvidaba exportar la variable
+# desplegaba un Aurora con una contrasena publicada en el repositorio. Ahora
+# falla y lo dice, que es lo unico razonable cuando lo que falta es un secreto.
+DB_PASSWORD="${TF_VAR_db_password:-${DB_PASSWORD:-}}"
+if [ -z "${DB_PASSWORD}" ]; then
+    echo "[✗] Falta la contrasena de la base de datos." >&2
+    echo "    Defínela antes de continuar (minimo 8 caracteres):" >&2
+    echo "      export TF_VAR_db_password='TuContrasenaSegura2026!'" >&2
+    exit 1
+fi
 ENVIRONMENT="${ENVIRONMENT:-lab}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

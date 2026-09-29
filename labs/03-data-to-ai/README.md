@@ -180,7 +180,8 @@ Si no tienes acceso: **Bedrock Console → Model access → Request access**.
 ```bash
 cd labs/03-data-to-ai/infrastructure
 
-export DB_PASSWORD="FinCorp2026!"
+# Elige una tuya: esta la vería cualquiera que lea este repositorio.
+export TF_VAR_db_password="CambiaEstaPassword2026!"
 export AWS_REGION="us-east-1"
 
 chmod +x setup.sh
