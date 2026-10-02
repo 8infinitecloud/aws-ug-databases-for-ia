@@ -61,6 +61,31 @@ SELECT m.id, 'CARD', 'VISA', '4242', 12, 2030,
 FROM merchants m WHERE m.merchant_id = 'MID000000012345'
 ON CONFLICT (processor_token) DO NOTHING;
 
+-- ── Los instrumentos de prueba del canal online ──────────────────────────────
+-- Mismos identificadores que los PaymentMethods de prueba que documenta Stripe
+-- (https://docs.stripe.com/testing), y por la misma razon: probar cada camino
+-- del emisor sin escribir jamas un numero de tarjeta. El token decide la
+-- respuesta del emisor simulado (ver acquiring.TEST_PAYMENT_METHODS).
+--
+-- merchant_id NULL: son de la red, no de un comercio. Cualquier tienda online
+-- puede usarlos, como pasa con las tarjetas de prueba de una pasarela.
+-- last_four son los de los numeros de prueba publicos de Stripe para cada caso.
+INSERT INTO payment_methods (
+    merchant_id, method_type, brand, last_four, exp_month, exp_year,
+    processor_token, fingerprint, status
+) VALUES
+    (NULL, 'CARD', 'VISA', '4242', 12, 2030, 'pm_card_visa',
+     'demo_fp_visa', 'ACTIVE'),
+    (NULL, 'CARD', 'VISA', '0002', 12, 2030, 'pm_card_visa_chargeDeclined',
+     'demo_fp_declined', 'ACTIVE'),
+    (NULL, 'CARD', 'VISA', '9995', 12, 2030, 'pm_card_visa_chargeDeclinedInsufficientFunds',
+     'demo_fp_insufficient', 'ACTIVE'),
+    (NULL, 'CARD', 'VISA', '0069', 12, 2030, 'pm_card_chargeDeclinedExpiredCard',
+     'demo_fp_expired', 'ACTIVE'),
+    (NULL, 'CARD', 'VISA', '3220', 12, 2030, 'pm_card_threeDSecure2Required',
+     'demo_fp_3ds', 'ACTIVE')
+ON CONFLICT (processor_token) DO NOTHING;
+
 -- ── Catalogo de productos ────────────────────────────────────────────────────
 -- Vive en el POS, no en el adquirente: a nosotros no nos importa QUE se vende,
 -- solo cuanto se cobra. Se deja aqui como referencia para que el firmware y la

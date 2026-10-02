@@ -48,7 +48,7 @@ log = logging.getLogger(__name__)
 # ── Constantes del dominio de adquirencia ─────────────────────────────────────
 # Somos el adquirente: procesamos autorizaciones de pago para comercios
 # afiliados. No hay depositos ni retiros; hay capturas, rechazos y devoluciones.
-VALID_PAYMENT_METHODS = {"CARD_PRESENT", "QR"}
+VALID_PAYMENT_METHODS = {"CARD_PRESENT", "QR", "CARD_NOT_PRESENT"}
 VALID_STATUSES        = {"CAPTURED", "FAILED", "REFUNDED", "REVERSED"}
 VALID_CURRENCIES      = {"PEN", "USD", "EUR"}
 

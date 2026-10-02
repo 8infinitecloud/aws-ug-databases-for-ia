@@ -30,7 +30,7 @@ Rules = [
     # ── Validity ──────────────────────────────────────────────────────────────
     # Canales que procesamos. El core antiguo escribia TARJETA y CODIGO_QR, asi
     # que esta regla FALLA antes de normalizar y pasa despues.
-    ColumnValues "payment_method" in ["CARD_PRESENT", "QR"],
+    ColumnValues "payment_method" in ["CARD_PRESENT", "QR", "CARD_NOT_PRESENT"],
 
     # Estados del ciclo de vida de un cobro. El core antiguo escribia en espanol
     # y sin normalizar el case -> FALLARA antes de la transformacion.

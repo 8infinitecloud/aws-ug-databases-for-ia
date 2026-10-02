@@ -57,7 +57,7 @@
       "id": "R05",
       "tipo": "ColumnValues",
       "columna": "payment_method",
-      "condicion": "in [CARD_PRESENT, QR]",
+      "condicion": "in [CARD_PRESENT, QR, CARD_NOT_PRESENT]",
       "resultado_esperado": "FALLA en raw: el core antiguo escribia TARJETA. Se resuelve TRANSFORMANDO",
       "clase": "columna"
     },

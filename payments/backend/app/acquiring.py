@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import logging
 import random
+import secrets
+import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
@@ -60,7 +62,32 @@ class AuthorizationResult:
 
 
 # ── El mock de autorizacion ──────────────────────────────────────────────────
-def authorize_mock(cvv: str | None, expected_cvv: str, channel: str) -> AuthorizationResult:
+# El canal online decide por TOKEN, como los PaymentMethods de prueba de Stripe
+# (https://docs.stripe.com/testing). Cada token fuerza un camino del emisor, y
+# asi la demo y el generador de trafico pueden ensenar cada uno a voluntad, sin
+# un solo numero de tarjeta. Los tokens existen en payment_methods (002_seed).
+TEST_PAYMENT_METHODS: dict[str, str] = {
+    "pm_card_visa": RC_APPROVED,
+    "pm_card_visa_chargeDeclined": RC_DO_NOT_HONOR,
+    "pm_card_visa_chargeDeclinedInsufficientFunds": RC_INSUFFICIENT_FUNDS,
+    "pm_card_chargeDeclinedExpiredCard": RC_EXPIRED_CARD,
+    # Aprueba, pero solo DESPUES de que el comprador se autentique con su banco.
+    "pm_card_threeDSecure2Required": RC_APPROVED,
+}
+REQUIRES_AUTHENTICATION = {"pm_card_threeDSecure2Required"}
+
+# El codigo que queda en last_error_code cuando el comprador no supera 3DS. No
+# es un DE 39: la autorizacion ni siquiera llego al emisor.
+AUTHENTICATION_FAILED = "AUTH_3DS"
+
+
+def authorize_mock(
+    cvv: str | None,
+    expected_cvv: str,
+    channel: str,
+    rrn: str,
+    payment_method_token: str | None = None,
+) -> AuthorizationResult:
     """
     Simula la respuesta del emisor.
 
@@ -69,15 +96,20 @@ def authorize_mock(cvv: str | None, expected_cvv: str, channel: str) -> Authoriz
     aqui iria el mensaje ISO 8583 0100 hacia la red.
 
     QR: se aprueba siempre, porque el pagador ya confirmo en su movil.
-    Tarjeta: el CVV decide, que es lo que permite ensenar el camino de rechazo.
+    Tarjeta presente: el CVV decide, que es lo que permite ensenar el camino de
+    rechazo desde el POS.
+    Online: decide el token de prueba.
     """
     stan = f"{random.randint(0, 999_999):06d}"
-    # El RRN lleva la fecha: es la convencion de la industria y hace que la
-    # referencia sea reconocible al buscarla.
-    rrn = datetime.now(timezone.utc).strftime("%y%m%d") + f"{random.randint(0, 999_999):06d}"
 
     if channel == "QR":
         return AuthorizationResult(True, RC_APPROVED, _auth_code(), rrn, stan, None)
+
+    if channel == "CARD_NOT_PRESENT":
+        code = TEST_PAYMENT_METHODS.get(payment_method_token or "", RC_DO_NOT_HONOR)
+        if code == RC_APPROVED:
+            return AuthorizationResult(True, RC_APPROVED, _auth_code(), rrn, stan, None)
+        return AuthorizationResult(False, code, None, rrn, stan, DECLINE_REASONS[code])
 
     if cvv == expected_cvv:
         return AuthorizationResult(True, RC_APPROVED, _auth_code(), rrn, stan, None)
@@ -92,6 +124,53 @@ def authorize_mock(cvv: str | None, expected_cvv: str, channel: str) -> Authoriz
 def _auth_code() -> str:
     """Prefijo MOCK- para que en los datos sea evidente que no es real."""
     return f"MOCK-{random.randint(1000, 9999)}"
+
+
+def _next_rrn(conn: Connection) -> str:
+    """
+    RRN (DE 37): fecha YYMMDD + 6 digitos de una secuencia.
+
+    La fecha delante es la convencion de la industria y hace la referencia
+    reconocible al buscarla. Los 6 digitos salen de una secuencia y no del azar:
+    con azar, unos miles de cobros en un dia ya repiten RRN y la UNIQUE de
+    charges tumba el cobro.
+    """
+    with conn.cursor() as cur:
+        cur.execute("SELECT nextval('acquiring.rrn_seq')")
+        n = cur.fetchone()[0]
+    return datetime.now(timezone.utc).strftime("%y%m%d") + f"{n % 1_000_000:06d}"
+
+
+# ── Eventos para el comercio ─────────────────────────────────────────────────
+def _record_event(
+    conn: Connection, merchant_pk: int, event_type: str,
+    intent_reference: str, payload: dict,
+) -> None:
+    """
+    Guarda el evento en webhook_events, en la MISMA transaccion que el cambio.
+
+    Es el patron outbox: si el cobro se confirma, su evento existe; si se
+    deshace, tampoco queda evento. Publicar fuera de la transaccion permitiria
+    anunciar un pago que luego no existe.
+
+    Los tipos siguen la nomenclatura de Stripe (payment_intent.succeeded,
+    payment_intent.payment_failed...). El worker que los ENTREGA al comercio no
+    esta escrito: la demo los usa como datos, y llegan al lago por el CDC.
+    """
+    import json
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO acquiring.webhook_events
+                (merchant_id, event_reference, event_type, object_type, object_id, payload)
+            VALUES (%s, %s, %s, 'payment_intent', %s, %s)
+            """,
+            (
+                merchant_pk, f"evt_{uuid.uuid4().hex[:24]}", event_type,
+                intent_reference, json.dumps(payload, default=str),
+            ),
+        )
 
 
 # ── Lectura ──────────────────────────────────────────────────────────────────
@@ -112,19 +191,27 @@ def get_merchant(conn: Connection, merchant_id: str) -> dict:
     return merchant
 
 
-def get_terminal(conn: Connection, merchant_pk: int, terminal_id: str) -> dict:
+def get_terminal(conn: Connection, terminal_id: str) -> dict:
+    """
+    El terminal, con el comercio al que pertenece.
+
+    El TID es unico en toda la red (UNIQUE en terminals), asi que basta para
+    saber de que comercio es el cobro. Es como se identifica el POS: ver auth.py.
+    """
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             """
-            SELECT id, terminal_id, device_serial, status
-            FROM acquiring.terminals
-            WHERE merchant_id = %s AND terminal_id = %s
+            SELECT t.id, t.terminal_id, t.device_serial, t.status,
+                   m.merchant_id AS merchant_code
+            FROM acquiring.terminals t
+            JOIN acquiring.merchants m ON m.id = t.merchant_id
+            WHERE t.terminal_id = %s
             """,
-            (merchant_pk, terminal_id),
+            (terminal_id,),
         )
         terminal = cur.fetchone()
     if terminal is None:
-        raise AcquiringError(f"terminal {terminal_id} no existe para ese comercio", 404)
+        raise AcquiringError(f"terminal {terminal_id} no existe", 404)
     if terminal["status"] not in ("ACTIVE", "PROVISIONED"):
         raise AcquiringError(f"terminal {terminal_id} en estado {terminal['status']}", 409)
     return terminal
@@ -153,17 +240,32 @@ def get_intent(conn: Connection, intent_reference: str) -> dict:
 
 
 # ── Escritura ────────────────────────────────────────────────────────────────
+# Estados desde los que todavia se puede cobrar. Tras una declinacion la
+# intencion VUELVE a REQUIRES_PAYMENT_METHOD, como en Stripe: el comprador
+# reintenta con otra tarjeta sobre la misma intencion, en vez de empezar de cero.
+_CONFIRMABLE = ("REQUIRES_PAYMENT_METHOD", "REQUIRES_CONFIRMATION")
+_CANCELABLE = ("REQUIRES_PAYMENT_METHOD", "REQUIRES_CONFIRMATION", "REQUIRES_ACTION")
+
+
 def create_intent(
     conn: Connection,
     merchant_id: str,
-    terminal_id: str,
+    terminal: dict | None,
     intent_reference: str,
     amount_minor: int,
     currency_code: str,
     line_items: list[dict],
     statement_description: str | None,
+    return_url: str | None = None,
 ) -> dict:
-    """Crea la intencion de cobro. El POS la llama al cerrar el carrito."""
+    """
+    Crea la intencion de cobro.
+
+    Con terminal la crea el POS al cerrar el carrito, y nace en
+    REQUIRES_CONFIRMATION: el QR ya esta en pantalla esperando al pagador.
+    Sin terminal la crea una tienda online, y nace en REQUIRES_PAYMENT_METHOD,
+    que es como nace en Stripe: todavia no se sabe con que se va a pagar.
+    """
     import json
 
     merchant = get_merchant(conn, merchant_id)
@@ -173,37 +275,47 @@ def create_intent(
             f"(estado {merchant['status']})",
             409,
         )
-    terminal = get_terminal(conn, merchant["id"], terminal_id)
+    status = "REQUIRES_CONFIRMATION" if terminal else "REQUIRES_PAYMENT_METHOD"
 
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             """
             INSERT INTO acquiring.payment_intents
                 (intent_reference, merchant_id, terminal_id, amount_minor,
-                 currency_code, status, line_items, statement_description)
-            VALUES (%s, %s, %s, %s, %s, 'REQUIRES_CONFIRMATION', %s, %s)
+                 currency_code, status, line_items, statement_description,
+                 return_url)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (intent_reference) DO NOTHING
             RETURNING id, intent_reference, status, amount_minor,
-                      amount_received_minor, currency_code, line_items, created_at
+                      amount_received_minor, currency_code, line_items,
+                      channel, last_error_code, created_at
             """,
             (
-                intent_reference, merchant["id"], terminal["id"], amount_minor,
-                currency_code, json.dumps(line_items), statement_description,
+                intent_reference, merchant["id"], terminal["id"] if terminal else None,
+                amount_minor, currency_code, status, json.dumps(line_items),
+                statement_description, return_url,
             ),
         )
         row = cur.fetchone()
 
     if row is None:
-        # Ya existia: el POS reintento. Se devuelve la que hay, que es lo que
-        # espera un cliente idempotente.
+        # Ya existia: el cliente reintento. Se devuelve la que hay, que es lo que
+        # espera un cliente idempotente. Pero solo si es SUYA: una referencia de
+        # otro comercio no se revela ni se reutiliza.
         log.info("intencion %s ya existia, se devuelve la existente", intent_reference)
         existing = get_intent(conn, intent_reference)
+        if existing["merchant_code"] != merchant_id:
+            raise AcquiringError(f"la referencia {intent_reference} ya esta en uso", 409)
         if existing["amount_minor"] != amount_minor:
             raise AcquiringError(
                 f"la intencion {intent_reference} ya existe con otro importe", 409
             )
         return existing | {"trade_name": merchant["trade_name"]}
 
+    _record_event(conn, merchant["id"], "payment_intent.created", intent_reference, {
+        "amount_minor": amount_minor, "currency_code": currency_code,
+        "status": status, "online": terminal is None,
+    })
     return row | {"trade_name": merchant["trade_name"]}
 
 
@@ -214,9 +326,15 @@ def confirm_intent(
     cvv: str | None,
     expected_cvv: str,
     card_token: str | None,
+    payment_method: str | None = None,
+    authentication_url: str | None = None,
 ) -> dict:
     """
     Autoriza, captura y asienta en el libro mayor, todo en una transaccion.
+
+    Online, si el emisor pide autenticar, no autoriza todavia: deja la intencion
+    en REQUIRES_ACTION con la URL a la que hay que mandar al comprador
+    (`authentication_url`, que monta la capa HTTP porque conoce su propio host).
 
     Devuelve el resultado con los data elements de ISO 8583.
     """
@@ -229,18 +347,158 @@ def confirm_intent(
         log.info("intencion %s ya estaba cobrada", intent_reference)
         return _existing_charge(conn, intent["id"], intent)
 
-    if intent["status"] in ("CANCELED", "FAILED"):
+    if intent["status"] == "REQUIRES_ACTION":
+        raise AcquiringError(
+            f"la intencion {intent_reference} espera la autenticacion del comprador", 409
+        )
+    if intent["status"] not in _CONFIRMABLE:
         raise AcquiringError(
             f"la intencion {intent_reference} esta en estado {intent['status']}", 409
         )
 
-    auth = authorize_mock(cvv, expected_cvv, channel)
-    payment_method_pk = _resolve_payment_method(conn, card_token) if card_token else None
+    token = payment_method if channel == "CARD_NOT_PRESENT" else card_token
+    payment_method_pk = _resolve_payment_method(conn, token) if token else None
+    if channel == "CARD_NOT_PRESENT" and payment_method_pk is None:
+        raise AcquiringError(f"el payment method {payment_method} no existe", 404)
+
+    if channel == "CARD_NOT_PRESENT" and payment_method in REQUIRES_AUTHENTICATION:
+        return _require_authentication(
+            conn, intent, payment_method_pk, authentication_url
+        )
+
+    auth = authorize_mock(cvv, expected_cvv, channel, _next_rrn(conn), token)
 
     if not auth.approved:
         return _record_decline(conn, intent, channel, auth, payment_method_pk)
 
     return _record_approval(conn, intent, channel, auth, payment_method_pk)
+
+
+def _require_authentication(
+    conn: Connection, intent: dict, payment_method_pk: int,
+    authentication_url: str | None,
+) -> dict:
+    """
+    El emisor pide 3DS: la intencion espera en REQUIRES_ACTION.
+
+    El token de la URL es lo que impide que cualquiera que conozca la referencia
+    complete la autenticacion por el comprador. Se guarda en next_action y se
+    compara al volver.
+    """
+    import json
+
+    token = secrets.token_urlsafe(18)
+    url = f"{authentication_url or ''}?t={token}"
+    next_action = {
+        "type": "redirect_to_url",
+        "redirect_to_url": {"url": url, "return_url": intent.get("return_url")},
+        "token": token,
+    }
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE acquiring.payment_intents
+            SET status = 'REQUIRES_ACTION', channel = 'CARD_NOT_PRESENT',
+                payment_method_id = %s, next_action = %s
+            WHERE id = %s
+            """,
+            (payment_method_pk, json.dumps(next_action), intent["id"]),
+        )
+    _record_event(conn, intent["merchant_id"], "payment_intent.requires_action",
+                  intent["intent_reference"], {"type": "redirect_to_url"})
+
+    return {
+        "intent_reference": intent["intent_reference"],
+        "status": "REQUIRES_ACTION",
+        "channel": "CARD_NOT_PRESENT",
+        "amount_minor": intent["amount_minor"],
+        "currency_code": intent["currency_code"],
+        "next_action": {k: v for k, v in next_action.items() if k != "token"},
+    }
+
+
+def complete_authentication(
+    conn: Connection, intent_reference: str, token: str, authenticated: bool,
+) -> dict:
+    """
+    El comprador vuelve de su banco. Si se autentico, se autoriza; si no, la
+    intencion vuelve a REQUIRES_PAYMENT_METHOD para que pruebe otra tarjeta.
+
+    Un 3DS fallido NO crea cobro: la autorizacion ni siquiera llego al emisor.
+    Por eso queda solo en la intencion (last_error_code) y en su evento.
+    """
+    import hmac
+
+    intent = get_intent(conn, intent_reference)
+    action = intent.get("next_action") or {}
+    if intent["status"] != "REQUIRES_ACTION" or not action.get("token"):
+        raise AcquiringError(
+            f"la intencion {intent_reference} no espera autenticacion", 409
+        )
+    if not hmac.compare_digest(action["token"], token):
+        raise AcquiringError("token de autenticacion invalido", 403)
+
+    return_url = (action.get("redirect_to_url") or {}).get("return_url")
+
+    if not authenticated:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE acquiring.payment_intents
+                SET status = 'REQUIRES_PAYMENT_METHOD', next_action = NULL,
+                    last_error_code = %s
+                WHERE id = %s
+                """,
+                (AUTHENTICATION_FAILED, intent["id"]),
+            )
+        _record_event(conn, intent["merchant_id"], "payment_intent.payment_failed",
+                      intent_reference, {"reason": "authentication_failed"})
+        return {
+            "intent_reference": intent_reference,
+            "status": "REQUIRES_PAYMENT_METHOD",
+            "channel": "CARD_NOT_PRESENT",
+            "amount_minor": intent["amount_minor"],
+            "currency_code": intent["currency_code"],
+            "decline_reason": "AUTHENTICATION_FAILED",
+            "return_url": return_url,
+        }
+
+    auth = authorize_mock(None, "", "CARD_NOT_PRESENT", _next_rrn(conn),
+                          "pm_card_threeDSecure2Required")
+    charge = _record_approval(conn, intent, "CARD_NOT_PRESENT", auth,
+                              intent.get("payment_method_id"))
+    return charge | {"return_url": return_url}
+
+
+def cancel_intent(conn: Connection, intent_reference: str, reason: str) -> dict:
+    """
+    Cancela una intencion que todavia no se cobro.
+
+    Es un dato de negocio, no limpieza: una cancelacion por abandono es la que
+    alimenta el embudo de conversion de la tienda.
+    """
+    intent = get_intent(conn, intent_reference)
+    if intent["status"] == "CANCELED":
+        return intent
+    if intent["status"] not in _CANCELABLE:
+        raise AcquiringError(
+            f"la intencion {intent_reference} esta en estado {intent['status']} "
+            f"y no se puede cancelar",
+            409,
+        )
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE acquiring.payment_intents
+            SET status = 'CANCELED', canceled_at = NOW(),
+                cancellation_reason = %s, next_action = NULL
+            WHERE id = %s
+            """,
+            (reason, intent["id"]),
+        )
+    _record_event(conn, intent["merchant_id"], "payment_intent.canceled",
+                  intent_reference, {"cancellation_reason": reason})
+    return get_intent(conn, intent_reference)
 
 
 def _resolve_payment_method(conn: Connection, card_token: str) -> int | None:
@@ -253,12 +511,28 @@ def _resolve_payment_method(conn: Connection, card_token: str) -> int | None:
     return row[0] if row else None
 
 
+def _charge_reference(conn: Connection, intent: dict) -> str:
+    """
+    ch_<ref>_<n>: un cobro por intento.
+
+    Antes el rechazo era siempre `_d`, y con reintentos sobre la misma intencion
+    el segundo rechazo chocaba con la UNIQUE del primero.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM acquiring.charges WHERE payment_intent_id = %s",
+            (intent["id"],),
+        )
+        intento = cur.fetchone()[0] + 1
+    return f"ch_{intent['intent_reference'].removeprefix('pi_')}_{intento}"
+
+
 def _record_decline(
     conn: Connection, intent: dict, channel: str,
     auth: AuthorizationResult, payment_method_pk: int | None,
 ) -> dict:
     """Un rechazo tambien se persiste: es un dato de negocio, no un error."""
-    charge_reference = f"ch_{intent['intent_reference'].removeprefix('pi_')}_d"
+    charge_reference = _charge_reference(conn, intent)
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             """
@@ -278,15 +552,22 @@ def _record_decline(
             ),
         )
         charge = cur.fetchone()
-        # La intencion queda FAILED, pero se puede reintentar creando otra.
+        # Vuelve a pedir medio de pago, como en Stripe: el reintento va sobre la
+        # misma intencion. El POS no lo nota: crea una intencion por venta.
         cur.execute(
             """
             UPDATE acquiring.payment_intents
-            SET status = 'FAILED', last_error_code = %s
+            SET status = 'REQUIRES_PAYMENT_METHOD', last_error_code = %s,
+                channel = %s
             WHERE id = %s
             """,
-            (auth.response_code, intent["id"]),
+            (auth.response_code, channel, intent["id"]),
         )
+    _record_event(conn, intent["merchant_id"], "payment_intent.payment_failed",
+                  intent["intent_reference"], {
+                      "charge_reference": charge["charge_reference"],
+                      "response_code": auth.response_code, "channel": channel,
+                  })
 
     return {
         "intent_reference": intent["intent_reference"],
@@ -310,7 +591,7 @@ def _record_approval(
     auth: AuthorizationResult, payment_method_pk: int | None,
 ) -> dict:
     """Autorizacion aprobada: se captura y se asienta en el libro."""
-    charge_reference = f"ch_{intent['intent_reference'].removeprefix('pi_')}_1"
+    charge_reference = _charge_reference(conn, intent)
     amount = intent["amount_minor"]
 
     # La comision, desde el MDR del comercio leido en esta transaccion.
@@ -361,11 +642,18 @@ def _record_approval(
             """
             UPDATE acquiring.payment_intents
             SET status = 'SUCCEEDED', amount_received_minor = %s,
-                channel = %s, payment_method_id = COALESCE(%s, payment_method_id)
+                channel = %s, payment_method_id = COALESCE(%s, payment_method_id),
+                next_action = NULL
             WHERE id = %s
             """,
             (amount, channel, payment_method_pk, intent["id"]),
         )
+    _record_event(conn, intent["merchant_id"], "payment_intent.succeeded",
+                  intent["intent_reference"], {
+                      "charge_reference": charge["charge_reference"],
+                      "amount_minor": amount, "fee_minor": fee, "net_minor": net,
+                      "channel": channel,
+                  })
 
     return {
         "intent_reference": intent["intent_reference"],

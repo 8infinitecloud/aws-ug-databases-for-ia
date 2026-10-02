@@ -71,6 +71,7 @@ DO $$ BEGIN
     CREATE TYPE intent_status AS ENUM (
         'REQUIRES_PAYMENT_METHOD',  -- creada, sin medio de pago asignado
         'REQUIRES_CONFIRMATION',    -- el QR esta en pantalla, esperando al pagador
+        'REQUIRES_ACTION',          -- online: el emisor pide autenticar (3DS)
         'PROCESSING',               -- enviada a la red
         'SUCCEEDED',
         'CANCELED',
@@ -83,8 +84,14 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
-    CREATE TYPE tender_channel AS ENUM ('CARD_PRESENT', 'QR');
+    CREATE TYPE tender_channel AS ENUM ('CARD_PRESENT', 'QR', 'CARD_NOT_PRESENT');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- Reaplicar sobre una base creada antes de que existieran. ADD VALUE dentro de
+-- la transaccion es valido desde PostgreSQL 12 mientras nada use el valor nuevo
+-- antes del COMMIT, y aqui nada lo usa.
+ALTER TYPE intent_status  ADD VALUE IF NOT EXISTS 'REQUIRES_ACTION' AFTER 'REQUIRES_CONFIRMATION';
+ALTER TYPE tender_channel ADD VALUE IF NOT EXISTS 'CARD_NOT_PRESENT';
 
 -- El libro mayor distingue el origen de cada movimiento.
 DO $$ BEGIN
@@ -231,6 +238,12 @@ CREATE TABLE IF NOT EXISTS payment_intents (
     line_items            JSONB         NOT NULL DEFAULT '[]',
 
     statement_description VARCHAR(48),              -- lo que ve el tarjetahabiente
+    -- Online: a donde vuelve el comprador tras autenticarse con su banco.
+    return_url            VARCHAR(500),
+    -- Online: lo que falta para completar el pago, como en el modelo de Stripe.
+    -- {"type": "redirect_to_url", "redirect_to_url": {"url": ...}}. Se vacia al
+    -- resolverse la autenticacion.
+    next_action           JSONB,
     last_error_code       VARCHAR(8),               -- response code ISO 8583
     cancellation_reason   VARCHAR(48),
     metadata              JSONB         NOT NULL DEFAULT '{}',
@@ -241,7 +254,13 @@ CREATE TABLE IF NOT EXISTS payment_intents (
         CHECK (amount_received_minor <= amount_minor)
 );
 
+ALTER TABLE payment_intents ADD COLUMN IF NOT EXISTS return_url  VARCHAR(500);
+ALTER TABLE payment_intents ADD COLUMN IF NOT EXISTS next_action JSONB;
+
 CREATE INDEX IF NOT EXISTS idx_intents_merchant ON payment_intents (merchant_id, created_at DESC);
+-- Sin REQUIRES_ACTION en el predicado: un indice parcial no puede usar un valor
+-- de enum anadido en la misma transaccion. Las intenciones esperando 3DS son
+-- pocas y de vida corta; no necesitan indice.
 CREATE INDEX IF NOT EXISTS idx_intents_open     ON payment_intents (status)
     WHERE status IN ('REQUIRES_PAYMENT_METHOD', 'REQUIRES_CONFIRMATION', 'PROCESSING');
 
@@ -284,7 +303,9 @@ CREATE TABLE IF NOT EXISTS charges (
     auth_code           VARCHAR(12),
     network_transaction_id VARCHAR(48),
 
-    failure_code        VARCHAR(16),
+    -- El motivo legible del rechazo. 24 y no 16: INSUFFICIENT_FUNDS tiene 18, y
+    -- con 16 el primer rechazo por fondos tumbaba el INSERT del cobro.
+    failure_code        VARCHAR(24),
     failure_message     VARCHAR(160),
     risk_score          SMALLINT      CHECK (risk_score BETWEEN 0 AND 100),
 
@@ -317,6 +338,17 @@ COMMENT ON COLUMN charges.rrn IS
     'Retrieval Reference Number, ISO 8583 DE 37. La referencia para reclamos y contracargos';
 COMMENT ON COLUMN charges.response_code IS
     'ISO 8583 DE 39. 00 aprobada, 05 no honrar, 51 fondos insuficientes, 54 vencida, 91 emisor caido';
+
+
+-- Reaplicar sobre una base anterior. Ninguna vista lee esta columna, asi que
+-- el cambio de tipo no choca con ellas.
+ALTER TABLE charges ALTER COLUMN failure_code TYPE VARCHAR(24);
+
+-- El RRN (DE 37) es unico en toda la cadena. Generarlo al azar con 6 digitos
+-- colisiona en cuanto hay volumen: con 5.000 cobros en un dia la probabilidad
+-- de repetir uno roza el 100% (paradoja del cumpleanos), y la UNIQUE de arriba
+-- tumbaria el cobro. Una secuencia no colisiona.
+CREATE SEQUENCE IF NOT EXISTS rrn_seq;
 
 
 -- ── refunds ──────────────────────────────────────────────────────────────────

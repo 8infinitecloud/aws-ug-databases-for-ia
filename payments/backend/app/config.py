@@ -25,9 +25,17 @@ class Settings:
     # Si esta vacio, los eventos se registran en el log y no se publican. Permite
     # desarrollar sin IoT Core.
     iot_endpoint: str = field(default_factory=lambda: os.getenv("IOT_ENDPOINT", ""))
+    # El topic de los pagos sin dispositivo (online): <prefijo>/events. Los del
+    # POS cuelgan del serial de su terminal. Los dos casan con el filtro
+    # `+/events` de la regla del Lab 4.
     iot_topic_prefix: str = field(
-        default_factory=lambda: os.getenv("IOT_TOPIC_PREFIX", "smartcoffee")
+        default_factory=lambda: os.getenv("IOT_TOPIC_PREFIX", "online")
     )
+
+    # La URL con la que el comprador llega a esta API (API Gateway). Hace falta
+    # para la redireccion de 3DS: detras del balanceador, el host de la peticion
+    # no es el publico. Vacia en local.
+    public_base_url: str = field(default_factory=lambda: os.getenv("PUBLIC_BASE_URL", ""))
 
     # ── Mock de autorizacion ──────────────────────────────────────────────────
     # DEMO: el CVV que aprueba. Va por entorno para poder cambiarlo desde la
@@ -35,11 +43,6 @@ class Settings:
     demo_cvv: str = field(default_factory=lambda: os.getenv("DEMO_CVV", "123"))
     demo_card_token: str = field(
         default_factory=lambda: os.getenv("DEMO_CARD_TOKEN", "demo_card_4242")
-    )
-
-    # ── Comercio de la demo ───────────────────────────────────────────────────
-    default_merchant_id: str = field(
-        default_factory=lambda: os.getenv("DEFAULT_MERCHANT_ID", "MID000000012345")
     )
 
     @property
