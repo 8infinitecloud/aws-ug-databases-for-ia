@@ -48,6 +48,10 @@ id_ed25519.*
 # Secretos de Streamlit
 .streamlit/secrets.toml
 
+# Claves de API de las tiendas de la demo (scripts/provision_demo_keys.py).
+# Validas contra TU despliegue: si salen del equipo, cualquiera cobra en el.
+.demo_keys.json
+
 
 # ── TERRAFORM ────────────────────────────────────────────────────────────────
 # El state describe toda tu infraestructura y guarda las contrasenas de RDS y
