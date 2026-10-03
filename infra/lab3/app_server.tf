@@ -71,6 +71,22 @@ resource "aws_iam_role_policy" "app" {
         ]
       },
       {
+        # Solo lectura, y solo de lo que convierte en hechos el cierre de la
+        # demo (ingest_from_curated.py): la zona curada, el informe de calidad
+        # y la telemetria. Ni raw/acquiring/ ni rejected/.
+        Sid    = "DataLakeRead"
+        Effect = "Allow"
+        Action = ["s3:GetObject"]
+        Resource = [for p in ["curated", "quality-reports", "raw/telemetry"] :
+        "arn:aws:s3:::${local.datalake_bucket}/${p}/*"]
+      },
+      {
+        Sid      = "DataLakeList"
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket"]
+        Resource = "arn:aws:s3:::${local.datalake_bucket}"
+      },
+      {
         Sid      = "AuroraCredentials"
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
@@ -136,4 +152,9 @@ resource "aws_instance" "app" {
     aws_elasticache_cluster.redis,
     aws_secretsmanager_secret_version.aurora,
   ]
+}
+
+locals {
+  datalake_bucket = coalesce(var.datalake_bucket,
+  "fincorp-datalake-${data.aws_caller_identity.current.account_id}")
 }

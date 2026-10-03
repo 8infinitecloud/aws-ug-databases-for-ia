@@ -98,10 +98,16 @@ class RetrievalConfig:
     # OJO: no es similitud coseno directa. El retriever calcula
     #   score = 1 - (distancia_coseno / 2)
     # que reescala el coseno de [-1,1] a [0,1] para que se lea como porcentaje.
-    # Un score de 0.70 equivale a una similitud coseno real de 0.40.
+    # Un score de 0.60 equivale a una similitud coseno real de 0.20.
     # Si ajustas este umbral, razona sobre el score reescalado, no sobre el coseno.
+    #
+    # 0.60 y no 0.70: medido en AWS, una pregunta corta en espanol ("¿que
+    # comercios hicieron pagos hoy?") deja el documento correcto PRIMERO pero
+    # con 0.687, y con 0.70 se descartaba todo: el modelo recibia el contexto
+    # vacio y decia que no sabia. El orden lo pone el top_k; el umbral solo
+    # tiene que quitar lo que no tiene nada que ver.
     min_score: float = field(
-        default_factory=lambda: float(os.getenv("RETRIEVAL_MIN_SCORE", "0.70"))
+        default_factory=lambda: float(os.getenv("RETRIEVAL_MIN_SCORE", "0.60"))
     )
 
 

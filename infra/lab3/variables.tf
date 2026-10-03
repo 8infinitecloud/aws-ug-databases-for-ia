@@ -55,3 +55,14 @@ variable "bedrock_model_ids" {
     "amazon.nova-pro-v1:0",
   ]
 }
+
+variable "datalake_bucket" {
+  description = <<-EOT
+    Bucket del data lake de los Labs 1 y 2, que el EC2 lee en el cierre de la
+    demo (scripts/demo_cierre.sh). Vacio = el nombre que le da el Lab 1,
+    fincorp-datalake-<cuenta>. Si el Lab 1 no esta desplegado, el permiso
+    apunta a un bucket que no existe y no concede nada.
+  EOT
+  type        = string
+  default     = ""
+}

@@ -64,7 +64,12 @@ echo "  ✓ Streamlit: $STREAMLIT_URL"
 echo ""
 echo "[2/4] Empaquetando y subiendo código a S3..."
 
-tar -czf /tmp/rag-lab-app.tar.gz \
+# El segundo -C añade scripts/ingest_from_curated.py, que vive en la raiz del
+# repo y no en el lab: lo ejecuta el EC2 en el cierre de la demo
+# (scripts/demo_cierre.sh), porque desde ahi alcanza Aurora sin tunel.
+# COPYFILE_DISABLE: sin el, el tar de macOS mete atributos extendidos que el
+# tar del EC2 no entiende y avisa por cada fichero.
+COPYFILE_DISABLE=1 tar -czf /tmp/rag-lab-app.tar.gz \
   -C "$ROOT_DIR" \
   --exclude='.git' \
   --exclude='.env' \
@@ -73,7 +78,8 @@ tar -czf /tmp/rag-lab-app.tar.gz \
   --exclude='*.pyc' \
   --exclude='.venv' \
   --exclude='infrastructure' \
-  app/ ingestion/ query/ scripts/ data/ requirements.txt
+  app/ ingestion/ query/ scripts/ data/ requirements.txt \
+  -C "$REPO_ROOT" scripts/ingest_from_curated.py
 
 aws s3 cp /tmp/rag-lab-app.tar.gz "s3://$S3_BUCKET/app-code.tar.gz" --region "$REGION"
 aws s3 sync "$ROOT_DIR/data/" "s3://$S3_BUCKET/compliance-docs/" \
@@ -133,6 +139,12 @@ APP_DIR="/opt/rag-lab"
 S3_BUCKET="__S3_BUCKET__"
 REGION="__REGION__"
 REINGEST="__REINGEST__"
+
+# Justo despues de setup.sh el UserData (paquetes, .env) sigue corriendo
+# varios minutos: SSM ya responde, pero el .env aun no existe. Se espera a que
+# termine en vez de fallar con un ".env no encontrado" que no dice por que.
+echo "=== Esperando a que termine el UserData ==="
+cloud-init status --wait >/dev/null || true
 
 echo "=== Descargando código de S3 ==="
 aws s3 cp "s3://$S3_BUCKET/app-code.tar.gz" "$APP_DIR/app-code.tar.gz" --region "$REGION"

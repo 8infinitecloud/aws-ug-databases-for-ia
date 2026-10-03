@@ -7,8 +7,8 @@
 #   pagos de la sala ──▶ PostgreSQL del core ──DMS CDC──▶ raw/acquiring/   (solo, ~30 s)
 #                                                              │
 #   [1] Glue: aplica los cambios, une el legacy, valida  ──▶ curated/
-#   [2] los datos curados se convierten en hechos         ──▶ data/derived/
-#   [3] los hechos entran al vector store del Lab 3       ──▶ pgvector
+#   [2] los datos curados se convierten en hechos         ──▶ data/derived/   ┐ en el EC2
+#   [3] los hechos entran al vector store del Lab 3       ──▶ pgvector        ┘ del Lab 3
 #
 # y entonces se le pregunta al asistente:
 #   "¿Cuántos pagos se procesaron hoy y con qué tasa de aprobación?"
@@ -17,8 +17,13 @@
 # falla en vivo, el respaldo es la respuesta grabada en el ensayo (ver
 # docs/internal/demo-runbook.md), no reintentar delante del público.
 #
-# Requisitos: Labs 1 y 2 desplegados con la tarea DMS en running, y el .env del
-# Lab 3 configurado.
+# Los pasos 2 y 3 corren en el EC2 del Lab 3, por SSM Run Command: Aurora esta
+# en una subnet privada y el EC2 la alcanza; este portatil no, y abrir un tunel
+# en mitad de la charla es una cosa mas que puede fallar. Aqui solo se
+# orquesta: no hace falta el .env del Lab 3 ni el session-manager-plugin.
+#
+# Requisitos: Labs 1, 2 y 3 desplegados (el 3 con deploy-app.sh hecho) y la
+# tarea DMS en running.
 # =============================================================================
 set -euo pipefail
 
@@ -26,16 +31,19 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/tf.sh
 source "${REPO_ROOT}/scripts/lib/tf.sh"
 REGION="${AWS_REGION:-us-east-1}"
-PY="${PYTHON:-python3}"
 
 BLUE='\033[0;34m'; GREEN='\033[0;32m'; RED='\033[0;31m'; NC='\033[0m'
 paso() { echo -e "\n${BLUE}[$1]${NC} $2"; }
 INICIO=$(date +%s)
 marca() { echo -e "${GREEN}  ✓${NC} $1 ${GREEN}(+$(( $(date +%s) - INICIO )) s)${NC}"; }
 
-tf_init lab2 >/dev/null 2>&1 || true
+for lab in lab1 lab2 lab3; do tf_init "${lab}" >/dev/null 2>&1 || true; done
 JOB=$(tf_output lab2 glue_job_name)
-[ -n "${JOB}" ] || { echo -e "${RED}[✗]${NC} El Lab 2 no esta desplegado."; exit 1; }
+BUCKET=$(tf_output lab1 s3_bucket_name)
+EC2=$(tf_output lab3 app_server_instance_id)
+[ -n "${JOB}" ]    || { echo -e "${RED}[✗]${NC} El Lab 2 no esta desplegado."; exit 1; }
+[ -n "${BUCKET}" ] || { echo -e "${RED}[✗]${NC} El Lab 1 no esta desplegado."; exit 1; }
+[ -n "${EC2}" ]    || { echo -e "${RED}[✗]${NC} El Lab 3 no esta desplegado."; exit 1; }
 
 # ── [1] Glue ─────────────────────────────────────────────────────────────────
 paso 1 "Glue: del CDC del core a la zona curada..."
@@ -52,10 +60,27 @@ while true; do
 done
 marca "curated/ actualizada"
 
-# ── [2] Hechos ───────────────────────────────────────────────────────────────
-paso 2 "Los datos curados, convertidos en hechos citables..."
-# ── [3] Vector store ─────────────────────────────────────────────────────────
-"${PY}" "${REPO_ROOT}/scripts/ingest_from_curated.py" --region "${REGION}" --ingest >/dev/null
+# ── [2] Hechos y [3] vector store, en el EC2 del Lab 3 ──────────────────────
+paso "2-3" "Los datos curados, convertidos en hechos e ingestados en pgvector..."
+# El script viaja con la app (deploy-app.sh). El .env del EC2 trae Aurora,
+# Bedrock y la region; el bucket se le pasa porque alli no hay Terraform.
+ORDEN="cd /opt/rag-lab && set -a && . ./.env && set +a && python3 scripts/ingest_from_curated.py --bucket ${BUCKET} --region ${REGION} --ingest"
+CMD=$(aws ssm send-command --instance-ids "${EC2}" --document-name AWS-RunShellScript \
+        --parameters "$(jq -n --arg c "${ORDEN}" '{commands: [$c]}')" \
+        --region "${REGION}" --query Command.CommandId --output text)
+while true; do
+  sleep 3
+  ESTADO=$(aws ssm get-command-invocation --command-id "${CMD}" --instance-id "${EC2}" \
+             --region "${REGION}" --query Status --output text 2>/dev/null || echo Pending)
+  case "${ESTADO}" in
+    Success) break ;;
+    Pending|InProgress|Delayed) ;;
+    *)
+      aws ssm get-command-invocation --command-id "${CMD}" --instance-id "${EC2}" \
+        --region "${REGION}" --query StandardErrorContent --output text | tail -5
+      echo -e "${RED}[✗]${NC} La ingesta termino en ${ESTADO}: usa la respuesta de respaldo."; exit 1 ;;
+  esac
+done
 marca "hechos generados e ingestados en pgvector"
 
 echo

@@ -150,3 +150,47 @@ def test_hoy_es_el_dia_de_lima_y_no_el_utc():
     }])
     t = ifc.doc_today(df, now=datetime(2026, 10, 3, 2, 30, tzinfo=timezone.utc))
     assert "2026-10-02" in t and "Hoy se proceso 1 pago," in t
+
+
+def test_hoy_cuenta_los_pagos_del_core_aunque_el_legacy_salga_primero():
+    """
+    Las fechas del core llevan microsegundos y las del legacy no. pandas 2
+    deduce un formato de la primera fila y convertia en NaT las demas: con una
+    fila legacy delante, los pagos de la sala desaparecian de "hoy". Paso en el
+    ensayo del cierre en AWS.
+    """
+    base = {"amount": "10.00", "currency": "PEN", "payment_method": "CARD_NOT_PRESENT",
+            "merchant_name": "Mercado Andino"}
+    df = pd.DataFrame([
+        {**base, "created_at": "2024-01-26T13:03:00+00:00", "response_code": "00"},
+        {**base, "created_at": "2026-10-03T05:10:06.444000+00:00", "response_code": "00"},
+        {**base, "created_at": "2026-10-03T05:10:07.253000+00:00", "response_code": "51"},
+    ])
+    t = ifc.doc_today(df, now=datetime(2026, 10, 3, 5, 15, tzinfo=timezone.utc))
+    assert "Hoy se procesaron 2 pagos" in t
+
+
+def test_hoy_lista_cada_pago_con_hora_importe_y_resultado():
+    """'¿A que hora fue y por cuanto?' necesita el detalle, no solo agregados."""
+    base = {"currency": "PEN", "payment_method": "CARD_NOT_PRESENT", "merchant_name": "Mercado Andino"}
+    df = pd.DataFrame([
+        {**base, "created_at": "2026-10-03T05:10:06.444000+00:00", "amount": "40.80", "response_code": "00"},
+        {**base, "created_at": "2026-10-03T05:12:07.253000+00:00", "amount": "24.90", "response_code": "51"},
+    ])
+    t = ifc.doc_today(df, now=datetime(2026, 10, 3, 5, 15, tzinfo=timezone.utc))
+    # Hora de Lima, y cada linea se entiende sola aunque el chunk pierda el titulo.
+    assert ("Pago de hoy 2026-10-03 a las 00:10 (hora de Lima): 40.80 PEN, aprobado, "
+            "comercio Mercado Andino, canal CARD_NOT_PRESENT.") in t
+    assert "a las 00:12 (hora de Lima): 24.90 PEN, rechazado con codigo 51 (fondos insuficientes)" in t
+    # El mas reciente primero.
+    assert t.index("00:12") < t.index("00:10 (hora")
+
+
+def test_hoy_lista_solo_los_ultimos_pagos():
+    base = {"currency": "PEN", "payment_method": "QR", "merchant_name": "Smart Coffee",
+            "amount": "8.50", "response_code": "00"}
+    df = pd.DataFrame([{**base, "created_at": f"2026-10-03T{14 + i // 60:02d}:{i % 60:02d}:00+00:00"}
+                       for i in range(ifc.DETALLE_HOY + 10)])
+    t = ifc.doc_today(df, now=datetime(2026, 10, 3, 23, 0, tzinfo=timezone.utc))
+    assert t.count("- Pago de hoy") == ifc.DETALLE_HOY
+    assert f"Detalle de los {ifc.DETALLE_HOY} pagos mas recientes de hoy" in t

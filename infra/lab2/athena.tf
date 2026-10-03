@@ -132,20 +132,18 @@ resource "aws_athena_named_query" "particiones" {
   description = "La misma pregunta con y sin filtro de particion: compara los bytes escaneados"
 
   query = <<-SQL
-    -- Ejecuta las dos y mira "Data scanned" en cada una.
+    -- Ejecutala dos veces y mira "Data scanned" en cada una: primero asi, y
+    -- despues quitando el "--" de la linea del WHERE.
     --
-    -- La segunda lee un solo directorio de S3 porque el filtro cae sobre las
-    -- columnas de particion. La primera abre todos. Athena cobra por byte
+    -- Con el WHERE lee un solo directorio de S3, porque el filtro cae sobre las
+    -- columnas de particion. Sin el, abre todos. Athena cobra por byte
     -- escaneado, asi que el particionado no es orden: es la factura.
-
-    -- (a) sin filtro de particion — escanea todo
+    --
+    -- Sin ";" al final: Athena acepta una sola sentencia por ejecucion, y un
+    -- comentario detras de un ";" ya cuenta como una segunda.
     SELECT COUNT(*) AS n, ROUND(SUM(amount), 2) AS volumen
-    FROM transactions;
-
-    -- (b) con filtro de particion — escanea un directorio
-    -- SELECT COUNT(*) AS n, ROUND(SUM(amount), 2) AS volumen
-    -- FROM transactions
-    -- WHERE year = '2024' AND month = '03';
+    FROM transactions
+    -- WHERE year = '2024' AND month = '03'
   SQL
 }
 

@@ -23,15 +23,17 @@ from langchain_aws import ChatBedrock
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from ingestion.config import bedrock as bedrock_cfg
+from ingestion.config import retrieval as retrieval_cfg
 from ingestion.embedder import embed_query, get_embeddings_model
 from query.memory import (
     MemoryContext,
     add_session_message,
     build_memory_context,
+    get_session_messages,
     store_conversation_memory,
 )
 from query.prompt_builder import build_prompt, format_sources
-from query.retriever import RetrievedChunk, similarity_search
+from query.retriever import RetrievedChunk, merge_results, similarity_search
 
 
 @dataclass
@@ -64,6 +66,14 @@ def get_llm() -> ChatBedrock:
             "temperature": 0,
         },
     )
+
+
+def _previous_user_question(session_id: str) -> str | None:
+    """La última pregunta del usuario en esta sesión (Capa 1, Redis), o None."""
+    for mensaje in reversed(get_session_messages(session_id)):
+        if mensaje.role == "user":
+            return mensaje.content
+    return None
 
 
 def answer_question(
@@ -99,6 +109,25 @@ def answer_question(
         doc_type_filter=doc_type_filter,
         query_embedding=query_embedding,
     )
+
+    # Paso 2b: las preguntas de seguimiento. "¿Y a qué hora fueron?" no dice de
+    # QUÉ habla: eso estaba en la pregunta anterior, y el embedding de la frase
+    # sola no encuentra nada. Se busca también con la anterior delante y se
+    # quedan los mejores de las dos búsquedas. Si la pregunta nueva cambia de
+    # tema, su búsqueda sola sigue ahí y gana por score.
+    anterior = _previous_user_question(session_id)
+    if anterior:
+        con_contexto = similarity_search(
+            query=f"{anterior}\n{query}",
+            top_k=top_k,
+            min_score=min_score,
+            doc_type_filter=doc_type_filter,
+            query_embedding=embed_query(f"{anterior}\n{query}", embeddings_model),
+        )
+        retrieved_chunks = merge_results(
+            retrieved_chunks, con_contexto,
+            top_k=retrieval_cfg.top_k if top_k is None else top_k,
+        )
 
     # Paso 3: Recopilar las tres capas de memoria
     # Pasamos query_embedding para que la capa semántica pueda buscar

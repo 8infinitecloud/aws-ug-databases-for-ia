@@ -299,7 +299,9 @@ por fuente, y el Lab 4 trajo la telemetría:
 ```
 
 Glue cura lo que el CDC trajo, los datos se convierten en hechos y entran al
-vector store. Después, la pregunta:
+vector store. Los hechos se generan e ingestan **en el EC2 del Lab 3** (por SSM
+Run Command), que está dentro de la VPC y alcanza Aurora: tu portátil solo
+orquesta, sin túnel ni `.env` local. Tarda ~1 minuto. Después, la pregunta:
 
 ```
 "¿Cuántos pagos se procesaron hoy y con qué tasa de aprobación?"

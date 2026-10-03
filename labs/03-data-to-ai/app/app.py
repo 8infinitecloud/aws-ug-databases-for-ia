@@ -11,6 +11,7 @@ import uuid
 import streamlit as st
 import plotly.graph_objects as go
 
+from ingestion.config import retrieval as retrieval_cfg
 from query.chain import RAGResponse, answer_question, summarize_and_store_session
 from query.memory import (
     clear_session,
@@ -204,11 +205,11 @@ with st.sidebar:
     with st.expander("🔍 Filtros de Retrieval", expanded=False):
         doc_type_filter = st.selectbox(
             "Tipo de documento",
-            ["Todos", "compliance", "onboarding", "policy"],
+            ["Todos", "compliance", "onboarding", "policy", "operations"],
         )
         doc_filter = None if doc_type_filter == "Todos" else doc_type_filter
         top_k = st.slider("Top-K chunks", 1, 10, 5)
-        min_score = st.slider("Score mínimo", 0.0, 1.0, 0.70, 0.05)
+        min_score = st.slider("Score mínimo", 0.0, 1.0, retrieval_cfg.min_score, 0.05)
 
     st.divider()
 

@@ -56,8 +56,10 @@ def similarity_search(
     Returns:
         Lista de RetrievedChunk ordenada por score descendente
     """
-    k = top_k or retrieval_cfg.top_k
-    min_s = min_score or retrieval_cfg.min_score
+    # "is None" y no "or": con "or", un umbral de 0.0 —el que pone quien quiere
+    # ver todos los scores— se convertia en silencio en el de la config.
+    k = retrieval_cfg.top_k if top_k is None else top_k
+    min_s = retrieval_cfg.min_score if min_score is None else min_score
 
     if query_embedding is None:
         if embeddings_model is None:
@@ -115,3 +117,20 @@ def similarity_search(
         )
         for row in rows
     ]
+
+
+def merge_results(*resultados: list[RetrievedChunk], top_k: int) -> list[RetrievedChunk]:
+    """
+    Une varias busquedas en una sola lista: cada chunk una vez, con su mejor
+    score, de mayor a menor, y como mucho top_k.
+
+    La usa la cadena para las preguntas de seguimiento ("¿y a que hora
+    fueron?"), que se buscan dos veces: solas y junto a la pregunta anterior.
+    """
+    mejores: dict[tuple[str, int], RetrievedChunk] = {}
+    for lista in resultados:
+        for chunk in lista:
+            clave = (chunk.source, chunk.chunk_index)
+            if clave not in mejores or chunk.score > mejores[clave].score:
+                mejores[clave] = chunk
+    return sorted(mejores.values(), key=lambda c: c.score, reverse=True)[:top_k]

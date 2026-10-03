@@ -96,6 +96,8 @@ def _infer_doc_type(path: Path) -> str:
         return "onboarding"
     elif "policies" in parts:
         return "policy"
-    elif "operations" in parts:
+    # derived/ son los hechos que ingest_from_curated.py saca de los datos
+    # curados: actividad de hoy, calidad, salud de terminales. Son operacion.
+    elif "operations" in parts or "derived" in parts:
         return "operations"
     return "general"

@@ -318,8 +318,13 @@ bajas; se suben por Service Quotas.
 ### El asistente responde "no encontré información relevante"
 
 El corpus no está ingestado, o el umbral de similitud es muy alto. Comprueba
-que la ingesta terminó y, si hace falta, baja `RETRIEVAL_MIN_SCORE` de `0.70` a
+que la ingesta terminó y, si hace falta, baja `RETRIEVAL_MIN_SCORE` de `0.60` a
 `0.5` en el `.env` del Lab 3.
+
+Si es una pregunta corta que **sí** está en el corpus, mira el score real: el
+retriever acepta `min_score=0.0` y devuelve todo ordenado. Con el umbral antiguo
+(0.70), "¿qué comercios hicieron pagos hoy?" dejaba el documento correcto el
+primero con 0.687 y lo descartaba.
 
 ---
 

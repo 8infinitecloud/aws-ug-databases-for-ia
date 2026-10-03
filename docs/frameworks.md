@@ -71,7 +71,7 @@ sistema de IA generativa, con **seis principios de diseño**.
 
 | Principio | Qué pide | Dónde lo toca el workshop |
 |-----------|----------|---------------------------|
-| **Design for controlled autonomy**<br>*Diseñar para autonomía controlada* | Guardarraíles y límites que gobiernen cómo el sistema opera, escala e interactúa; condiciones de fallo explícitas | Lab 3: el RAG solo responde desde el corpus recuperado, con `RETRIEVAL_MIN_SCORE = 0.70`. Si nada supera el umbral, dice que no sabe en vez de inventar |
+| **Design for controlled autonomy**<br>*Diseñar para autonomía controlada* | Guardarraíles y límites que gobiernen cómo el sistema opera, escala e interactúa; condiciones de fallo explícitas | Lab 3: el RAG solo responde desde el corpus recuperado, con `RETRIEVAL_MIN_SCORE = 0.60`. Si nada supera el umbral, dice que no sabe en vez de inventar |
 | **Implement comprehensive observability**<br>*Observabilidad completa* | Medir desde seguridad y rendimiento hasta coste e impacto ambiental, en cada capa | Lab 3: la UI muestra los chunks recuperados con su score. El usuario ve **por qué** el modelo respondió eso |
 | **Optimize resource efficiency**<br>*Eficiencia de recursos* | Elegir y configurar según requisitos empíricos, no suposiciones. Dimensionar el modelo correctamente | Lab 3: Nova Pro en vez de Claude para un lab repetido. La decisión es de coste medido, no de prestigio del modelo |
 | **Establish distributed resilience**<br>*Resiliencia distribuida* | Seguir operando ante fallos de componente o de región | Lab 3: si Redis cae, el RAG sigue sin memoria de sesión. Reintentos ante throttling de Bedrock |

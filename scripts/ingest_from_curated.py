@@ -53,7 +53,13 @@ except ImportError:
     sys.exit("Faltan dependencias. Ejecuta: pip install -r requirements.txt")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_OUT = REPO_ROOT / "labs/03-data-to-ai/data/derived"
+# En el repo, el Lab 3 vive en labs/03-data-to-ai. En el EC2 del Lab 3 este
+# script viaja dentro de la app (deploy-app.sh lo copia a su scripts/), y el
+# directorio de la app ES el Lab 3. Ahi se ejecuta en el cierre de la demo
+# (demo_cierre.sh): dentro de la VPC, con alcance a Aurora sin tunel.
+LAB3_DIR = (REPO_ROOT / "labs/03-data-to-ai"
+            if (REPO_ROOT / "labs/03-data-to-ai").is_dir() else REPO_ROOT)
+DEFAULT_OUT = LAB3_DIR / "data/derived"
 
 GREEN, RED, YELLOW, BLUE, DIM, NC = (
     "\033[0;32m", "\033[0;31m", "\033[1;33m", "\033[0;34m", "\033[2m", "\033[0m"
@@ -530,6 +536,10 @@ def doc_terminal_health(telemetry: pd.DataFrame, df: pd.DataFrame,
     return "\n".join(lines)
 
 
+# Cuantos pagos de hoy se listan uno a uno en operaciones-actividad-hoy.md.
+DETALLE_HOY = 15
+
+
 def doc_today(df: pd.DataFrame, now: datetime | None = None) -> str:
     """
     Lo que paso HOY, en hora de Lima.
@@ -545,7 +555,11 @@ def doc_today(df: pd.DataFrame, now: datetime | None = None) -> str:
     hoy = now.date()
     df = df.copy()
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
-    momento = pd.to_datetime(df.get("created_at"), errors="coerce", utc=True)
+    # format="ISO8601", no la deteccion automatica: pandas 2 deduce UN formato
+    # de la primera fila y convierte en NaT las que no encajan. Las fechas del
+    # core traen microsegundos y las del legacy no, asi que segun que fuente
+    # saliera primero desaparecian los pagos del core, que son los de la sala.
+    momento = pd.to_datetime(df.get("created_at"), errors="coerce", utc=True, format="ISO8601")
     df["fecha_local"] = momento.dt.tz_convert(tz).dt.date
     del_dia = df[df["fecha_local"] == hoy]
 
@@ -579,6 +593,28 @@ def doc_today(df: pd.DataFrame, now: datetime | None = None) -> str:
     lines += ["", "Comercios con mas pagos hoy:"]
     for nombre, n in del_dia["merchant_name"].value_counts().head(5).items():
         lines.append(f"- {nombre}: {n} pagos")
+
+    # El detalle, pago a pago. Sin el, "¿a que hora fue?" o "¿por cuanto?" no
+    # tienen respuesta: los agregados de arriba no la llevan. Solo los ultimos
+    # DETALLE_HOY, para que el documento no crezca con el dia, y cada linea se
+    # explica sola (fecha, hora, importe, resultado) porque al trocear el
+    # documento puede quedar en un chunk sin el titulo. Nada de la tarjeta ni
+    # del comprador: hora, importe, resultado, comercio y canal.
+    del_dia = del_dia.assign(hora=momento[del_dia.index].dt.tz_convert(tz))
+    ultimos = del_dia.sort_values("hora", ascending=False).head(DETALLE_HOY)
+    titulo = (f"Detalle de los {len(ultimos)} pagos mas recientes de hoy"
+              if len(ultimos) < len(del_dia) else "Detalle de todos los pagos de hoy")
+    lines += ["", f"## {titulo} ({hoy.isoformat()}, hora de Lima)", ""]
+    for _, pago in ultimos.iterrows():
+        codigo = str(pago.get("response_code") or "")
+        resultado = ("aprobado" if codigo == "00"
+                     else f"rechazado con codigo {codigo} "
+                          f"({RESPONSE_CODES.get(codigo, 'otro motivo')})")
+        lines.append(
+            f"- Pago de hoy {hoy.isoformat()} a las {pago['hora'].strftime('%H:%M')} "
+            f"(hora de Lima): {pago['amount']:.2f} {pago['currency']}, {resultado}, "
+            f"comercio {pago['merchant_name']}, canal {pago['payment_method']}."
+        )
     lines.append("")
     return "\n".join(lines)
 
@@ -649,7 +685,7 @@ def main() -> int:
     if args.ingest:
         print()
         info("Ingestando al vector store del Lab 3...")
-        lab3 = REPO_ROOT / "labs/03-data-to-ai"
+        lab3 = LAB3_DIR
         # Solo los derivados: el resto del corpus no cambio. Reingestar un
         # documento SUSTITUYE sus chunks (ingestion/store.py), asi que la cifra
         # de hace diez minutos no convive con la nueva.
