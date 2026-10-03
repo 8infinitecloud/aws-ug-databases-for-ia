@@ -17,8 +17,9 @@ precios desde el cliente se podría manipular para pagar un sol por un televisor
 
 Dos formas de pagar, que son los dos canales que la demo compara:
 
-  online   el comprador elige una tarjeta de prueba → CARD_NOT_PRESENT, con
-           3-D Secure si el "banco" la pide
+  online   el comprador rellena el formulario de tarjeta → CARD_NOT_PRESENT, con
+           3-D Secure si el "banco" la pide. Solo numeros de PRUEBA, y el
+           numero se convierte en token en el navegador: no llega aqui
   en caja  la tienda abre el cobro en su terminal y muestra un QR grande; se paga
            desde el móvil en la página de FinCorp → QR
 
@@ -40,7 +41,7 @@ import secrets
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Callable
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -67,13 +68,15 @@ CATALOGO = {
     "GAS3": {"nombre": "Gaseosa 3 L", "precio": 1090, "emoji": "🥤"},
 }
 
-# Las tarjetas de prueba que ve el comprador, y el PaymentMethod que hay detrás.
-TARJETAS = {
-    "visa": ("Visa terminada en 4242", "pm_card_visa"),
-    "3ds": ("Visa que pide verificación del banco (3220)", "pm_card_threeDSecure2Required"),
-    "rechazada": ("Visa rechazada por el banco (0002)", "pm_card_visa_chargeDeclined"),
-    "sin_fondos": ("Visa sin fondos (9995)", "pm_card_visa_chargeDeclinedInsufficientFunds"),
-    "vencida": ("Visa vencida (0069)", "pm_card_chargeDeclinedExpiredCard"),
+# Los unicos tokens que esta tienda acepta: los PaymentMethods de prueba de la
+# API de FinCorp. El numero de tarjeta NUNCA llega aqui: el formulario lo
+# convierte en token en el navegador (web/index.html, "tokenizar"), como hace
+# Stripe.js. Este servidor no ve ni guarda un numero ni un CVC, y por eso esta
+# fuera del alcance de PCI. Es la razon de ser de la tokenizacion.
+TOKENS_DE_PRUEBA = {
+    "pm_card_visa", "pm_card_mastercard", "pm_card_amex",
+    "pm_card_visa_chargeDeclined", "pm_card_visa_chargeDeclinedInsufficientFunds",
+    "pm_card_chargeDeclinedExpiredCard", "pm_card_threeDSecure2Required",
 }
 
 MENSAJES = {
@@ -93,7 +96,8 @@ class Carrito(BaseModel):
 
 
 class PagoOnline(Carrito):
-    tarjeta: Literal["visa", "3ds", "rechazada", "sin_fondos", "vencida"]
+    # Un token, nunca un numero: ver TOKENS_DE_PRUEBA.
+    payment_method: str = Field(max_length=64, pattern=r"^pm_card_[A-Za-z0-9_]+$")
 
 
 def _total(carrito: Carrito) -> tuple[int, list[dict]]:
@@ -162,7 +166,6 @@ def crear_app(send: Send | None = None, api_url: str | None = None, clave: str |
     def catalogo():
         return {
             "productos": [{"sku": k, **v} for k, v in CATALOGO.items()],
-            "tarjetas": [{"id": k, "nombre": v[0]} for k, v in TARJETAS.items()],
             "configurada": bool(api_url and clave),
         }
 
@@ -174,6 +177,8 @@ def crear_app(send: Send | None = None, api_url: str | None = None, clave: str |
         pide autenticar, devolver al navegador la URL a la que mandar al
         comprador.
         """
+        if pedido.payment_method not in TOKENS_DE_PRUEBA:
+            raise HTTPException(422, "medio de pago no admitido en la demo")
         importe, lineas = _total(pedido)
         ref = _ref("PIMA")
         s, body = send("POST", "/v1/intents", {
@@ -185,7 +190,7 @@ def crear_app(send: Send | None = None, api_url: str | None = None, clave: str |
             _fallo(s, body)
 
         s, cobro = send("POST", f"/v1/intents/{ref}/confirm", {
-            "channel": "CARD_NOT_PRESENT", "payment_method": TARJETAS[pedido.tarjeta][1],
+            "channel": "CARD_NOT_PRESENT", "payment_method": pedido.payment_method,
         }, {**autorizacion, "Idempotency-Key": f"tienda-p-{ref}"})
         if s != 200:
             _fallo(s, cobro)

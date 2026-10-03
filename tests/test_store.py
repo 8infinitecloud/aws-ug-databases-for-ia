@@ -77,7 +77,7 @@ def test_el_catalogo_no_expone_la_clave(entorno):
 
 def test_pago_online_aprobado_con_el_total_del_servidor(entorno):
     tienda, _, _, _ = entorno
-    r = tienda.post("/api/pagar-online", json=_carrito(tarjeta="visa"))
+    r = tienda.post("/api/pagar-online", json=_carrito(payment_method="pm_card_visa"))
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["estado"] == "pagado"
@@ -95,29 +95,31 @@ def test_el_navegador_no_puede_poner_el_precio(entorno):
     """Un carrito con precios manipulados: la tienda los ignora."""
     tienda, _, _, _ = entorno
     r = tienda.post("/api/pagar-online", json={
-        "lineas": [{"sku": "CAF2", "cantidad": 1, "precio": 1}], "tarjeta": "visa"})
+        "lineas": [{"sku": "CAF2", "cantidad": 1, "precio": 1}],
+        "payment_method": "pm_card_visa"})
     assert r.json()["importe"] == 1890
 
 
 def test_un_producto_inventado_se_rechaza(entorno):
     tienda, _, _, _ = entorno
     r = tienda.post("/api/pagar-online", json={"lineas": [{"sku": "TV65", "cantidad": 1}],
-                                              "tarjeta": "visa"})
+                                              "payment_method": "pm_card_visa"})
     assert r.status_code == 422
 
 
-@pytest.mark.parametrize("tarjeta, codigo", [("rechazada", "05"), ("sin_fondos", "51"),
-                                             ("vencida", "54")])
-def test_cada_tarjeta_de_prueba_da_su_rechazo(entorno, tarjeta, codigo):
+@pytest.mark.parametrize("pm, codigo", [("pm_card_visa_chargeDeclined", "05"),
+                                        ("pm_card_visa_chargeDeclinedInsufficientFunds", "51"),
+                                        ("pm_card_chargeDeclinedExpiredCard", "54")])
+def test_cada_tarjeta_de_prueba_da_su_rechazo(entorno, pm, codigo):
     tienda, _, _, _ = entorno
-    r = tienda.post("/api/pagar-online", json=_carrito(tarjeta=tarjeta))
+    r = tienda.post("/api/pagar-online", json=_carrito(payment_method=pm))
     assert r.json()["estado"] == "rechazado" and r.json()["codigo"] == codigo
     assert r.json()["mensaje"]
 
 
 def test_3ds_manda_al_banco_y_vuelve_a_la_tienda(entorno):
     tienda, api, _, _ = entorno
-    r = tienda.post("/api/pagar-online", json=_carrito(tarjeta="3ds"))
+    r = tienda.post("/api/pagar-online", json=_carrito(payment_method="pm_card_threeDSecure2Required"))
     body = r.json()
     assert body["estado"] == "verificar"
     url = urlparse(body["redirigir"])
@@ -180,3 +182,21 @@ def test_el_javascript_de_la_tienda_es_valido():
         for js in re.findall(r"<script>(.*?)</script>", html, re.DOTALL):
             proc = subprocess.run([node, "--check", "-"], input=js, capture_output=True, text=True)
             assert proc.returncode == 0, (pagina, proc.stderr)
+
+
+def test_la_tienda_nunca_acepta_un_numero_de_tarjeta(entorno):
+    """
+    El backend de la tienda solo admite tokens de prueba. Un numero de tarjeta
+    —aunque sea el de prueba— no pasa la validacion: al servidor solo puede
+    llegar un token, que es lo que la saca del alcance de PCI.
+    """
+    tienda, _, _, _ = entorno
+    for intento in ("4242424242424242", "pm_card_inventada", "pm_card_visa; DROP"):
+        r = tienda.post("/api/pagar-online", json=_carrito(payment_method=intento))
+        assert r.status_code == 422, intento
+
+
+@pytest.mark.parametrize("pm", ["pm_card_mastercard", "pm_card_amex"])
+def test_otras_marcas_se_aprueban_en_la_tienda(entorno, pm):
+    tienda, _, _, _ = entorno
+    assert tienda.post("/api/pagar-online", json=_carrito(payment_method=pm)).json()["estado"] == "pagado"

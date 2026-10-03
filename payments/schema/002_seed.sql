@@ -83,7 +83,12 @@ INSERT INTO payment_methods (
     (NULL, 'CARD', 'VISA', '0069', 12, 2030, 'pm_card_chargeDeclinedExpiredCard',
      'demo_fp_expired', 'ACTIVE'),
     (NULL, 'CARD', 'VISA', '3220', 12, 2030, 'pm_card_threeDSecure2Required',
-     'demo_fp_3ds', 'ACTIVE')
+     'demo_fp_3ds', 'ACTIVE'),
+    -- Otras marcas, aprobadas: las usa el checkout de la tienda de demo (store/).
+    (NULL, 'CARD', 'MASTERCARD', '4444', 12, 2030, 'pm_card_mastercard',
+     'demo_fp_mastercard', 'ACTIVE'),
+    (NULL, 'CARD', 'AMEX', '0005', 12, 2030, 'pm_card_amex',
+     'demo_fp_amex', 'ACTIVE')
 ON CONFLICT (processor_token) DO NOTHING;
 
 -- ── Catalogo de productos ────────────────────────────────────────────────────

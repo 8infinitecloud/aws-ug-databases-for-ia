@@ -530,3 +530,13 @@ def test_la_devolucion_deja_su_evento(client, ref, claves):
     eventos = _query("SELECT event_type, object_type FROM acquiring.webhook_events "
                      "WHERE object_id = %s", (f"ch_{ref}_1",))
     assert eventos == [{"event_type": "charge.refunded", "object_type": "charge"}]
+
+
+@pytest.mark.parametrize("pm, marca", [("pm_card_mastercard", "MASTERCARD"), ("pm_card_amex", "AMEX")])
+def test_las_otras_marcas_de_prueba_se_aprueban(client, ref, claves, pm, marca):
+    _crear(client, ref, claves["smart"])
+    assert _pagar(client, ref, claves["smart"], pm=pm).json()["response_code"] == "00"
+    fila = _query("""SELECT pm.brand FROM acquiring.charges c
+                     JOIN acquiring.payment_methods pm ON pm.id = c.payment_method_id
+                     WHERE c.charge_reference = %s""", (f"ch_{ref}_1",))
+    assert fila == [{"brand": marca}]

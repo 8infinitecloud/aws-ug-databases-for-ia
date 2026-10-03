@@ -78,9 +78,37 @@
              width: 100%; max-width: 460px; }
   .ventana h3 { margin: 0 0 4px; }
   .ventana p { color: var(--tenue); margin: 0 0 16px; }
-  .tarjeta { display: block; width: 100%; text-align: left; background: var(--fondo);
-             border: 1px solid var(--borde); margin-bottom: 8px; }
-  .tarjeta:hover { border-color: var(--verde); }
+  /* El checkout */
+  .checkout { max-width: 520px; max-height: 92vh; overflow-y: auto; }
+  .cabecera-pago { display: flex; justify-content: space-between; align-items: baseline; }
+  .cabecera-pago .importe-pago { font-size: 24px; font-weight: 700; color: var(--verde); }
+  .metodos { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 16px 0 6px; }
+  .metodo { background: var(--fondo); border: 2px solid var(--borde); padding: 10px 6px;
+            font-size: 13px; font-weight: 600; }
+  .metodo.activo { border-color: var(--verde); background: var(--verde-claro); color: var(--verde); }
+  .metodo:disabled { opacity: .5; }
+  .nota { font-size: 12px; color: var(--tenue); margin: 0 0 14px; }
+  .marcas { display: flex; gap: 8px; margin-bottom: 14px; }
+  .marca { flex: 1; background: var(--blanco); border: 2px solid var(--borde);
+           font-size: 13px; font-weight: 700; padding: 8px 4px; letter-spacing: .3px; }
+  .marca.activa { border-color: var(--verde); color: var(--verde); }
+  label { display: block; font-size: 13px; font-weight: 600; margin: 10px 0 4px; }
+  .campo { position: relative; }
+  input { width: 100%; font: inherit; padding: 11px 12px; border: 1px solid var(--borde);
+          border-radius: 8px; background: var(--blanco); }
+  input:focus { outline: 2px solid var(--verde); border-color: transparent; }
+  input.error { border-color: var(--rojo); }
+  .detectada { position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+               font-size: 12px; font-weight: 700; color: var(--tenue); }
+  .fila { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .candado { font-size: 12px; color: var(--tenue); background: var(--fondo); border-radius: 8px;
+             padding: 8px 10px; margin-top: 12px; }
+  .pruebas { border-top: 1px dashed var(--borde); margin-top: 16px; padding-top: 12px; }
+  .pruebas h4 { margin: 0 0 8px; font-size: 13px; color: var(--tenue); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { background: var(--fondo); border: 1px solid var(--borde); font-size: 12px;
+          padding: 6px 10px; border-radius: 20px; }
+  .chip:hover { border-color: var(--verde); color: var(--verde); }
   .caja { max-width: 640px; text-align: center; }
   .caja img { width: min(420px, 80vw); height: auto; image-rendering: pixelated; }
   .caja .importe { font-size: 34px; font-weight: 700; color: var(--verde); }
@@ -111,13 +139,58 @@
   </aside>
 </main>
 
-<!-- Pago online: el comprador elige una tarjeta de prueba -->
-<div class="capa" id="capa-tarjetas" role="dialog" aria-modal="true">
-  <div class="ventana">
-    <h3>Elige una tarjeta de prueba</h3>
-    <p>Cada una fuerza una respuesta distinta del banco simulado.</p>
-    <div id="tarjetas"></div>
+<!-- Pago online: el checkout -->
+<div class="capa" id="capa-tarjetas" role="dialog" aria-modal="true" aria-labelledby="titulo-pago">
+  <div class="ventana checkout">
+    <div class="cabecera-pago">
+      <h3 id="titulo-pago">Pago seguro</h3>
+      <span class="importe-pago" id="importe-pago"></span>
+    </div>
+
+    <div class="metodos" role="group" aria-label="Medio de pago">
+      <button class="metodo activo" type="button">💳 Tarjeta</button>
+      <button class="metodo" type="button" disabled title="No disponible en la demo">Apple Pay</button>
+      <button class="metodo" type="button" disabled title="No disponible en la demo">Google Pay</button>
+      <button class="metodo" type="button" disabled title="No disponible en la demo">Yape</button>
+    </div>
+    <p class="nota">Las billeteras digitales no están disponibles en esta demo.</p>
+
+    <div class="marcas" role="group" aria-label="Marca de la tarjeta">
+      <button class="marca activa" type="button" data-marca="visa">VISA</button>
+      <button class="marca" type="button" data-marca="mastercard">Mastercard</button>
+      <button class="marca" type="button" data-marca="amex">American Express</button>
+    </div>
+
+    <form id="form-tarjeta" novalidate autocomplete="off">
+      <label for="numero">Número de tarjeta</label>
+      <div class="campo">
+        <input id="numero" inputmode="numeric" placeholder="1234 1234 1234 1234" maxlength="19" autocomplete="off">
+        <span class="detectada" id="detectada"></span>
+      </div>
+      <div class="fila">
+        <div>
+          <label for="vence">Vencimiento</label>
+          <input id="vence" inputmode="numeric" placeholder="MM / AA" maxlength="7" autocomplete="off">
+        </div>
+        <div>
+          <label for="cvc">CVC</label>
+          <input id="cvc" inputmode="numeric" placeholder="123" maxlength="4" autocomplete="off">
+        </div>
+      </div>
+      <label for="titular">Titular</label>
+      <input id="titular" placeholder="Nombre como aparece en la tarjeta" maxlength="60" autocomplete="off">
+
+      <div class="candado">🔒 Solo tarjetas de prueba. Cualquier otro número se rechaza
+        en tu navegador y no se envía a ningún sitio: la tienda solo recibe un token.</div>
+
+      <button class="principal" type="submit" id="btn-pagar">Pagar</button>
+    </form>
     <div class="estado" id="estado-online" role="status"></div>
+
+    <div class="pruebas">
+      <h4>Tarjetas de prueba — un clic rellena el formulario</h4>
+      <div class="chips" id="chips"></div>
+    </div>
     <button class="cerrar" data-cerrar>Cancelar</button>
   </div>
 </div>
@@ -211,11 +284,142 @@
     $(id).className = "estado " + (clase || "");
   }
 
-  // ── Pago online ────────────────────────────────────────────────────────────
-  function pagarOnline(tarjeta) {
+  // ── Pago online: el "Stripe.js" de la demo ─────────────────────────────────
+  // Las tarjetas de PRUEBA públicas (las mismas que documenta Stripe) y el token
+  // que corresponde a cada una. Esto vive en el navegador a propósito: el número
+  // se convierte aquí en token, y a la tienda solo le llega el token. Es lo que
+  // hace Stripe.js, y lo que deja al servidor del comercio fuera de PCI.
+  var PRUEBAS = [
+    { numero: "4242424242424242", marca: "visa", pm: "pm_card_visa", texto: "Visa aprobada" },
+    { numero: "5555555555554444", marca: "mastercard", pm: "pm_card_mastercard", texto: "Mastercard aprobada" },
+    { numero: "378282246310005", marca: "amex", pm: "pm_card_amex", texto: "Amex aprobada" },
+    { numero: "4000000000003220", marca: "visa", pm: "pm_card_threeDSecure2Required", texto: "Pide 3-D Secure" },
+    { numero: "4000000000000002", marca: "visa", pm: "pm_card_visa_chargeDeclined", texto: "Rechazada" },
+    { numero: "4000000000009995", marca: "visa", pm: "pm_card_visa_chargeDeclinedInsufficientFunds", texto: "Sin fondos" },
+    { numero: "4000000000000069", marca: "visa", pm: "pm_card_chargeDeclinedExpiredCard", texto: "Vencida" }
+  ];
+  var NOMBRE_MARCA = { visa: "VISA", mastercard: "Mastercard", amex: "AMEX" };
+  var marcaElegida = "visa";
+
+  function soloDigitos(v) { return (v || "").replace(/\D/g, ""); }
+
+  // La marca por el principio del número (BIN), como hace cualquier checkout.
+  function detectarMarca(n) {
+    if (/^4/.test(n)) { return "visa"; }
+    if (/^(5[1-5]|2(2[2-9]|[3-6]\d|7[01]|720))/.test(n)) { return "mastercard"; }
+    if (/^3[47]/.test(n)) { return "amex"; }
+    return null;
+  }
+
+  function formatearNumero(n, marca) {
+    if (marca === "amex") {   // 4-6-5
+      return [n.slice(0, 4), n.slice(4, 10), n.slice(10, 15)].filter(Boolean).join(" ");
+    }
+    return n.replace(/(.{4})/g, "$1 ").trim();
+  }
+
+  function luhn(n) {
+    var suma = 0;
+    for (var i = 0; i < n.length; i++) {
+      var d = +n[n.length - 1 - i];
+      if (i % 2) { d *= 2; if (d > 9) { d -= 9; } }
+      suma += d;
+    }
+    return n.length > 0 && suma % 10 === 0;
+  }
+
+  function elegirMarca(marca) {
+    marcaElegida = marca;
+    document.querySelectorAll(".marca").forEach(function (b) {
+      b.classList.toggle("activa", b.getAttribute("data-marca") === marca);
+    });
+    $("cvc").maxLength = marca === "amex" ? 4 : 3;
+    $("cvc").placeholder = marca === "amex" ? "1234" : "123";
+    $("numero").maxLength = marca === "amex" ? 17 : 19;
+  }
+  document.querySelectorAll(".marca").forEach(function (b) {
+    b.onclick = function () { elegirMarca(b.getAttribute("data-marca")); };
+  });
+
+  $("numero").addEventListener("input", function () {
+    var n = soloDigitos(this.value).slice(0, 16);
+    var marca = detectarMarca(n);
+    if (marca && marca !== marcaElegida) { elegirMarca(marca); }
+    this.value = formatearNumero(n, marca || marcaElegida);
+    $("detectada").textContent = marca ? NOMBRE_MARCA[marca] : "";
+    this.classList.remove("error");
+  });
+  $("vence").addEventListener("input", function () {
+    var d = soloDigitos(this.value).slice(0, 4);
+    this.value = d.length > 2 ? d.slice(0, 2) + " / " + d.slice(2) : d;
+    this.classList.remove("error");
+  });
+  $("cvc").addEventListener("input", function () {
+    this.value = soloDigitos(this.value);
+    this.classList.remove("error");
+  });
+
+  // Convierte lo que se escribió en un token. Si algo no cuadra, devuelve el
+  // error y el número NO sale del navegador.
+  function tokenizar() {
+    var n = soloDigitos($("numero").value);
+    var v = soloDigitos($("vence").value);
+    var cvc = soloDigitos($("cvc").value);
+    var errores = [];
+    var prueba = PRUEBAS.filter(function (p) { return p.numero === n; })[0];
+
+    if (!luhn(n)) { errores.push(["numero", "El número de tarjeta no es válido."]); }
+    else if (!prueba) { errores.push(["numero", "Esta demo solo acepta tarjetas de prueba (usa los botones de abajo)."]); }
+    else if (prueba.marca !== marcaElegida) {
+      errores.push(["numero", "La tarjeta es " + NOMBRE_MARCA[prueba.marca] + ", no " + NOMBRE_MARCA[marcaElegida] + "."]);
+    }
+    var mes = +v.slice(0, 2), anio = 2000 + (+v.slice(2, 4));
+    var hoy = new Date();
+    if (v.length !== 4 || mes < 1 || mes > 12 ||
+        anio < hoy.getFullYear() || (anio === hoy.getFullYear() && mes < hoy.getMonth() + 1)) {
+      errores.push(["vence", "La fecha de vencimiento no es válida."]);
+    }
+    if (cvc.length !== (marcaElegida === "amex" ? 4 : 3)) {
+      errores.push(["cvc", "El CVC no es válido."]);
+    }
+    if (!$("titular").value.trim()) { errores.push(["titular", "Falta el nombre del titular."]); }
+
+    errores.forEach(function (e) { $(e[0]).classList.add("error"); });
+    return errores.length ? { error: errores[0][1] } : { token: prueba.pm };
+  }
+
+  function rellenar(p) {
+    elegirMarca(p.marca);
+    $("numero").value = formatearNumero(p.numero, p.marca);
+    $("detectada").textContent = NOMBRE_MARCA[p.marca];
+    $("vence").value = "12 / 34";
+    $("cvc").value = p.marca === "amex" ? "1234" : "123";
+    $("titular").value = "Cliente Demo";
+    ["numero", "vence", "cvc", "titular"].forEach(function (id) { $(id).classList.remove("error"); });
+    estado("estado-online", "");
+  }
+  PRUEBAS.forEach(function (p) {
+    var b = document.createElement("button");
+    b.type = "button"; b.className = "chip"; b.textContent = p.texto;
+    b.onclick = function () { rellenar(p); };
+    $("chips").appendChild(b);
+  });
+
+  function limpiarFormulario() {
+    $("form-tarjeta").reset();
+    $("detectada").textContent = "";
+    elegirMarca("visa");
+    estado("estado-online", "");
+  }
+
+  $("form-tarjeta").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var t = tokenizar();
+    if (t.error) { estado("estado-online", t.error, "mal"); return; }
     estado("estado-online", "Procesando…");
-    document.querySelectorAll(".tarjeta").forEach(function (b) { b.disabled = true; });
-    post("/api/pagar-online", { lineas: lineas(), tarjeta: tarjeta })
+    $("btn-pagar").disabled = true;
+    // Al servidor de la tienda solo viaja el token: ni el número ni el CVC.
+    post("/api/pagar-online", { lineas: lineas(), payment_method: t.token })
       .then(function (r) {
         if (r.estado === "verificar") {
           // El banco pide autenticar: el comprador se va a su página y vuelve
@@ -226,14 +430,14 @@
           window.location.assign("/gracias?payment_intent=" + encodeURIComponent(r.pedido));
         } else {
           estado("estado-online", r.mensaje + " (código " + r.codigo + ")", "mal");
-          document.querySelectorAll(".tarjeta").forEach(function (b) { b.disabled = false; });
+          $("btn-pagar").disabled = false;
         }
       })
       .catch(function (e) {
         estado("estado-online", e.message, "mal");
-        document.querySelectorAll(".tarjeta").forEach(function (b) { b.disabled = false; });
+        $("btn-pagar").disabled = false;
       });
-  }
+  });
 
   // ── Pago en caja ───────────────────────────────────────────────────────────
   function pagarEnCaja() {
@@ -261,7 +465,14 @@
       .catch(function (e) { alert(e.message); });
   }
 
-  $("btn-online").onclick = function () { estado("estado-online", ""); abrir("capa-tarjetas"); };
+  $("btn-online").onclick = function () {
+    limpiarFormulario();
+    $("btn-pagar").disabled = false;
+    var total = lineas().reduce(function (t, l) { return t + catalogo[l.sku].precio * l.cantidad; }, 0);
+    $("importe-pago").textContent = soles(total);
+    $("btn-pagar").textContent = "Pagar " + soles(total);
+    abrir("capa-tarjetas");
+  };
   $("btn-caja").onclick = pagarEnCaja;
 
   fetch("/api/catalogo").then(function (r) { return r.json(); }).then(function (c) {
@@ -280,12 +491,6 @@
       b.onclick = function () { carrito[p.sku] = (carrito[p.sku] || 0) + 1; pintarCarrito(); };
       card.appendChild(e); card.appendChild(n); card.appendChild(pr); card.appendChild(b);
       $("productos").appendChild(card);
-    });
-    c.tarjetas.forEach(function (t) {
-      var b = document.createElement("button");
-      b.className = "tarjeta"; b.textContent = "💳 " + t.nombre;
-      b.onclick = function () { pagarOnline(t.id); };
-      $("tarjetas").appendChild(b);
     });
     pintarCarrito();
   });

@@ -68,6 +68,8 @@ class AuthorizationResult:
 # un solo numero de tarjeta. Los tokens existen en payment_methods (002_seed).
 TEST_PAYMENT_METHODS: dict[str, str] = {
     "pm_card_visa": RC_APPROVED,
+    "pm_card_mastercard": RC_APPROVED,
+    "pm_card_amex": RC_APPROVED,
     "pm_card_visa_chargeDeclined": RC_DO_NOT_HONOR,
     "pm_card_visa_chargeDeclinedInsufficientFunds": RC_INSUFFICIENT_FUNDS,
     "pm_card_chargeDeclinedExpiredCard": RC_EXPIRED_CARD,
