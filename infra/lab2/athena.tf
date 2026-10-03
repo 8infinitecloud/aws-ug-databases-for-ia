@@ -185,7 +185,9 @@ resource "aws_athena_named_query" "red_o_emisor" {
              ROUND(AVG(rssi_dbm), 1)           AS senal_media_dbm,
              SUM(http_timeouts)                AS timeouts,
              SUM(http_requests)                AS peticiones,
-             ROUND(AVG(http_latency_ms_avg))   AS latencia_media_ms
+             -- TRY_CAST: si solo han latido terminales sin peticiones, la
+             -- latencia llega siempre null y el crawler la cataloga como string.
+             ROUND(AVG(TRY_CAST(http_latency_ms_avg AS DOUBLE))) AS latencia_media_ms
       FROM telemetry
       GROUP BY terminal_id
     ),
