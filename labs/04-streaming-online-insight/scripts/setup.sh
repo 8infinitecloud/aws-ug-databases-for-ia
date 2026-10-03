@@ -45,6 +45,12 @@ success "Lab 1 encontrado — bucket ${S3_BUCKET}"
 
 # ── Desplegar ────────────────────────────────────────────────────────────────
 info "Aplicando infra/lab4..."
+# El modulo lee el Lab 1 y el core con terraform_remote_state: hay que decirle
+# donde vive ese state, igual que hace el setup del Lab 2. Sin esto, el apply
+# se para pidiendo var.state_bucket.
+TF_VAR_state_bucket=$(grep -E '^\s*bucket\s*=' "${TF_BACKEND_CONFIG}" | head -1 | sed 's/.*= *"\(.*\)"/\1/')
+[ -n "${TF_VAR_state_bucket}" ] || error "No se pudo leer el bucket del state de ${TF_BACKEND_CONFIG}"
+export TF_VAR_state_bucket
 tf_init lab4 || error "terraform init fallo. Revisa infra/README.md."
 tf_apply lab4 || error "terraform apply fallo."
 
