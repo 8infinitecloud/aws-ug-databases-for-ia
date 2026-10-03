@@ -144,6 +144,11 @@ junit*.xml
 
 
 # ── ARTEFACTOS DEL WORKSHOP ──────────────────────────────────────────────────
+
+# Los hechos derivados del Lab 3: los regenera scripts/ingest_from_curated.py
+# en cada corrida con las cifras del momento. Commitearlos fijaria en el repo
+# los numeros de un ensayo, y el corpus los tomaria por verdad.
+labs/03-data-to-ai/data/derived/
 # Cosas que se descargan de S3 o se generan al seguir los labs, y que no
 # aportan nada en el repositorio porque cada quien produce las suyas.
 

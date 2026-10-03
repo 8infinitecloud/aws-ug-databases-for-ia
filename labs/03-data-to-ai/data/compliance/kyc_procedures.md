@@ -210,3 +210,33 @@ R: Sí, siempre. El nivel de riesgo determina la profundidad de la verificación
 
 **P: ¿Cuánto tiempo guardo los documentos del cliente después de cerrar la cuenta?**  
 R: 10 años desde el cierre de la relación comercial.
+
+---
+
+## 8. KYC de Comercios Afiliados y Estado del Comercio
+
+Como adquirente, el KYC que más hacemos no es el de personas: es el de los
+**comercios** que afiliamos. Un comercio es una persona jurídica (sección 3), y
+además se evalúa su actividad —el `mcc`— y se le asigna un `risk_level`.
+
+El campo `status` del comercio refleja en qué punto está:
+
+| `status` | Significado | ¿Puede cobrar? |
+|----------|-------------|----------------|
+| `PENDING_KYC` | Afiliado, con el KYC sin completar | **No** |
+| `ACTIVE` | KYC completo y aprobado | Sí |
+| `SUSPENDED` | Suspendido por riesgo o por contracargos | No |
+| `TERMINATED` | Relación terminada | No |
+
+Un comercio en `PENDING_KYC` **no puede cobrar, y no es una regla de la
+aplicación: la impone la base de datos**. La restricción
+`merchants_charges_need_kyc` rechaza activar los cobros (`charges_enabled`) de un
+comercio sin fecha de KYC completado. Si un comercio en `PENDING_KYC` intenta
+cobrar, la API responde con un error y el intento queda registrado. Para
+habilitarlo hay que completar su KYC, no tocar la configuración.
+
+### 8.1 Comercios de la cartera absorbida
+
+Los comercios que llegaron con la cartera legacy se reevalúan como si fueran
+nuevos: su KYC se hizo con los criterios del adquirente anterior, que no son los
+nuestros. Ver *Integración de la Cartera Legacy*.

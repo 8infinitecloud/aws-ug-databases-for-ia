@@ -110,7 +110,16 @@ def read_curated(s3, bucket: str, prefix: str) -> pd.DataFrame:
     frames = []
     for key in keys:
         body = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
-        frames.append(pd.read_parquet(io.BytesIO(body)))
+        parte = pd.read_parquet(io.BytesIO(body))
+        # year y month viven en la RUTA (curated/transactions/year=2026/month=10/),
+        # no dentro del Parquet: el job de Glue las quita al escribir. Sin
+        # recuperarlas de aqui, el resumen mensual fallaba contra S3 —en los
+        # tests no se veia porque usan el DataFrame en memoria, que si las tiene.
+        for trozo in key.split("/"):
+            if "=" in trozo:
+                columna, valor = trozo.split("=", 1)
+                parte[columna] = valor
+        frames.append(parte)
     df = pd.concat(frames, ignore_index=True)
     ok(f"{len(df)} filas curadas leidas")
     return df
@@ -124,6 +133,31 @@ def read_quality_report(s3, bucket: str) -> dict:
         warn(f"Sin quality report en s3://{bucket}/{key}")
         return {}
     return json.loads(body)
+
+
+def read_telemetry(s3, bucket: str, prefix: str = "raw/telemetry/") -> pd.DataFrame:
+    """
+    La telemetria que aterriza Firehose: JSON por linea, comprimido con GZIP.
+
+    Vacia si el Lab 4 no esta desplegado: el documento de salud de terminales
+    lo dice en vez de fallar.
+    """
+    import gzip
+
+    paginator = s3.get_paginator("list_objects_v2")
+    keys = [o["Key"] for page in paginator.paginate(Bucket=bucket, Prefix=prefix)
+            for o in page.get("Contents", [])]
+    filas = []
+    for key in keys:
+        body = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+        if body[:2] == b"\x1f\x8b":
+            body = gzip.decompress(body)
+        filas += [json.loads(linea) for linea in body.decode("utf-8").splitlines() if linea.strip()]
+    if filas:
+        ok(f"{len(filas)} latidos de telemetria leidos")
+    else:
+        warn(f"Sin telemetria en s3://{bucket}/{prefix} (¿Lab 4 desplegado?)")
+    return pd.DataFrame(filas)
 
 
 # ── Convertir datos en hechos que una IA pueda citar ─────────────────────────
@@ -141,7 +175,7 @@ def doc_monthly_summary(df: pd.DataFrame) -> str:
         "# Resumen mensual de transacciones",
         "",
         "Derivado de la zona curada del data lake (Lab 2). Cada cifra proviene de",
-        "registros que pasaron las 8 reglas de calidad; los rechazados no se cuentan.",
+        "registros que pasaron las 10 reglas de calidad; los rechazados no se cuentan.",
         "",
     ]
     df = df.copy()
@@ -165,6 +199,15 @@ def doc_monthly_summary(df: pd.DataFrame) -> str:
                 f"{_money(fila['sum'])} {currency}"
             )
         lines.append("")
+
+        if "source" in grupo.columns:
+            por_fuente = grupo["source"].value_counts()
+            lines.append("Desglose por fuente (source):")
+            for fuente, n in por_fuente.items():
+                origen = ("el core del adquirente" if fuente == "acquiring"
+                          else "la cartera legacy absorbida")
+                lines.append(f"- {fuente}: {n} transacciones, de {origen}")
+            lines.append("")
 
         por_canal = grupo["payment_method"].value_counts()
         lines.append("Desglose por canal de pago:")
@@ -255,6 +298,29 @@ def doc_quality_summary(report: dict, df: pd.DataFrame) -> str:
                 lines.append(f"- **{nombre}**: {fallos} filas afectadas, sin resolver.")
         lines.append("")
 
+    por_fuente = report.get("by_source", {})
+    if por_fuente:
+        lines += ["## Calidad por fuente", ""]
+        for fuente, d in por_fuente.items():
+            if fuente == "acquiring":
+                lines.append(
+                    f"- **acquiring** (el core del adquirente): {d.get('rows')} filas, "
+                    f"{d.get('rejected_rows')} rechazadas. "
+                    + ("Ninguna regla fallaba en origen: la base de datos impide esos "
+                       "errores con constraints." if not d.get("rules_failed_at_source")
+                       else f"Reglas que fallaban en origen: {', '.join(d['rules_failed_at_source'])}. "
+                            "Un rechazado del core es un fallo tecnico, no de datos.")
+                )
+            else:
+                motivos = ", ".join(f"{k} ({v})" for k, v in d.get("rejection_reasons", {}).items())
+                lines.append(
+                    f"- **{fuente}** (la cartera absorbida): {d.get('rows')} filas, "
+                    f"{d.get('rejected_rows')} rechazadas"
+                    + (f" por: {motivos}." if motivos else ".")
+                    + " Es la deuda del sistema antiguo, que no validaba."
+                )
+        lines.append("")
+
     lines += [
         "## Implicaciones para quien consulta estos datos",
         "",
@@ -328,6 +394,195 @@ def doc_risk_profile(df: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
+# Lo que significa cada codigo de ISO 8583 (DE 39) que produce el sistema, en
+# las palabras con las que el corpus lo explica.
+RESPONSE_CODES = {
+    "00": "aprobada",
+    "05": "no honrar (rechazo generico del emisor)",
+    "51": "fondos insuficientes",
+    "54": "tarjeta vencida",
+    "91": "emisor no disponible",
+}
+
+CHANNEL_NAMES = {
+    "CARD_PRESENT": "tarjeta presente en el terminal",
+    "QR": "pago por QR desde el movil",
+    "CARD_NOT_PRESENT": "pago online, sin terminal",
+}
+
+# La zona horaria de negocio. "Hoy" para un analista en Lima no es el dia UTC:
+# una charla por la tarde cruza la medianoche UTC.
+LOCAL_TZ = "America/Lima"
+
+
+def doc_channels_and_issuer(df: pd.DataFrame) -> str:
+    """
+    Por canal: cuanto se aprueba y por que se rechaza.
+
+    Es el documento que deja responder "¿por que fallan los pagos online?" con
+    cifras, y no solo con la politica.
+    """
+    df = df.copy()
+    df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
+    lines = [
+        "# Canales de pago y respuestas del emisor",
+        "",
+        "Derivado de la zona curada (Lab 2). Una operacion por cobro; las",
+        "declinadas tambien cuentan, porque un rechazo es un dato de negocio.",
+        "",
+    ]
+    for canal, grupo in df.groupby("payment_method"):
+        aprobadas = int((grupo["response_code"] == "00").sum())
+        lines += [
+            f"## Canal {canal}",
+            "",
+            f"El canal {canal} ({CHANNEL_NAMES.get(canal, canal)}) registro "
+            f"{len(grupo)} operaciones, de las que se aprobaron {aprobadas} "
+            f"({aprobadas / len(grupo):.1%}).",
+            "",
+        ]
+        rechazos = grupo[grupo["response_code"] != "00"]["response_code"].value_counts()
+        if len(rechazos):
+            lines.append(f"Motivos de rechazo en {canal} (response_code):")
+            for codigo, n in rechazos.items():
+                lines.append(f"- {codigo} ({RESPONSE_CODES.get(codigo, 'otro')}): {n} operaciones")
+            lines.append("")
+
+    online = df[df["payment_method"] == "CARD_NOT_PRESENT"]
+    if len(online):
+        por_comercio = (online.assign(rechazada=online["response_code"] != "00")
+                        .groupby(["customer_id", "merchant_name"])["rechazada"]
+                        .agg(["count", "mean"]).sort_values("mean", ascending=False))
+        lines += [
+            "## Comercios online con mas rechazos",
+            "",
+            "Un ratio de rechazos alto en una tienda online es la firma del card",
+            "testing (ver la Politica de Pagos Online).",
+            "",
+        ]
+        for (cid, nombre), fila in por_comercio.head(5).iterrows():
+            lines.append(f"- {nombre} ({cid}): {int(fila['count'])} operaciones online, "
+                         f"{fila['mean']:.1%} rechazadas")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def doc_terminal_health(telemetry: pd.DataFrame, df: pd.DataFrame,
+                        now: datetime | None = None) -> str:
+    """
+    La salud de la flota, en hechos: senal, timeouts, bateria y ultimo latido.
+
+    Con el runbook de terminales, permite responder "¿por que este comercio
+    tiene tantos cobros fallidos?" con lo que realmente paso en el terminal.
+    """
+    lines = [
+        "# Salud de los terminales",
+        "",
+        "Derivado de la telemetria que publican los terminales (raw/telemetry/)",
+        "y de los cobros de la zona curada. Ver el Runbook de Operacion de",
+        "Terminales para interpretar cada cifra.",
+        "",
+    ]
+    if telemetry.empty:
+        lines += ["No hay telemetria disponible: ningun terminal ha publicado latidos.", ""]
+        return "\n".join(lines)
+
+    now = now or datetime.now(timezone.utc)
+    t = telemetry.copy()
+    for col in ("rssi_dbm", "http_timeouts", "http_requests", "battery_pct",
+                "received_at_ms", "qr_shown", "qr_paid"):
+        if col in t.columns:
+            t[col] = pd.to_numeric(t[col], errors="coerce")
+    nombres = {}
+    if "terminal_id" in df.columns:
+        nombres = (df.dropna(subset=["terminal_id"])
+                   .drop_duplicates("terminal_id").set_index("terminal_id")["merchant_name"].to_dict())
+
+    for tid, g in t.groupby("terminal_id"):
+        ultimo = pd.to_datetime(g["received_at_ms"].max(), unit="ms", utc=True)
+        minutos = (now - ultimo.to_pydatetime()).total_seconds() / 60
+        senal = g["rssi_dbm"].mean()
+        timeouts = int(g["http_timeouts"].sum())
+        peticiones = int(g["http_requests"].sum())
+        bateria = g.sort_values("received_at_ms")["battery_pct"].iloc[-1]
+        comercio = nombres.get(tid, "comercio desconocido")
+
+        lines.append(f"## Terminal {tid} ({comercio})")
+        lines.append("")
+        frase = (f"El terminal {tid} de {comercio} tuvo una senal media de {senal:.0f} dBm "
+                 f"y {timeouts} timeouts en {peticiones} llamadas a la API.")
+        if senal < -80:
+            frase += " Senal critica: los timeouts son esperables y apuntan a la red del comercio, no al emisor."
+        elif senal < -75:
+            frase += " Senal debil."
+        lines.append(frase)
+        estado = (f"Su ultimo latido fue hace {minutos:.0f} minutos, con la bateria al {bateria:.0f}%.")
+        if minutos > 2:
+            estado += " Lleva mas de 2 minutos sin latido: se considera offline."
+            if bateria <= 15:
+                estado += " Con la bateria tan baja, lo mas probable es que se haya quedado sin carga."
+        lines.append(estado)
+        if "qr_shown" in g.columns and g["qr_shown"].sum() > 0:
+            conv = g["qr_paid"].sum() / g["qr_shown"].sum()
+            lines.append(f"De {int(g['qr_shown'].sum())} QR mostrados se pagaron "
+                         f"{int(g['qr_paid'].sum())} (conversion {conv:.0%}).")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def doc_today(df: pd.DataFrame, now: datetime | None = None) -> str:
+    """
+    Lo que paso HOY, en hora de Lima.
+
+    Es el documento del cierre en vivo: los pagos que hace la audiencia llegan
+    por el CDC del Lab 1, Glue los cura, y este documento los convierte en una
+    frase que el asistente puede citar.
+    """
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo(LOCAL_TZ)
+    now = (now or datetime.now(timezone.utc)).astimezone(tz)
+    hoy = now.date()
+    df = df.copy()
+    df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
+    momento = pd.to_datetime(df.get("created_at"), errors="coerce", utc=True)
+    df["fecha_local"] = momento.dt.tz_convert(tz).dt.date
+    del_dia = df[df["fecha_local"] == hoy]
+
+    lines = [
+        f"# Actividad de hoy, {hoy.isoformat()}",
+        "",
+        f"Pagos procesados hoy ({hoy.isoformat()}, hora de Lima), segun la zona",
+        f"curada actualizada a las {now.strftime('%H:%M')}. Los pagos llegan desde el",
+        "core por replicacion continua (CDC), asi que esta cifra incluye los",
+        "pagos de los ultimos minutos.",
+        "",
+    ]
+    if del_dia.empty:
+        lines += [f"Hoy, {hoy.isoformat()}, todavia no se ha procesado ningun pago.", ""]
+        return "\n".join(lines)
+
+    aprob = del_dia[del_dia["response_code"] == "00"]
+    n = len(del_dia)
+    lines += [
+        f"Hoy se {'proceso' if n == 1 else 'procesaron'} {n} {'pago' if n == 1 else 'pagos'}, "
+        f"de los que se {'aprobo' if len(aprob) == 1 else 'aprobaron'} {len(aprob)}: "
+        f"una tasa de aprobacion del {len(aprob) / n:.1%}.",
+        "",
+        "Por canal:",
+    ]
+    for canal, n in del_dia["payment_method"].value_counts().items():
+        lines.append(f"- {canal}: {n} pagos")
+    lines += ["", "Por moneda (importe aprobado):"]
+    for moneda, total in aprob.groupby("currency")["amount"].sum().items():
+        lines.append(f"- {moneda}: {total:.2f}")
+    lines += ["", "Comercios con mas pagos hoy:"]
+    for nombre, n in del_dia["merchant_name"].value_counts().head(5).items():
+        lines.append(f"- {nombre}: {n} pagos")
+    lines.append("")
+    return "\n".join(lines)
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 def main() -> int:
     parser = argparse.ArgumentParser(
@@ -361,6 +616,7 @@ def main() -> int:
         s3 = boto3.client("s3", region_name=args.region)
         df = read_curated(s3, bucket, args.prefix)
         report = read_quality_report(s3, bucket)
+        telemetry = read_telemetry(s3, bucket)
     except (ClientError, BotoCoreError) as exc:
         die(f"Error accediendo a S3: {str(exc)[:120]}")
 
@@ -375,6 +631,9 @@ def main() -> int:
         "operaciones-resumen-mensual.md": doc_monthly_summary(df),
         "operaciones-calidad-datos.md": doc_quality_summary(report, df),
         "operaciones-perfil-riesgo.md": doc_risk_profile(df),
+        "operaciones-canales-emisor.md": doc_channels_and_issuer(df),
+        "operaciones-salud-terminales.md": doc_terminal_health(telemetry, df),
+        "operaciones-actividad-hoy.md": doc_today(df),
     }
 
     print()
@@ -384,15 +643,19 @@ def main() -> int:
         ok(f"{destino.relative_to(REPO_ROOT)} ({len(contenido.splitlines())} lineas)")
 
     print(f"\n{DIM}Estos documentos son hechos agregados, no filas. Un vector store")
-    print("con 900 transacciones sueltas no responde preguntas de negocio;")
-    print(f"con estos tres documentos, si.{NC}")
+    print("con miles de transacciones sueltas no responde preguntas de negocio;")
+    print(f"con estos {len(documentos)} documentos, si.{NC}")
 
     if args.ingest:
         print()
         info("Ingestando al vector store del Lab 3...")
         lab3 = REPO_ROOT / "labs/03-data-to-ai"
+        # Solo los derivados: el resto del corpus no cambio. Reingestar un
+        # documento SUSTITUYE sus chunks (ingestion/store.py), asi que la cifra
+        # de hace diez minutos no convive con la nueva.
         proc = subprocess.run(
-            [sys.executable, "scripts/ingest_documents.py", "--source", "data/"],
+            [sys.executable, "scripts/ingest_documents.py",
+             "--source", str(args.out.resolve())],
             cwd=lab3,
         )
         if proc.returncode != 0:

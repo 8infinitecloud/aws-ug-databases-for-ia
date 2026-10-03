@@ -131,15 +131,16 @@ jobs:
       # Ejecutan glue_job.py contra el dataset real. Si alguien recalibra el
       # dataset o toca las reglas, los numeros de los README dejan de cuadrar y
       # estos tests lo dicen.
-      - name: pytest
-        run: pytest tests/ -v
-
-      # El CI no debe pasar por haberse saltado los tests de la API: si el
-      # servicio de postgres no arranco, esto lo convierte en un fallo visible.
-      - name: Comprobar que los tests de la API no se saltaron
+      # -rs lista los saltados con su motivo. Un test saltado en el CI es un
+      # test que no se ejecuto: si el servicio de postgres no arranco, o falta
+      # una dependencia, el CI se pondria verde sin haberlo comprobado. Ya paso
+      # dos veces: los tests de la API, y el del chunking del corpus, que se
+      # saltaba por falta de langchain y llevaba roto sin que nadie lo viera.
+      - name: pytest (ningun test puede saltarse)
         run: |
-          if pytest tests/test_api.py --collect-only -q 2>&1 | grep -q "no tests ran\|skipped"; then
-            echo "::error::los tests de la API se saltaron; revisa el servicio de postgres"
+          pytest tests/ -v -rs | tee pytest.out
+          if grep -q "SKIPPED" pytest.out; then
+            echo "::error::hay tests saltados; un test saltado no comprueba nada"
             exit 1
           fi
 

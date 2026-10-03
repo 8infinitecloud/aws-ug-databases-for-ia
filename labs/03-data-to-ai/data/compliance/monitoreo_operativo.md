@@ -24,14 +24,20 @@ no del sistema transaccional directamente.
 
 | Zona | Qué contiene | Uso en monitoreo |
 |------|--------------|------------------|
-| `raw/` | Las transacciones tal como llegaron del core bancario, sin validar | No usar para monitoreo: contiene importes nulos y tipos sin normalizar |
-| `curated/` | Transacciones validadas contra las 8 reglas de calidad | **Fuente oficial para monitoreo y reportes** |
+| `raw/acquiring/` | Las tablas del core del adquirente tal como las replica DMS, con cada cambio (`Op` = I/U/D) | No usar para monitoreo: son tablas sueltas, sin unir, y con varias versiones de cada cobro |
+| `raw/legacy/` | La cartera del adquirente absorbido, un volcado sin validar | No usar para monitoreo: contiene importes nulos, duplicados y códigos antiguos. Ver *Integración de la Cartera Legacy* |
+| `curated/` | Transacciones validadas contra las 10 reglas de calidad, una fila por cobro, con la columna `source` (`acquiring` o `legacy`) | **Fuente oficial para monitoreo y reportes** |
 | `rejected/` | Registros que no pasaron las reglas, con su motivo en `rejection_reason` | Revisión obligatoria semanal: ver sección 7 |
 
 > **Advertencia de conciliación.** Los totales de `curated/` **no cuadran** con
-> los del core bancario, porque los registros rechazados no están ahí. Para
-> cualquier reporte regulatorio que exija totales completos, hay que sumar
-> `curated/` más `rejected/`. Reportar solo `curated/` subdeclara.
+> los del origen, porque los registros rechazados no están ahí. Para cualquier
+> reporte regulatorio que exija totales completos, hay que sumar `curated/` más
+> `rejected/`. Reportar solo `curated/` subdeclara.
+
+> **De dónde vienen los rechazados.** Del core (`source = acquiring`) no debería
+> venir ninguno: la base de datos impide con constraints los errores que las
+> reglas buscan. Si aparece un rechazado del core, es un fallo técnico que hay
+> que escalar a Ingeniería, no un caso de monitoreo.
 
 ---
 
@@ -39,14 +45,15 @@ no del sistema transaccional directamente.
 
 ### 3.1 `payment_method`
 
-El canal por el que entró la operación. Solo estos dos valores son válidos en la
-zona curated; el core antiguo escribía `TARJETA` y `CODIGO_QR`, y el pipeline los
-normaliza antes.
+El canal por el que entró la operación. Solo estos tres valores son válidos en la
+zona curated; la cartera legacy escribía `TARJETA` y `CODIGO_QR`, y el pipeline
+los normaliza antes.
 
 | Valor | Canal | Riesgo predominante |
 |-------|-------|---------------------|
 | `CARD_PRESENT` | Tarjeta presente en el terminal | Tarjeta clonada, o comercio colaborando con el fraude |
 | `QR` | Pago por código QR desde el móvil del pagador | Suplantación del comercio, y trazabilidad más débil del pagador |
+| `CARD_NOT_PRESENT` | Pago online, sin terminal (`terminal_id` vacío) | Card testing y tarjetas robadas. Ver *Política de Pagos Online* |
 
 ### 3.2 `status`
 
@@ -184,6 +191,9 @@ Qué hacer según el canal y el nivel de riesgo del **comercio**:
 | `QR` | `LOW` | Sin acción | Alerta automática |
 | `QR` | `MEDIUM` | Sin acción | Alerta + verificar el `terminal_id` de origen |
 | `QR` | `HIGH` | **Registrar y revisar en 48 h** | **Retener la liquidación** y escalar de inmediato |
+| `CARD_NOT_PRESENT` | `LOW` | Sin acción | Alerta automática |
+| `CARD_NOT_PRESENT` | `MEDIUM` | Sin acción | Alerta + revisar el ratio de `FAILED` del comercio |
+| `CARD_NOT_PRESENT` | `HIGH` | **Revisar en 24 h** | **Retener la liquidación** y escalar de inmediato |
 
 **Regla general:** cualquier operación de un comercio `HIGH` que supere su umbral
 se escala al Oficial AML **el mismo día hábil**, sin esperar el SLA de 24 horas.
@@ -352,3 +362,6 @@ GROUP BY 1 ORDER BY 1;
 - Procedimientos KYC — clasificación de `risk_level`
 - Política de Gestión de Riesgos — apetito de riesgo institucional
 - Política de Privacidad de Datos — tratamiento de datos de clientes en el análisis
+- Política de Pagos Online — `CARD_NOT_PRESENT`, 3-D Secure y card testing
+- Integración de la Cartera Legacy — cómo tratar las filas con `source = legacy`
+- Runbook de Operación de Terminales — ¿falló la red o el emisor?

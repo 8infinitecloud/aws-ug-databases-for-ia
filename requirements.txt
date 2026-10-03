@@ -39,3 +39,9 @@ pyarrow>=18.1.0,<26.0.0
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 pytest>=8.3.0,<9.0.0
+
+# El test que vigila que la matriz de decision del corpus no se parta al
+# trocearla para el RAG usa el mismo splitter que el Lab 3. Sin esto el test se
+# saltaba en silencio, y llevaba roto desde que el corpus dejo de hablar de
+# WITHDRAWAL sin que nadie lo viera.
+langchain-text-splitters>=0.3.0,<0.4.0

@@ -114,10 +114,23 @@ def store_chunks(chunks_with_embeddings: list[tuple[Document, list[float]]]) -> 
     Usa execute_values para inserción en batch — mucho más eficiente que
     INSERT individual en un loop (reduce roundtrips a la DB de N a 1).
 
+    REEMPLAZA los chunks de cada documento, no los acumula. Los ids son uuid4,
+    asi que el ON CONFLICT nunca saltaba y reingestar un documento lo duplicaba.
+    Con los documentos derivados eso es grave: se regeneran en cada corrida del
+    Lab 2, y el "actividad de hoy" de hace diez minutos seguiria en pgvector al
+    lado del nuevo. El asistente podria citar la cifra vieja en la demo.
+
+    El borrado y la insercion van en la MISMA transaccion: nunca hay un instante
+    en que el documento no este.
+
     Retorna el número de chunks insertados.
     """
     if not chunks_with_embeddings:
         return 0
+
+    # El documento se identifica por su nombre de fichero: es lo que el loader
+    # pone igual venga de un directorio local o de S3.
+    documentos = sorted({doc.metadata.get("filename", "") for doc, _ in chunks_with_embeddings} - {""})
 
     rows = [
         (
@@ -132,6 +145,14 @@ def store_chunks(chunks_with_embeddings: list[tuple[Document, list[float]]]) -> 
 
     with get_connection() as conn:
         with conn.cursor() as cur:
+            if documentos:
+                cur.execute(
+                    "DELETE FROM document_chunks WHERE metadata->>'filename' = ANY(%s)",
+                    (documentos,),
+                )
+                if cur.rowcount:
+                    console.print(f"[dim]  {cur.rowcount} chunks anteriores de "
+                                  f"{len(documentos)} documento(s) reemplazados[/dim]")
             execute_values(
                 cur,
                 """

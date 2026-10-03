@@ -27,17 +27,19 @@ from query.memory import (
 
 DEMO_PERSONAS = [
     {
-        "label": "Ana García · Asesora de Cuenta · Banca Personal",
+        # Los user_id no cambian: son la clave de su perfil y su memoria en
+        # DynamoDB, y la demo de memoria depende de que Ana "recuerde".
+        "label": "Ana García · Ejecutiva de Afiliación · Comercios",
         "user_id": "demo-ana-001",
         "name": "Ana García",
-        "role": "Asesor de Cuenta",
-        "department": "Banca Personal",
+        "role": "Ejecutiva de Afiliación",
+        "department": "Afiliación de Comercios",
     },
     {
-        "label": "Carlos Mendoza · Analista de Compliance · Compliance y Riesgo",
+        "label": "Carlos Mendoza · Analista de Monitoreo · Compliance y Riesgo",
         "user_id": "demo-carlos-002",
         "name": "Carlos Mendoza",
-        "role": "Analista de Compliance",
+        "role": "Analista de Monitoreo",
         "department": "Compliance y Riesgo",
     },
     {
@@ -48,34 +50,38 @@ DEMO_PERSONAS = [
         "department": "Compliance y Riesgo",
     },
     {
-        "label": "Roberto Silva · Gerente de Agencia · Banca Empresarial",
+        "label": "Roberto Silva · Operaciones de Terminales · Adquirencia",
         "user_id": "demo-roberto-004",
         "name": "Roberto Silva",
-        "role": "Gerente de Agencia",
-        "department": "Banca Empresarial",
+        "role": "Operaciones de Terminales",
+        "department": "Operaciones de Adquirencia",
     },
 ]
 
+# Somos el adquirente: los clientes son comercios, y las preguntas son las de
+# quien los afilia, los vigila y mantiene sus terminales. Cada una usa el
+# vocabulario exacto de los datos (CARD_NOT_PRESENT, response_code, source...),
+# que es lo que conecta la pregunta con el corpus (ADR-017).
 EXAMPLE_QUESTIONS = {
-    "Asesor de Cuenta": [
-        "¿Qué documentos necesito para abrir una cuenta a un cliente nuevo?",
-        "¿Cómo identifico si un cliente es de alto riesgo en el onboarding?",
-        "¿Cuáles son los pasos para verificar la identidad de un cliente?",
+    "Ejecutiva de Afiliación": [
+        "¿Qué documentos necesito para afiliar a un comercio de riesgo alto?",
+        "¿Por qué un comercio en PENDING_KYC no puede cobrar?",
+        "¿Cómo trato a un comercio de la cartera legacy que quiere seguir operando?",
     ],
-    "Analista de Compliance": [
-        "¿Cuáles son los pasos del proceso KYC para clientes corporativos?",
-        "¿Cuál es el plazo de retención de documentos KYC?",
-        "¿Qué son los beneficiarios finales (UBO) y cómo se identifican?",
+    "Analista de Monitoreo": [
+        "¿Qué hago con un pago QR de un comercio con risk_level HIGH que supera el umbral?",
+        "¿Cómo reconozco un card testing en pagos CARD_NOT_PRESENT?",
+        "¿Qué hago con un registro rechazado por NULL_AMOUNT con source legacy?",
     ],
     "Oficial AML": [
-        "¿Cuándo es obligatorio hacer un Reporte de Actividad Sospechosa?",
-        "¿Qué patrones de transacción indican posible lavado de dinero?",
-        "¿Cuáles son los pasos de la debida diligencia reforzada (EDD)?",
+        "¿Cuándo es obligatorio hacer un Reporte de Operaciones Sospechosas (ROS)?",
+        "¿Por qué no debo usar la zona raw/ para el monitoreo transaccional?",
+        "¿Cuántos pagos se procesaron hoy y con qué tasa de aprobación?",
     ],
-    "Gerente de Agencia": [
-        "¿Qué capacitaciones AML debe completar un empleado nuevo?",
-        "¿Cuáles son mis responsabilidades en la política de privacidad de datos?",
-        "¿Qué hacer si detecto una posible actividad sospechosa en mi agencia?",
+    "Operaciones de Terminales": [
+        "¿Cuándo se considera caído un terminal?",
+        "Un terminal tiene muchos http_timeouts: ¿falló la red o el emisor?",
+        "¿Qué terminales tienen la señal más baja y qué hago con ellos?",
     ],
 }
 

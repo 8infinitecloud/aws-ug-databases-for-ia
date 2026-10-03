@@ -261,36 +261,62 @@ se ingestó.
 
 ## Preguntas de demo
 
-Preguntas sobre las políticas, que solo usan el Lab 3:
+Las mismas que la app ofrece a cada persona. Todas usan el vocabulario exacto de
+los datos (`CARD_NOT_PRESENT`, `risk_level`, `source`, `http_timeouts`...), que es
+lo que conecta la pregunta con el corpus (ADR-017); un test comprueba que cada
+término exista en él.
+
+**Sobre las políticas**, que solo usan el Lab 3:
 
 ```
-"¿Cuáles son los pasos del proceso KYC para clientes corporativos?"
-"¿Qué documentos necesito para el onboarding de un cliente de alto riesgo?"
-"¿Cuál es la política de retención de datos para registros de transacciones?"
-"¿Cuándo es obligatorio hacer un Reporte de Actividad Sospechosa (SAR)?"
-"¿Qué entrenamiento de compliance deben completar los empleados nuevos?"
+"¿Qué documentos necesito para afiliar a un comercio de riesgo alto?"
+"¿Por qué un comercio en PENDING_KYC no puede cobrar?"
+"¿Cuándo es obligatorio hacer un Reporte de Operaciones Sospechosas (ROS)?"
+"¿Cuándo se considera caído un terminal?"
 ```
 
-**Preguntas que atraviesan los tres labs.** Usan el vocabulario exacto de los
-datos que produjeron los Labs 1 y 2 (`WITHDRAWAL`, `risk_level`, `PEN`,
-`rejected/`), así que la respuesta solo es posible porque esa plataforma existe:
+**Las que atraviesan los cuatro labs.** La respuesta solo es posible porque la
+plataforma existe: el CDC del Lab 1 trajo los datos, el Lab 2 los curó y separó
+por fuente, y el Lab 4 trajo la telemetría:
 
 ```
-"¿Qué hago con un WITHDRAWAL de PEN 200,000 de un cliente con risk_level HIGH?"
-"¿Cuál es el umbral de alerta para un DEPOSIT en soles?"
-"¿Las transacciones en estado FAILED cuentan para los umbrales de reporte?"
-"¿Por qué no debo usar la zona raw/ para el monitoreo transaccional?"
-"¿Qué hago con un registro rechazado por NULL_AMOUNT?"
+"¿Qué hago con un pago QR de un comercio con risk_level HIGH que supera el umbral?"
+"¿Cómo reconozco un card testing en pagos CARD_NOT_PRESENT?"
+"Un terminal tiene muchos http_timeouts: ¿falló la red o el emisor?"
+"¿Qué hago con un registro rechazado por NULL_AMOUNT con source legacy?"
 ```
 
-> La última es la que mejor cierra la charla: la respuesta explica que una
-> operación en `rejected/` **existió y no está siendo vigilada**, así que es una
-> brecha de compliance, no un problema de datos. Eso solo se puede responder
-> porque el Lab 2 conservó los rechazados con su motivo en vez de borrarlos.
+> La última sigue siendo la que mejor explica el taller: la respuesta dice que
+> una operación en `rejected/` **existió y no está siendo vigilada**, así que es
+> una brecha de compliance, no un problema de datos, y que viene de la cartera
+> absorbida, no de nuestro core. Eso solo se puede responder porque el Lab 2
+> conservó los rechazados con su motivo y con su `source`.
+
+### El cierre en vivo
+
+```bash
+./scripts/demo_cierre.sh
+```
+
+Glue cura lo que el CDC trajo, los datos se convierten en hechos y entran al
+vector store. Después, la pregunta:
+
+```
+"¿Cuántos pagos se procesaron hoy y con qué tasa de aprobación?"
+```
+
+**El pago que alguien de la sala hizo hace cinco minutos está en la respuesta.**
+El script mide cuánto tarda cada paso: es lo que se narra mientras corre. Si
+falla en vivo, se usa la respuesta grabada en el ensayo; no se reintenta delante
+del público.
+
+Reingestar un documento **sustituye** sus chunks en pgvector. Antes los
+acumulaba (los ids eran aleatorios), y la cifra de un ensayo anterior habría
+convivido con la nueva.
 
 Para demostrar las capas de memoria:
-1. Haz 2-3 preguntas como **Ana García** (Asesora de Cuenta)
-2. Cambia a **Carlos Mendoza** (Analista de Compliance) — nueva sesión Redis, perfil DynamoDB diferente
+1. Haz 2-3 preguntas como **Ana García** (Ejecutiva de Afiliación)
+2. Cambia a **Carlos Mendoza** (Analista de Monitoreo) — nueva sesión Redis, perfil DynamoDB diferente
 3. Regresa a Ana — observa que el sistema "recuerda" el resumen de la sesión anterior
 
 ---

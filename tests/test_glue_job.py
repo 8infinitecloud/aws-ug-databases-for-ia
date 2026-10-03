@@ -370,6 +370,10 @@ def corpus_texto() -> str:
         "USD", "PEN", "EUR",
         # risk_level de customers.csv
         "LOW", "MEDIUM", "HIGH",
+        # el canal online y su ciclo de vida
+        "CARD_NOT_PRESENT", "REQUIRES_ACTION", "REQUIRES_PAYMENT_METHOD", "AUTH_3DS",
+        # las dos fuentes de curated/
+        "acquiring", "legacy",
     ],
 )
 def test_el_corpus_usa_el_vocabulario_del_dataset(corpus_texto, valor):
@@ -388,7 +392,9 @@ def test_el_corpus_usa_el_vocabulario_del_dataset(corpus_texto, valor):
      "rejection_reason", "transactions", "curated/", "rejected/",
      # Propios del adquirente: si el corpus no los menciona, el analista no puede
      # interpretar lo que ve en la tabla.
-     "mcc", "response_code", "rrn", "fee_amount", "net_amount"],
+     "mcc", "response_code", "rrn", "fee_amount", "net_amount",
+     # la columna que distingue las dos fuentes, y la telemetria del terminal
+     "source", "rssi_dbm", "http_timeouts", "qr_shown", "battery_pct"],
 )
 def test_el_corpus_referencia_la_plataforma_de_datos(corpus_texto, campo):
     """El corpus debe hablar de las zonas y campos que producen los Labs 1 y 2."""
@@ -411,7 +417,7 @@ def test_los_valores_del_dataset_estan_todos_cubiertos(raw):
 def test_la_matriz_de_decision_sobrevive_al_chunking():
     """
     La matriz de decision es la unidad que el RAG tiene que recuperar entera: sin
-    su cabecera, una fila como '| WITHDRAWAL | HIGH | ... |' no significa nada.
+    su cabecera, una fila como '| QR | HIGH | ... |' no significa nada.
     Con chunk_size=1000 cabe justa, asi que conviene vigilarlo.
     """
     pytest.importorskip("langchain_text_splitters")
@@ -423,11 +429,15 @@ def test_la_matriz_de_decision_sobrevive_al_chunking():
     )
     chunks = splitter.split_text(doc)
 
-    con_fila = [c for c in chunks if "`WITHDRAWAL` | `HIGH`" in c]
-    assert con_fila, "la fila critica de la matriz no aparece en ningun chunk"
-    assert any(
-        "transaction_type` | `risk_level" in c or "## 5. Matriz" in c for c in con_fila
-    ), "la fila se separo de la cabecera de su tabla: el chunk pierde el significado"
+    # Las filas que piden retener la liquidacion: las que no pueden perder su
+    # cabecera. Antes buscaba `WITHDRAWAL`, vocabulario del banco que ya no
+    # existe en el corpus; como el test se saltaba sin langchain, nadie lo vio.
+    for fila in ("`QR` | `HIGH`", "`CARD_NOT_PRESENT` | `HIGH`"):
+        con_fila = [c for c in chunks if fila in c]
+        assert con_fila, f"la fila {fila} de la matriz no aparece en ningun chunk"
+        assert any(
+            "`payment_method` | `risk_level`" in c or "## 5. Matriz" in c for c in con_fila
+        ), f"la fila {fila} se separo de la cabecera de su tabla: el chunk pierde el significado"
 
 
 def test_el_ruleset_de_terraform_es_el_del_fichero_dqdl():
@@ -451,3 +461,45 @@ def test_el_ruleset_de_terraform_es_el_del_fichero_dqdl():
     heredoc = tf[tf.index("ruleset = <<-DQDL"):tf.index("  DQDL", tf.index("ruleset = <<-DQDL") + 20)]
     assert len(reglas(dqdl)) == 10
     assert reglas(heredoc) == reglas(dqdl)
+
+
+def test_la_telemetria_del_runbook_es_la_que_publican_los_terminales():
+    """
+    El runbook explica los campos del latido. Si el firmware cambia uno, el
+    analista estaria leyendo una tabla con columnas que el documento no explica.
+    """
+    fw = (REPO / "payments/firmware/main/pos_telemetry.c").read_text()
+    campos = set(re.findall(r'cJSON_Add\w+ToObject\(m, "(\w+)"', fw))
+    runbook = (CORPUS / "operations/runbook_terminales.md").read_text(encoding="utf-8")
+    importantes = {"rssi_dbm", "battery_pct", "http_timeouts", "http_errors",
+                   "http_latency_ms_avg", "qr_shown", "qr_paid", "qr_canceled", "qr_expired"}
+    assert importantes <= campos, importantes - campos
+    faltan = [c for c in importantes if c not in runbook]
+    assert not faltan, f"el runbook no explica: {faltan}"
+
+
+def test_las_preguntas_de_ejemplo_hablan_el_vocabulario_del_corpus():
+    """
+    Las preguntas que la app ofrece a cada persona son las que se haran en la
+    demo. Si usan un termino tecnico (un enum, un campo, una zona) que el corpus
+    no menciona, el retrieval no tiene con que conectarlas. Paso con
+    PENDING_KYC: la pregunta existia y el corpus no lo nombraba.
+    """
+    import ast
+
+    app = (REPO / "labs/03-data-to-ai/app/app.py").read_text(encoding="utf-8")
+    arbol = ast.parse(app)
+    preguntas = []
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.Assign) and any(
+            getattr(t, "id", None) == "EXAMPLE_QUESTIONS" for t in nodo.targets
+        ):
+            preguntas = [p for lista in ast.literal_eval(nodo.value).values() for p in lista]
+    assert len(preguntas) == 12
+
+    corpus = "\n".join(p.read_text(encoding="utf-8") for p in sorted(CORPUS.rglob("*.md")))
+    # Los documentos derivados tambien son corpus: se generan al ingestar.
+    corpus += (REPO / "scripts/ingest_from_curated.py").read_text(encoding="utf-8")
+    terminos = {t for p in preguntas for t in re.findall(r"\b[A-Z][A-Z_]{3,}\b|\b\w+_\w+\b|\w+/", p)}
+    faltan = sorted(t for t in terminos if t not in corpus)
+    assert not faltan, f"terminos de las preguntas que el corpus no menciona: {faltan}"

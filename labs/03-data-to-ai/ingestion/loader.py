@@ -96,4 +96,6 @@ def _infer_doc_type(path: Path) -> str:
         return "onboarding"
     elif "policies" in parts:
         return "policy"
+    elif "operations" in parts:
+        return "operations"
     return "general"
