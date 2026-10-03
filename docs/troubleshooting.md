@@ -62,62 +62,77 @@ El `LOCK_ID` sale en el propio mensaje de error.
 
 ---
 
+## El core (`infra/payments`)
+
+### `/health` dice `database: unreachable` tras desplegar
+
+La base de EC2 instala PostgreSQL y aplica el esquema en su **primer arranque**:
+unos minutos. `deploy_core.sh` espera a que `/health` diga `database: ok`. Si no
+llega, mira el log del arranque por Session Manager:
+
+```bash
+aws ssm start-session --target "$(terraform -chdir=infra/payments output -raw db_instance_id)"
+sudo tail -100 /var/log/fincorp-db-init.log
+```
+
+### Cambié un `.sql` y la base no lo tiene
+
+El esquema solo se aplica solo en el **primer** arranque. Para reaplicarlo:
+
+```bash
+terraform -chdir=infra/payments apply   # sube los ficheros nuevos al bucket
+./scripts/apply_schema.sh               # la instancia los reaplica, por SSM
+```
+
+Todos los `.sql` son idempotentes.
+
+### `aws ssm start-session`: `SessionManagerPlugin is not found`
+
+El túnel necesita el plugin de Session Manager instalado en tu máquina. Para las
+claves de la demo no hace falta: `python scripts/provision_demo_keys.py --ssm`
+va por SSM Run Command, sin túnel.
+
+---
+
 ## Lab 1 — Ingestion + Data Lake
 
 ### `terraform apply` tarda muchísimo
 
-Es normal. La instancia de replicación de DMS tarda ~10 de los ~15 minutos
-totales. No la interrumpas: un `apply` a medias deja recursos huérfanos que hay
-que limpiar a mano.
+Es normal. La instancia de replicación de DMS tarda ~10 minutos. No la
+interrumpas: un `apply` a medias deja recursos huérfanos que hay que limpiar a
+mano.
 
-### `InvalidParameterValue: Cannot find version 8.0.43 for mysql`
+### DMS: `could not access file "test_decoding"`
 
-AWS retira versiones de motor con el tiempo. Mira las disponibles y ajusta:
+Falta el plugin de decodificación lógica con el que DMS lee el WAL. En Amazon
+Linux 2023 viene en **`postgresql16-contrib`**, que el arranque de la base
+instala por esto. Si ves este error, la instancia se creó con un script anterior:
+reemplázala (`terraform apply -replace=aws_instance.db`) o instala el paquete y
+reinicia PostgreSQL.
 
-```bash
-aws rds describe-db-engine-versions --engine mysql \
-  --query "DBEngineVersions[].EngineVersion" --output table
-```
+Se encontró ejecutando el arranque en un contenedor de Amazon Linux 2023, antes
+de desplegar: crear un slot lógico fallaba con este mensaje.
 
-```bash
-terraform -chdir=infra/lab1 apply -var mysql_version=8.0.44
-```
+### Faltan columnas en `raw/` (`line_items`, `metadata`, `payload`...)
+
+Para DMS, el `text` y el `jsonb` de PostgreSQL son **LOBs**, y con
+`SupportLobs = false` los **descarta sin avisar**. La tarea los tiene activados
+en modo limitado (32 KB). Si ves columnas de menos, revisa
+`replication_task_settings` en `infra/lab1/dms.tf`.
+
+Ya pasó una vez, con `risk_level`, `payment_method` y `status`: el CSV llegó con
+16 columnas en vez de 19 y el Lab 2 murió con `KeyError`.
 
 ### DMS: `No tables were found at task initialization`
 
-**Causa: DMS full-load no puede replicar una vista de PostgreSQL.** Diagnosticado
-el 2026-09-28 contra Aurora PostgreSQL 16.10.
+**DMS no puede replicar vistas de PostgreSQL**, ni con full load ni con CDC. La
+tarea muere en menos de un segundo, antes de consultar nada. Diagnosticado el
+2026-09-28.
 
-La tarea falla en menos de un segundo, antes de consultar nada: el Metadata
-Manager devuelve una lista vacía y la tarea muere en `FATAL_ERROR`.
-
-Aislado probando cada caso por separado sobre el mismo endpoint:
-
-| Objeto seleccionado | Tipo | Resultado |
-|---|---|---|
-| `v_transactions_for_ingestion` | vista | **failed**, 0 tablas |
-| `mv_transactions_for_ingestion` | vista materializada | **failed**, 0 tablas |
-| `charges` | tabla | `Table completed` |
-| `tbl_transactions_for_ingestion` | tabla | `Table completed` |
-| `%` (todas) | tablas | replica las que tienen datos |
-
-Ni siquiera `exposeViews=true` en el endpoint cambia nada: esa opción es de
-Oracle, no de PostgreSQL.
-
-**La solución** está en `payments/schema/004_ingestion_snapshot.sql`: una tabla
-real que materializa la vista, más `refresh_ingestion_snapshot()` para
-rellenarla antes de cada carga. La vista se conserva como contrato legible; la
-tabla existe sólo para DMS.
-
-```sql
-SELECT acquiring.refresh_ingestion_snapshot();   -- antes de arrancar la tarea
-```
-
-> **Para diagnosticar esto hacían falta los logs de la tarea, y no existían.**
-> Ver la sección siguiente: sin `dms-cloudwatch-logs-role`, DMS ignora
-> `EnableLogging` en silencio.
-
----
+Por eso la tarea replica las **tablas base** (`charges`, `merchants`...) y Glue
+hace el JOIN que hacía la vista. Si ves este error, revisa que los
+`object-locator` de `table_mappings` apunten a tablas que existen en el esquema
+`acquiring`.
 
 ### DMS ignora `EnableLogging` y no escribe ningún log
 
@@ -129,97 +144,61 @@ Eso convierte cualquier fallo en indiagnosticable. Es el segundo rol de cuenta
 con nombre cableado que DMS exige, junto a `dms-vpc-role`; los crea
 `infra/lab1/dms.tf` salvo que pongas `create_dms_vpc_role = false`.
 
-Comprobar:
-
 ```bash
 aws iam get-role --role-name dms-cloudwatch-logs-role
 aws logs describe-log-groups --query 'logGroups[?contains(logGroupName,`dms-tasks`)].logGroupName'
 ```
 
----
-
 ### `Test connection ... should be successful for starting the replication task`
 
 DMS exige que **ambos** endpoints tengan una prueba de conexión correcta antes de
-arrancar la tarea. No basta con que existan.
+arrancar la tarea:
 
 ```bash
 RI=$(aws dms describe-replication-instances --query 'ReplicationInstances[0].ReplicationInstanceArn' --output text)
-for E in source-aurora target-s3; do
+for E in source-core target-s3; do
   EP=$(aws dms describe-endpoints --query "Endpoints[?EndpointIdentifier=='fincorp-datalake-lab-$E'].EndpointArn" --output text)
   aws dms test-connection --replication-instance-arn "$RI" --endpoint-arn "$EP"
 done
 aws dms describe-connections --query 'Connections[*].[EndpointIdentifier,Status]' --output text
 ```
 
-`labs/01-ingestion-data-lake/scripts/setup.sh` **no** hace esto todavía.
-
----
+Si falla el origen: la base todavía arranca, la contraseña cambió después de crear
+el endpoint, o el `pg_hba.conf` no admite la VPC (lo escribe el arranque de la
+instancia).
 
 ### DMS no puede escribir en S3: `Failed to connect to database`
 
 Mensaje engañoso: no es la base, es la red. La instancia de replicación vive en
-las subnets privadas de `payments`, que **no tienen NAT Gateway** (concesión
-deliberada) ni tenían VPC endpoint. Sin camino a S3, el full load no puede
-escribir.
+las subnets privadas de `payments`, que **no tienen NAT Gateway**. Lo resuelve el
+**Gateway Endpoint de S3** de `infra/payments/network.tf`: gratis, y el tráfico
+no sale de la red de AWS.
 
-Resuelto añadiendo un **Gateway Endpoint de S3** en `infra/payments/network.tf`.
-Es gratis —ni por hora ni por GB— y evita el NAT que la arquitectura quería
-evitar.
+### Un pago no aparece en `raw/`
 
----
-
-### La tarea DMS se queda en `ready` y no arranca
-
-`ready` significa creada pero no iniciada. Es a propósito: el workshop la lanza
-cuando tú decides. Ver el Paso 2 del Lab 1.
-
-### La tarea DMS falla con `Test Endpoint failed: Application-Detailed-Failure`
-
-DMS no alcanza a MySQL. Casi siempre es una de estas tres:
-
-1. RDS aún no está `available` — espera y reintenta
-2. El security group no permite el tráfico (Terraform lo configura; si lo
-   editaste a mano, revísalo)
-3. La contraseña no coincide — si cambiaste `TF_VAR_db_password` después de
-   crear RDS, el endpoint de DMS quedó con la antigua
-
-### CDC falla tras completar el full load
-
-MySQL necesita backups automáticos activos para retener el binlog. El módulo
-pone `backup_retention_period = 1` justo por esto. Si lo bajaste a 0, el full
-load funciona pero el CDC no.
-
-### `raw/` sigue vacío después de la tarea DMS
-
-Comprueba el estado real:
+El CDC escribe un fichero de cambios cada **~30 s** (`cdc_max_batch_interval`), en
+`raw/acquiring/<tabla>/AAAA/MM/DD/`. Espera un minuto antes de preocuparte.
 
 ```bash
-aws dms describe-replication-tasks \
-  --query "ReplicationTasks[].[ReplicationTaskIdentifier,Status,ReplicationTaskStats.FullLoadProgressPercent]" \
-  --output table
+aws dms describe-replication-tasks   --query "ReplicationTasks[].[ReplicationTaskIdentifier,Status,ReplicationTaskStats.FullLoadProgressPercent]"   --output table
 ```
 
-Si está en `running` al 100%, mira que estés listando el bucket correcto:
+Tiene que estar en `running`. Si está en `stopped`, `setup.sh` la retoma donde
+lo dejó. `validate.sh` hace un pago real y espera a verlo llegar.
+
+### La alarma `wal-retenido` está en `ALARM`
+
+Un slot de replicación retiene WAL sin que nadie lo consuma: la tarea DMS está
+parada o se destruyó sin borrar su slot. Si la tarea no va a volver, bórralo:
 
 ```bash
-terraform -chdir=infra/lab1 output -raw s3_bucket_name
+source scripts/lib/tf.sh && source scripts/lib/core.sh
+core_sql "SELECT slot_name, active, pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) FROM pg_replication_slots"
+core_drop_inactive_slots
 ```
 
-**Salida de emergencia** (si DMS no cooperara y quieres seguir al Lab 2):
-
-```bash
-BUCKET=$(terraform -chdir=infra/lab1 output -raw s3_bucket_name)
-aws s3 cp labs/01-ingestion-data-lake/dataset/transactions.csv \
-  "s3://$BUCKET/raw/transactions/transactions.csv"
-aws s3 cp labs/01-ingestion-data-lake/dataset/customers.csv \
-  "s3://$BUCKET/raw/customers/customers.csv"
-```
-
-### `mysql: command not found` al cargar el dataset
-
-Falta el cliente. En macOS, `brew install mysql-client` **y** añadirlo al
-`PATH` — ver [setup.md §2](setup.md#2-instalar-las-herramientas).
+Si se deja, PostgreSQL lo invalida al llegar a `max_slot_wal_keep_size` (4 GB),
+antes de llenar el disco. El CDC habría que recargarlo; el core sigue vivo.
 
 ---
 

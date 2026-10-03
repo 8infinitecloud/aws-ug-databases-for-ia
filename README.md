@@ -38,13 +38,19 @@ CATALOG → CURATED DATA → ANALYTICS + IA → RAG → AGENTES
 
 Al terminar tendrás corriendo en tu cuenta:
 
-- Una base de datos MySQL replicándose a un **data lake en S3** con AWS DMS
-- Un pipeline de **AWS Glue** que mide **10 reglas de calidad en tres etapas**
-  (raw → transformado → curado) — ocho de columna y **dos de regla de negocio**
-  que comparan campos entre sí: 137 de 1000 operaciones van a `rejected/`
+- Un **core de pagos "on-premises"** —PostgreSQL sobre EC2, con una API al estilo
+  de Stripe para terminales y tiendas online— cuyos cambios llegan a un **data
+  lake en S3** con **AWS DMS y CDC**, segundos después de cada pago
+- Un pipeline de **AWS Glue** que aplica esos cambios, une la historia sucia de
+  una cartera absorbida, y mide **10 reglas de calidad en tres etapas** —ocho de
+  columna y **dos de regla de negocio**—, diciendo **de qué fuente** viene cada
+  problema
 - Un **catálogo de datos** con esquema y metadata de negocio, consultable con SQL
 - Un **asistente de compliance** con RAG sobre Amazon Bedrock, con tres capas de
-  memoria (sesión, persistente y semántica)
+  memoria (sesión, persistente y semántica), que al final responde con los pagos
+  que la sala hizo cinco minutos antes
+- **Scoring de fraude en milisegundos** y la **telemetría de los terminales** por
+  AWS IoT Core
 
 ---
 
@@ -84,7 +90,18 @@ export TF_VAR_db_password='CambiaEstaPassword2026!'
 Tenla en la misma terminal durante todo el workshop. Si abres otra, vuelve a
 exportarla.
 
-### 4. Haz el Lab 1
+### 4. Levanta el core de pagos
+
+```bash
+./scripts/deploy_core.sh                       # infra + imagen del backend (~10 min)
+python scripts/provision_demo_keys.py --ssm    # claves de las tiendas online
+python scripts/generate_traffic.py --api "$(terraform -chdir=infra/payments output -raw api_endpoint)" --count 50
+```
+
+Es el sistema del que salen todos los datos: sin él no hay nada que replicar.
+La base arranca sola con su esquema y su cartera de comercios.
+
+### 5. Haz el Lab 1
 
 ```bash
 cd labs/01-ingestion-data-lake
@@ -124,10 +141,10 @@ Detalle de qué es local y qué no: [docs/local-development.md](docs/local-devel
 
 | Lab | Pregunta que responde | Qué despliegas | Tiempo | Coste |
 |-----|----------------------|----------------|--------|-------|
-| **[1 — Ingestion + Data Lake](labs/01-ingestion-data-lake/)** | ¿Cómo llevo datos de producción a una plataforma sin tocar el origen? | AWS DMS desde el Aurora del core, S3 | ~25 min | ~$0.09/h |
+| **[1 — Ingestion + Data Lake](labs/01-ingestion-data-lake/)** | ¿Cómo llevo cada cambio de producción a una plataforma sin tocar el origen? | AWS DMS con CDC desde el PostgreSQL del core, S3 | ~25 min | ~$0.04/h |
 | **[2 — Transformation + Quality + Catalog](labs/02-transformation-quality-catalog/)** | ¿Puedo confiar en esos datos? ¿Alguien sabe qué significan? | Glue Job, Glue Data Quality, Glue Catalog, Athena | ~15 min | ~$0.01 total |
 | **[3 — Data to AI](labs/03-data-to-ai/)** | ¿Cómo alimento una IA con datos en los que confío? | Bedrock, Aurora pgvector, DynamoDB, Redis, Streamlit | ~40 min | ~$0.12/h |
-| **[4 — Streaming + Insight Online](labs/04-streaming-online-insight/)** | ¿Puedo reaccionar *ahora*, no mañana? | IoT Core, Lambda, DynamoDB, Firehose | ~20 min | ~$0.00 en reposo |
+| **[4 — Streaming + Insight Online](labs/04-streaming-online-insight/)** | ¿Puedo reaccionar *ahora*, no mañana? ¿Por qué falló ese cobro? | IoT Core, Lambda, DynamoDB, Firehose (telemetría) | ~20 min | ~$0.00 en reposo |
 
 **Los cuatro forman una historia progresiva**, y el recorrido tiene una forma:
 los tres primeros responden **qué pasó**; el cuarto, **si podemos reaccionar
@@ -152,11 +169,17 @@ y los ingesta al vector store. Ver [ADR-013](DECISIONS.md).
 comercios afiliados. No es el comercio — es quien autoriza, captura, liquida y
 cobra la comisión.
 
-Uno de sus comercios es **Smart Coffee**, una cafetería cuyo terminal físico
-genera los pagos de la demo. Los datos vienen con problemas reales: importes
-ausentes, IDs duplicados, códigos heredados del core antiguo, y dos que solo
-existen en pagos — **un libro mayor que no cuadra** y **operaciones cobradas sin
-aprobación del emisor**.
+Su cartera tiene once comercios —una picantería, una casa de cambio, tiendas
+online, un hotel— y uno de ellos es **Smart Coffee**, una cafetería cuyo
+terminal físico genera pagos en vivo durante la demo. Su core corre en un
+servidor propio que nadie va a migrar este trimestre: la nube entra por los
+datos.
+
+FinCorp además **absorbió la cartera de otro adquirente**, cuya historia llega
+sucia: importes ausentes, IDs duplicados, códigos antiguos, y dos problemas que
+solo existen en pagos — **un libro mayor que no cuadra** y **operaciones cobradas
+sin aprobación del emisor**. Nuestro core no tiene esos errores: la base los
+impide.
 
 Su equipo de compliance necesita un asistente que responda sobre monitoreo
 transaccional y AML de comercios.
@@ -169,40 +192,26 @@ enseñaría nada.
 ## Arquitectura Completa
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│  DATA SOURCES                                                             │
-│  RDS MySQL (transacciones FinCorp)                                       │
-└────────────────────────┬─────────────────────────────────────────────────┘
-                         │ AWS DMS (Full Load + CDC)           LAB 1
-                         ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│  RAW DATA — Amazon S3                                                     │
-│  s3://fincorp-datalake-{account}/raw/transactions/                       │
-│  s3://fincorp-datalake-{account}/raw/customers/                          │
-└────────────────────────┬─────────────────────────────────────────────────┘
-                         │ AWS Glue (Python Shell)              LAB 2
-                         ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│  TRANSFORMATION + DATA QUALITY + CATALOG                                  │
-│  Glue Data Quality → 10 reglas × 3 etapas → 137 operaciones apartadas    │
-│  Glue Data Catalog → financial_platform.transactions             │
-└────────────────────────┬─────────────────────────────────────────────────┘
-                         │
-                         ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│  CURATED DATA — Amazon S3                                                 │
-│  s3://bucket/curated/transactions/year=2026/month=09/                    │
-└─────────────┬──────────────────────────────────────────────────────────┘
-              │                         │
-              ▼                         ▼
-┌─────────────────────┐     ┌──────────────────────────────────────────────┐
-│  ANALYTICS          │     │  AI / GenAI                    LAB 3          │
-│  Amazon Athena      │     │  Bedrock (Titan Embeddings + Nova Pro)        │
-│  (SQL sobre S3)     │     │  Aurora pgvector (vector store)               │
-└─────────────────────┘     │  DynamoDB (memoria persistente)               │
-                             │  ElastiCache Redis (memoria de sesión)        │
-                             │  Streamlit (Financial Compliance Assistant)   │
-                             └──────────────────────────────────────────────┘
+ POS Core2 (QR, tarjeta) · tiendas online · generador de tráfico
+                 │ HTTPS
+                 ▼
+ API Gateway ─► Fargate (API de adquirencia, estilo Stripe)              CORE
+                 │                          │ evento de pago
+                 ▼                          ▼
+ PostgreSQL 16 en EC2 ("on-premises")   AWS IoT Core ◄── telemetría de los terminales
+                 │ WAL                      │
+                 │ AWS DMS (full load + CDC)│ Lambda ─► DynamoDB   scoring en ms   LAB 4
+                 ▼                          │ Firehose ─► raw/telemetry/
+ S3 raw/acquiring/<tabla>/  (cada cambio)   │ DynamoDB terminal-state
+ S3 raw/legacy/             (la cartera absorbida)                          LAB 1
+                 │
+                 ▼ AWS Glue (Python Shell): CDC → una fila por cobro → 10 reglas   LAB 2
+ S3 curated/transactions/ (source = acquiring | legacy) · rejected/ · quality-reports/
+ Glue Data Catalog: transactions, telemetry  ─►  Amazon Athena
+                 │
+                 ▼ hechos derivados (scripts/ingest_from_curated.py)
+ Bedrock (Titan + Nova Pro) · Aurora pgvector · DynamoDB · ElastiCache Redis   LAB 3
+ Streamlit — el asistente de compliance
 ```
 
 ---
@@ -211,16 +220,18 @@ enseñaría nada.
 
 | Capa | Servicio | Lab |
 |------|----------|-----|
-| Ingestion | AWS DMS | 1 |
+| Core transaccional | PostgreSQL 16 sobre EC2, ECS Fargate, API Gateway | core |
+| Ingestion | AWS DMS (full load + CDC) | 1 |
 | Storage | Amazon S3 | 1, 2, 3 |
 | Transformation | AWS Glue (Python Shell) | 2 |
 | Data Quality | AWS Glue Data Quality | 2 |
 | Catalog | AWS Glue Data Catalog | 2 |
-| Analytics | Amazon Athena | 2 (mención) |
+| Analytics | Amazon Athena | 2 |
 | Vector Store | Aurora PostgreSQL + pgvector | 3 |
 | Session Memory | Amazon ElastiCache Redis | 3 |
 | Persistent Memory | Amazon DynamoDB | 3 |
 | LLM + Embeddings | Amazon Bedrock (Nova Pro + Titan) | 3 |
+| IoT + streaming | AWS IoT Core, Lambda, DynamoDB, Kinesis Data Firehose | 4 |
 
 ---
 
@@ -236,18 +247,28 @@ aws-ug-databases-for-ia/
 ├── scripts/
 │   ├── preflight.sh             ← ¿Tengo todo? (antes de desplegar)
 │   ├── validate_setup.py        ← ¿Está todo en pie? (después)
+│   ├── deploy_core.sh           ← Levanta el core: infra + imagen del backend
+│   ├── provision_demo_keys.py   ← Claves de API de las tiendas de la demo
+│   ├── generate_traffic.py      ← Pagos realistas, card testing y telemetría
+│   ├── apply_schema.sh          ← Reaplica el esquema en la base viva (SSM)
 │   ├── run_pipeline_local.py    ← El Lab 2 completo, sin AWS
+│   ├── dms_emulator.py          ← El layout exacto que deja DMS, para probar sin AWS
 │   ├── ingest_from_curated.py   ← Conecta el Lab 2 con el Lab 3 de verdad
-│   └── lib/tf.sh                ← Helpers de Terraform para los scripts
+│   ├── demo_cierre.sh           ← El cierre en vivo: del pago a la respuesta de la IA
+│   └── lib/                     ← tf.sh (Terraform) y core.sh (SQL en el core por SSM)
 │
-├── tests/                       ← Tests del pipeline del Lab 2, sin AWS
+├── payments/                    ← El core: esquema, API, web del QR, firmware del POS
+│
+├── tests/                       ← 180 tests, contra PostgreSQL real y sin AWS
 │
 ├── infra/                       ← TODA la infraestructura (Terraform)
 │   ├── README.md                ← Cómo funciona el backend y los módulos
 │   ├── bootstrap/               ← Bucket de estado + tabla de locks (1 vez)
-│   ├── lab1/                    ← VPC, RDS MySQL, DMS, S3 data lake
-│   ├── lab2/                    ← Glue Job, Crawler, Catalog, DQ Ruleset
-│   └── lab3/                    ← Aurora pgvector, Redis, DynamoDB, EC2
+│   ├── payments/                ← El core: PostgreSQL en EC2, Fargate, API Gateway
+│   ├── lab1/                    ← DMS con CDC, S3 data lake
+│   ├── lab2/                    ← Glue Job, Crawler, Catalog, DQ Ruleset, Athena
+│   ├── lab3/                    ← Aurora pgvector, Redis, DynamoDB, EC2
+│   └── lab4/                    ← IoT Rules, Lambda, DynamoDB, Firehose
 │
 ├── labs/                        ← La guía y el código de cada lab
 │   ├── 01-ingestion-data-lake/
@@ -264,7 +285,7 @@ aws-ug-databases-for-ia/
 │   │   ├── ingestion/           ← Pipeline de embeddings
 │   │   ├── query/               ← RAG chain + 3 capas de memoria
 │   │   ├── app/                 ← UI en Streamlit
-│   │   ├── data/                ← Corpus de compliance (8 documentos)
+│   │   ├── data/                ← Corpus de compliance y operación (11 documentos)
 │   │   └── infrastructure/      ← setup.sh, deploy-app.sh, cleanup.sh
 │   └── 04-streaming-online-insight/
 │       ├── README.md
@@ -286,14 +307,19 @@ vistazo todo lo que se crea en tu cuenta, y el `terraform destroy` es evidente.
 
 ## Cleanup — importante
 
-**Hazlo al terminar.** Si lo olvidas son ~$5/día, casi todo de Aurora, DMS y
-ElastiCache, que no escalan a cero.
+**Hazlo al terminar.** Si lo olvidas son unos $5/día, casi todo de Aurora y
+ElastiCache del Lab 3, DMS y el ALB del core, que no escalan a cero. El cleanup
+del Lab 1 borra además el slot de replicación del core: si se quedara, acabaría
+llenando su disco.
 
 ```bash
-# En este orden: el Lab 2 escribe en el bucket que crea el Lab 1
+# En este orden: el Lab 4 y el Lab 2 escriben en el bucket del Lab 1, y el
+# cleanup del Lab 1 necesita el core vivo para borrar su slot de replicacion
+bash labs/04-streaming-online-insight/scripts/cleanup.sh
 bash labs/02-transformation-quality-catalog/scripts/cleanup.sh
 bash labs/01-ingestion-data-lake/scripts/cleanup.sh
 bash labs/03-data-to-ai/infrastructure/cleanup.sh
+terraform -chdir=infra/payments destroy      # el core, al final
 ```
 
 Comprueba que no queda nada:
@@ -303,7 +329,7 @@ for M in payments lab1 lab2 lab3 lab4; do
   echo -n "infra/$M: "
   terraform -chdir="infra/$M" state list 2>/dev/null | wc -l
 done
-# Los tres deben dar 0
+# Todos deben dar 0
 ```
 
 También desde GitHub Actions: `Actions → Cleanup → Run workflow → ELIMINAR`.

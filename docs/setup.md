@@ -12,12 +12,12 @@ estás listo para el Lab 1.
 
 | Requisito | Por qué | Labs |
 |-----------|---------|------|
-| Cuenta AWS con permisos de administrador | El workshop crea VPC, RDS, DMS, Glue, Aurora, IAM | 1, 2, 3 |
+| Cuenta AWS con permisos de administrador | El workshop crea VPC, EC2, DMS, Glue, Aurora, IoT, IAM | todos |
 | AWS CLI v2 | Los scripts la usan para consultar estado | 1, 2, 3 |
 | Terraform ≥ 1.6 | Toda la infraestructura | 1, 2, 3 |
 | `jq` | Los scripts parsean JSON | 1, 2 |
 | Python 3.11+ | Pipeline de ingesta y Streamlit | 3 |
-| Cliente `mysql` | Cargar el dataset en RDS | 1 |
+| Docker | Construir la imagen del backend del core (`deploy_core.sh`) y, en local, los tests contra PostgreSQL | core |
 | Acceso a modelos de Bedrock | Embeddings y LLM | 3 |
 
 **Región:** todo el workshop asume `us-east-1`. Si usas otra, exporta
@@ -31,14 +31,8 @@ las regiones y Bedrock es especialmente desigual.
 ### macOS
 
 ```bash
-brew install awscli terraform jq mysql-client python@3.11
-```
-
-`mysql-client` no entra en el `PATH` automáticamente:
-
-```bash
-echo 'export PATH="/opt/homebrew/opt/mysql-client/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
+brew install awscli terraform jq python@3.11
+brew install --cask docker
 ```
 
 ### Ubuntu / Debian
@@ -56,7 +50,7 @@ echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] \
   sudo tee /etc/apt/sources.list.d/hashicorp.list
 sudo apt update && sudo apt install terraform
 
-sudo apt install -y jq mysql-client python3.11 python3.11-venv
+sudo apt install -y jq python3.11 python3.11-venv docker.io
 ```
 
 ### Windows

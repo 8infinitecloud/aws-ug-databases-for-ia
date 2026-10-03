@@ -1,276 +1,159 @@
 # Lab 1 — Ingestion + Data Lake
 
-> **Lab 1 de 3** · [← Índice del workshop](../../README.md)
+> **Lab 1 de 4** · [← Índice del workshop](../../README.md)
 
 | | |
 |---|---|
-| **Tiempo** | ~25 min (de los cuales ~15 son espera de AWS) |
-| **Coste** | ~$0.09/hora mientras está desplegado · ~$0.18 por una sesión de 2 h |
-| **Qué despliegas** | VPC, RDS MySQL, AWS DMS, bucket S3 del data lake |
-| **Requisitos** | `./scripts/preflight.sh` en verde y el backend de Terraform creado |
+| **Tiempo** | ~25 min (de los cuales ~10 son espera de AWS) |
+| **Coste** | ~$0.04/hora mientras la replicación está activa (`dms.t3.small`) |
+| **Qué despliegas** | El bucket del data lake y AWS DMS con CDC desde el core |
+| **Requisitos** | `infra/payments` desplegado (el core), `./scripts/preflight.sh` en verde |
 
-**Objetivo:** llevar datos de una base de datos de producción a un data lake en
-S3, sin escribir un ETL y sin tocar la base de datos origen.
+**Objetivo:** llevar cada cambio de la base de producción al data lake **mientras
+ocurre**, sin escribir un ETL y sin tocar la base.
 
-**Qué te llevas:** entender por qué la ingesta es un problema aparte del
-análisis, y por qué un data lake tiene zonas (`raw/`, `curated/`) en lugar de
-una sola carpeta.
-
----
-
-## El Problema
-
-FinCorp tiene datos transaccionales críticos atrapados en una base de datos MySQL. El equipo de Analytics necesita acceder a esas transacciones sin afectar la base de datos de producción. El equipo de IA necesita ese mismo dataset para entrenar modelos y alimentar un asistente de compliance.
-
-**El problema no es la IA. Es que los datos están en un solo lugar y no pueden ser consumidos de forma segura por múltiples equipos.**
-
-```
-ANTES:
-  App de Facturación
-       │
-  RDS MySQL (producción)
-       │
-  Consultas directas desde Analytics → degrada performance de producción
-  Consultas directas desde IA       → mismo problema
-
-DESPUÉS:
-  RDS MySQL (producción)
-       │ AWS DMS (replicación)
-       ▼
-  Amazon S3 — raw/
-       │
-  Analytics + IA (sin afectar producción)
-```
+**Qué te llevas:** por qué la ingesta es un problema aparte del análisis, por qué
+el **CDC** ve lo que una consulta no ve, y por qué un data lake tiene zonas.
 
 ---
 
-## La Decisión de Arquitectura
+## El problema
 
-### ¿Por qué AWS DMS?
+El core de FinCorp —el sistema que autoriza y captura los pagos— corre en un
+servidor propio: un PostgreSQL que nadie va a migrar este trimestre. Es lo que
+tiene la mayoría de bancos y adquirentes de la región. Analytics necesita esos
+datos, y el equipo de IA también, **sin cargar la base de producción**.
 
-Database Migration Service replica datos desde la fuente (MySQL) al destino (S3) con dos modos:
-
-- **Full Load**: copia inicial de todos los datos existentes (~2 min para nuestro dataset)
-- **CDC (Change Data Capture)**: captura cambios en tiempo real leyendo el binlog de MySQL
-
-En el demo mostramos el Full Load. El CDC está configurado para que la audiencia vea que los cambios futuros también se replican.
-
-### ¿Por qué S3 como destino?
-
-- Un solo bucket puede tener múltiples "zonas" (`raw/`, `curated/`) separadas por prefijos
-- Costo mínimo: ~$0.023/GB/mes para Standard
-- Desacoplado de la fuente: los consumidores leen de S3, nunca de RDS directamente
-- Base natural para el Lab 2 (Glue lee de S3) y el Lab 3 (ingesta de documentos)
-
-### Estructura del Data Lake
+Y no basta con una foto diaria. En pagos, **el cambio de estado es el dato**: un
+cobro se crea, se captura, se devuelve, recibe un contracargo. Cada uno es una
+actualización de una fila que ya existía.
 
 ```
-s3://fincorp-datalake-{account-id}/
-├── raw/                          ← DMS escribe aquí (datos originales, sin transformar)
-│   ├── transactions/
-│   │   └── LOAD00000001.csv
-│   └── customers/
-│       └── LOAD00000001.csv
-├── curated/                      ← Output del Lab 2 (Glue)
-│   └── transactions/
-│       └── year=2026/month=09/
-└── staging/                      ← CSV de ejemplo para carga manual
-    ├── transactions/
-    └── customers/
+   Core "on-premises"                         AWS
+┌──────────────────────┐            ┌──────────────────────────────────┐
+│ PostgreSQL 16 (EC2)  │   WAL      │ AWS DMS                          │
+│ payments, charges,   │ ─────────▶ │ full load  +  CDC                │
+│ merchants, ledger... │  (CDC)     │                                  │
+└──────────────────────┘            └───────────────┬──────────────────┘
+                                                    ▼
+                                    s3://…/raw/acquiring/<tabla>/
+                                      LOAD00000001.parquet      la foto inicial
+                                      2026/10/15/*.parquet      cada cambio, ~30 s
 ```
 
 ---
 
-## Arquitectura
+## La decisión: DMS con CDC
+
+DMS **no transforma: replica**. Lee el log de la base (el WAL), así que no lanza
+consultas contra las tablas, y entrega cada cambio como una fila con su
+operación:
 
 ```
-┌─────────────────┐
-│  RDS MySQL 8.0  │  ← Fuente de datos transaccional FinCorp
-│  db.t3.micro    │    (~1000 transacciones, ~200 clientes)
-└────────┬────────┘
-         │ binlog (CDC) + Full Load
-         ▼
-┌─────────────────────────────────────┐
-│         AWS DMS                     │
-│  Replication Instance: dms.t3.medium│
-│  Migration Type: Full Load + CDC    │
-│  Source → MySQL endpoint            │
-│  Target → S3 endpoint               │
-└────────────────────┬────────────────┘
-                     │ CSV
-                     ▼
-┌─────────────────────────────────────┐
-│         Amazon S3                   │
-│  fincorp-datalake-{account-id}      │
-│                                     │
-│  raw/transactions/LOAD*.csv         │
-│  raw/customers/LOAD*.csv            │
-└─────────────────────────────────────┘
-         │
-         └─► Lab 2: Glue lee raw/ y escribe curated/
+Op  dms_timestamp        id   intent_reference  status
+I   2026-10-15 19:02:11  301  PI5C1A...         REQUIRES_CONFIRMATION
+U   2026-10-15 19:02:43  301  PI5C1A...         SUCCEEDED        ← alguien pagó el QR
+```
+
+| | CDC por log (DMS) | Incremental por consulta (Glue JDBC) |
+|---|---|---|
+| El cobro que pasa de pendiente a capturado | **Lo ve** (U) | No, salvo un `updated_at` fiable en todas las tablas |
+| Un borrado | Llega como `D` | Invisible |
+| Carga sobre producción | Lee el WAL | Un `SELECT` en cada ejecución |
+| Latencia | ~30 s | La del job programado |
+
+Sobre un PostgreSQL autogestionado no hay *zero-ETL*: las opciones reales son DMS
+o Debezium + Kafka. Ver [ADR-024](../../DECISIONS.md).
+
+### Lo que se replica, y lo que no
+
+Se replican las tablas del negocio del adquirente: `merchants`, `terminals`,
+`payment_intents`, `charges`, `balance_transactions`, `refunds`, `disputes`,
+`payouts` y `webhook_events`.
+
+**No** se replican, porque un data lake es un sitio donde mucha gente lee: las
+claves de API (hashes de credenciales), el secreto de firma de los webhooks, los
+tokens de pago (alcance PCI) ni las tablas puramente operativas. Y la cuenta de
+liquidación del comercio se quita con una regla `remove-column`.
+
+### La cartera legacy
+
+FinCorp absorbió la cartera de otro adquirente, cuyo sistema no tiene DMS. Su
+historia —1000 operaciones, **sucia** a propósito— llega como un volcado a
+`raw/legacy/`. El Lab 2 la une a la del core. Ver
+[docs/datasets.md](../../docs/datasets.md).
+
+### El data lake
+
+```
+s3://fincorp-datalake-<cuenta>/
+├── raw/                      lo que llegó, sin tocar
+│   ├── acquiring/<tabla>/    el core, por DMS (Parquet)
+│   ├── legacy/               la cartera absorbida (CSV)
+│   └── telemetry/            los terminales, por Firehose (Lab 4)
+├── curated/                  lo que hizo el Lab 2 con ello
+├── rejected/                 lo que no pasó las reglas, con su motivo
+└── quality-reports/
 ```
 
 ---
 
-## Dataset
+## El riesgo que hay que conocer: el slot de replicación
 
-### transactions.csv (1000 operaciones)
+Para el CDC, DMS crea un *replication slot* en PostgreSQL, y la base **retiene el
+WAL hasta que DMS lo consume**. Si la tarea se para y nadie borra el slot, el WAL
+crece hasta llenar el disco **y la base de producción cae**. Es el fallo clásico
+del CDC sobre PostgreSQL.
 
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| `transaction_id` | VARCHAR(20) | ID único de la transacción |
-| `customer_id` | VARCHAR(10) | Referencia a customers |
-| `amount` | DECIMAL(12,2) | Monto — **NULL en ~5% de filas** |
-| `currency` | VARCHAR(3) | USD, PEN, EUR |
-| `transaction_type` | VARCHAR(30) | DEPOSIT/WITHDRAWAL/TRANSFER — **valores en español en ~2%** |
-| `status` | VARCHAR(20) | PENDING/COMPLETED/FAILED/PROCESSING — **case inconsistente en ~8%** |
-| `transaction_date` | VARCHAR(20) | **Mezcla de YYYY-MM-DD y DD/MM/YYYY (~10%)** |
-| `branch_id` | VARCHAR(10) | BR001-BR020 |
+Las defensas, ya puestas:
 
-### merchants.csv (200 comercios afiliados)
-
-Tabla de referencia limpia. Sin problemas deliberados. Campos: `customer_id`, `name`, `email`, `country`, `risk_level`, `onboarding_date`.
-
-### Problemas deliberados (para Lab 2 Data Quality)
-
-| Campo | Problema | Porcentaje | Regla DQ que lo detecta |
-|-------|---------|-----------|------------------------|
-| `amount` | NULL | ~5% (~50 filas) | `Completeness "amount" >= 0.95` |
-| `transaction_id` | Duplicado | ~3% (~30 filas) | `Uniqueness "transaction_id" = 1.0` |
-| `transaction_date` | Formato DD/MM/YYYY | ~10% (~100 filas) | Regex check en Glue job |
-| `transaction_type` | Valores en español | ~2% (~20 filas) | `ColumnValues "transaction_type" in [...]` |
-| `status` | Case inconsistente | ~8% (~80 filas) | `ColumnValues "status" in [...]` |
-
----
-
-## Prerrequisitos
-
-- AWS CLI v2 configurado (`aws configure`)
-- `jq` instalado (`brew install jq` en macOS / `apt install jq` en Linux)
-- Terraform >= 1.6 y el backend remoto bootstrapeado (ver `infra/README.md`)
-- Permisos IAM: RDS, DMS, S3, Secrets Manager, IAM, EC2
-- `mysql` client (opcional — para ejecutar seed.sql directamente)
-- Región: `us-east-1` (u otra con DMS disponible)
-
-### Permisos IAM mínimos
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "rds:*",
-        "dms:*",
-        "s3:*",
-        "secretsmanager:*",
-        "iam:CreateRole", "iam:AttachRolePolicy", "iam:PassRole",
-        "ec2:*"
-      ],
-      "Resource": "*"
-    }
-  ]
-}
-```
+1. `max_slot_wal_keep_size = 4GB` en el core: pasado el tope, PostgreSQL invalida
+   el slot en vez de llenar el disco. Mejor perder el CDC que el core.
+2. Alarmas sobre el WAL retenido y el disco (`FinCorp/Postgres` en CloudWatch).
+3. `cleanup.sh` **borra el slot** después de destruir DMS. DMS no lo hace.
 
 ---
 
 ## Deployment
 
-### Paso 1: Setup de infraestructura (~15 min)
-
 ```bash
 cd labs/01-ingestion-data-lake/scripts
-
-export TF_VAR_db_password='CambiaEstaPassword2026!'   # mínimo 8 caracteres
-export AWS_REGION="us-east-1"
-
 ./setup.sh
 ```
 
-Si no exportas la contraseña, el script te la pide por teclado.
+1. Despliega el bucket y DMS en la VPC del core (~10 min: la instancia de DMS).
+2. Sube la cartera legacy a `raw/legacy/`.
+3. **Arranca la tarea** y espera a que la foto inicial esté al 100 %. Desde ese
+   momento el CDC escucha.
 
-El script hace:
-1. Inicializa Terraform contra el backend remoto
-2. Despliega el stack (VPC + RDS + DMS + S3)
-3. Sube los CSV a `s3://bucket/staging/`
-4. Intenta ejecutar `seed.sql` en RDS (requiere conectividad a la subnet privada)
-
-> **Nota:** RDS está en una subnet privada. Si ejecutas el script desde fuera de la VPC, el paso de seed.sql mostrará un warning. Para sembrar la BD:
-> - Opción A: Crea un EC2 en la subnet pública y ejecuta seed.sql desde ahí
-> - Opción B: Usa AWS Cloud9 dentro de la misma VPC
-> - Opción C: Configura SSM Session Manager con un bastion
-
-### Paso 2: Iniciar la tarea DMS
-
-Desde la consola AWS: **Database Migration Service → Replication tasks → fincorp-datalake-lab-task → Start/Resume**
-
-O desde CLI:
-
-```bash
-# Obtener ARN de la tarea desde los outputs de Terraform
-TASK_ARN=$(terraform -chdir=../../../infra/lab1 output -raw dms_task_arn)
-
-aws dms start-replication-task \
-  --replication-task-arn "$TASK_ARN" \
-  --start-replication-task-type start-replication
-```
-
-### Paso 3: Validar el resultado
-
-```bash
-./validate.sh
-```
-
-Salida esperada:
-
-```
-[PASS] Modulo infra/lab1 desplegado
-[PASS] DMS Task status: load-complete | Full Load: 100%
-[PASS] Archivos transactions encontrados: 1 CSV(s)
-[PASS] Archivos customers encontrados: 1 CSV(s)
-[PASS] transactions: ~1000 filas (esperado: ~1000)
-✅ Validación: PASS (0 fallos)
-```
+Si la tarea estaba parada (por ejemplo, entre ensayos), `setup.sh` la **retoma**
+donde lo dejó en vez de recargar.
 
 ---
 
 ## ✅ Checkpoint — ¿funcionó?
 
-Antes de pasar al Lab 2, estas tres cosas tienen que ser ciertas:
-
 ```bash
-# 1. El módulo tiene recursos
-terraform -chdir=../../../infra/lab1 state list | wc -l      # > 20
-
-# 2. Hay CSV en la zona raw del data lake
-BUCKET=$(terraform -chdir=../../../infra/lab1 output -raw s3_bucket_name)
-aws s3 ls "s3://$BUCKET/raw/" --recursive                     # al menos 2 ficheros
-
-# 3. La tarea DMS terminó el full load
-aws dms describe-replication-tasks \
-  --query "ReplicationTasks[0].[Status,ReplicationTaskStats.FullLoadProgressPercent]" \
-  --output text                                               # running|stopped  100
+./validate.sh
 ```
 
-**Abre un CSV de `raw/` y míralo.** Vas a ver importes vacíos, estados en
-minúsculas y tipos de transacción que no existen. Eso es el punto de partida del
-Lab 2 — no lo arregles ahora.
+Comprueba que la tarea está en `running`, que cada tabla tiene su foto inicial,
+que el slot del core está activo y que el legacy está en su sitio. Y la prueba
+que importa: **hace un pago de verdad por la API y espera a verlo llegar a `raw/`
+como un delta**. Que exista la foto inicial solo dice que DMS sabe leer; esto
+dice que escucha.
+
+Para verlo tú:
+
+```bash
+python ../../../scripts/generate_traffic.py \
+  --api "$(terraform -chdir=../../../infra/payments output -raw api_endpoint)" --count 20
+
+BUCKET=$(terraform -chdir=../../../infra/lab1 output -raw s3_bucket_name)
+aws s3 ls "s3://$BUCKET/raw/acquiring/payment_intents/" --recursive
+```
 
 ¿Algo no cuadra? → [docs/troubleshooting.md](../../docs/troubleshooting.md#lab-1--ingestion--data-lake)
-
----
-
-## Outputs esperados
-
-| Output | Valor típico |
-|--------|-------------|
-| RDS Endpoint | `fincorp-datalake-lab-mysql.xxxx.us-east-1.rds.amazonaws.com` |
-| S3 Bucket | `fincorp-datalake-{account-id}` |
-| S3 raw/transactions | `LOAD00000001.csv` (~1000 filas) |
-| S3 raw/customers | `LOAD00000001.csv` (~200 filas) |
-| DMS Task Status | `load-complete` |
 
 ---
 
@@ -280,29 +163,28 @@ Lab 2 — no lo arregles ahora.
 ./cleanup.sh
 ```
 
-Elimina: DMS task + endpoints + instance, RDS, VPC, S3 (incluyendo objetos versionados), Secrets Manager, IAM Role — todo el módulo `infra/lab1`.
+Para la tarea, vacía y destruye el módulo (DMS, S3, IAM) y **borra el slot de
+replicación del core**. No toca el core: para eso, `infra/payments`.
 
-**Costo estimado si se olvida el cleanup:** ~$0.09/hr = ~$2.16/día
-- RDS MySQL db.t3.micro: ~$0.017/hr
-- DMS dms.t3.medium: ~$0.068/hr
-- S3: <$0.01 para el dataset del lab
+**Coste si se olvida:** ~$0.04/hora (~$1/día) por la instancia de DMS, que con
+CDC está siempre encendida. Y el slot, si no se borrara, acabaría llenando el
+disco del core.
 
 ---
 
-## Conexión con Lab 2
-
-Los archivos en `s3://bucket/raw/transactions/LOAD*.csv` son la entrada del Lab 2. Contienen los **problemas deliberados** documentados arriba, que las reglas de Glue Data Quality detectarán.
+## Conexión con el Lab 2
 
 ```
-Lab 1 Output                   Lab 2 Input
-────────────────────────────────────────────
-s3://bucket/raw/transactions/  →  Glue job lee raw/
-s3://bucket/raw/customers/     →  Glue job lee raw/
-                               →  Aplica DQ rules
-                               →  Escribe s3://bucket/curated/
+raw/acquiring/<tabla>/  ─┐
+                         ├──▶ Glue: aplica los cambios, une, valida ──▶ curated/
+raw/legacy/             ─┘                                         └──▶ rejected/
 ```
 
-→ **Continúa en:** `labs/02-transformation-quality-catalog/README.md`
+Glue se queda con la última versión de cada fila, reconstruye una fila por cobro
+y la une a la cartera legacy con una columna `source`. El core no debería aportar
+ningún rechazado: la base impide esos errores. La deuda viene del legacy.
+
+→ **Continúa en:** [Lab 2 — Transformation + Quality + Catalog](../02-transformation-quality-catalog/README.md)
 
 ---
 
@@ -325,7 +207,7 @@ Amazon Redshift (Data Warehouse)
 Analytics consolidado de 24 países
 ```
 
-**El punto:** AJE no empezó con IA. Empezó con el problema básico que estamos resolviendo en este lab — llevar datos distribuidos a un lugar centralizado y confiable.
+**El punto:** AJE no empezó con IA. Empezó con el problema básico que estamos resolviendo en este lab — llevar datos distribuidos a un lugar centralizado y confiable. Y con DMS con CDC desde sistemas que no iba a migrar, como nuestro core.
 
 ### BMW Group
 
@@ -351,13 +233,13 @@ Glue + Redshift + SageMaker
 
 ## Siguiente paso
 
-Ya tienes datos crudos en el data lake. Están sucios y nadie sabe qué
-significan — eso es exactamente lo que resuelve el Lab 2.
+Ya tienes en el data lake el core, cambio a cambio, y la cartera legacy. Son
+tablas sueltas y un volcado sucio — eso es exactamente lo que resuelve el Lab 2.
 
 **→ [Lab 2 — Transformation + Quality + Catalog](../02-transformation-quality-catalog/README.md)**
 
 > ¿Paras aquí por hoy? Haz cleanup para no pagar de más:
-> `bash scripts/cleanup.sh`
+> `./cleanup.sh` (borra también el slot de replicación del core)
 
 | [← Índice](../../README.md) | [Costes](../../COST_ESTIMATE.md) | [Troubleshooting](../../docs/troubleshooting.md) |
 |---|---|---|

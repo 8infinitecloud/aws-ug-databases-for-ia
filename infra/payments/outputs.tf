@@ -79,3 +79,8 @@ output "backend_image_pending" {
   description = "true si aun no hay imagen y el servicio esta en 0 tareas"
   value       = var.backend_image == ""
 }
+
+output "backend_image" {
+  description = "Imagen del backend desplegada ahora (vacia si aun no hay). La lee scripts/deploy_core.sh para no bajar el servicio a 0 al reaplicar"
+  value       = var.backend_image
+}

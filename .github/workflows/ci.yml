@@ -88,6 +88,7 @@ jobs:
           shellcheck -x --severity=warning scripts/lib/core.sh
           shellcheck -x --severity=warning scripts/apply_schema.sh
           shellcheck -x --severity=warning scripts/demo_cierre.sh
+          shellcheck -x --severity=warning scripts/deploy_core.sh
           shellcheck -x --severity=warning labs/03-data-to-ai/infrastructure/setup.sh
           shellcheck -x --severity=warning labs/03-data-to-ai/infrastructure/deploy-app.sh
           shellcheck -x --severity=warning labs/03-data-to-ai/infrastructure/cleanup.sh

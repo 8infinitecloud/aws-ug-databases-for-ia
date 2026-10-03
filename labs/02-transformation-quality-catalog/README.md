@@ -9,7 +9,8 @@
 | **Qué despliegas** | Glue Job, Glue Crawler, Glue Data Catalog, DQ Ruleset |
 | **Requisitos** | **El Lab 1 desplegado** — este lab lee su bucket |
 
-**Objetivo:** convertir los CSV sucios de `raw/` en Parquet confiable y
+**Objetivo:** convertir lo que llegó a `raw/` —las tablas del core, cambio a
+cambio, y el volcado sucio de la cartera legacy— en Parquet confiable y
 catalogado, apartando los registros que no pasan las reglas de calidad.
 
 **Qué te llevas:** que "calidad de datos" no es limpiar y callar, sino medir,
@@ -20,28 +21,25 @@ que un fichero en S3 sea un dato con significado.
 
 ## El Problema
 
-Después del Lab 1, tenemos datos en S3. Pero tener datos no es lo mismo que poder confiar en ellos.
+Después del Lab 1, en `raw/` hay dos cosas muy distintas:
 
-El dataset de FinCorp llegó de producción con problemas reales:
-- Montos sin registrar (NULL)
-- Transacciones duplicadas
-- Fechas en formatos inconsistentes
-- Tipos de transacción en español cuando el sistema espera inglés
-- Estados con case inconsistente
+| Fuente | Qué llega | Cómo está |
+|---|---|---|
+| `raw/acquiring/` | Las tablas del core, una carpeta por tabla, con **varias versiones de cada fila** (I, U, D) | Limpias: la base impide los errores con constraints. Pero sueltas: no hay una fila por cobro |
+| `raw/legacy/` | El volcado de la cartera absorbida | **Sucio**: importes nulos, duplicados, fechas DD/MM/YYYY, códigos antiguos (`TARJETA`, `CAPTURADA`), libros descuadrados |
 
-**¿Puedes alimentar una IA con estos datos? Técnicamente, sí. ¿Deberías? No.**
+Tener datos no es lo mismo que poder confiar en ellos. **¿Puedes alimentar una IA
+con esto? Técnicamente, sí. ¿Deberías? No.**
 
-El Lab 2 responde la pregunta: *"¿Podemos confiar en estos datos?"*
+El Lab 2 responde: *"¿Podemos confiar en estos datos, y de dónde viene lo que no
+cuadra?"*
 
 ```
-ANTES (datos raw del Lab 1):
-  - "DEPÓSITO", "pending", "15/03/2025", amount=NULL
-  - Duplicados silenciosos
-
-DESPUÉS (datos curados del Lab 2):
-  - "DEPOSIT", "PENDING", "2025-03-15", amount validado
-  - Sin duplicados, con quality score documentado
-  - Metadata de negocio en el Glue Catalog
+ANTES                                          DESPUÉS
+raw/acquiring/payment_intents/                 curated/transactions/
+  I  301  REQUIRES_CONFIRMATION                  una fila por cobro, estado final
+  U  301  SUCCEEDED                              source = acquiring | legacy
+raw/legacy/  "CAPTURADA", "15/03/2025", NULL   rejected/ con su motivo
 ```
 
 ---
@@ -50,7 +48,7 @@ DESPUÉS (datos curados del Lab 2):
 
 ### ¿Por qué Glue Python Shell (no PySpark)?
 
-Para ~1000 filas, PySpark sería overkill. Python Shell inicia en ~20 segundos vs 3 minutos de Spark, y el código es pandas — la librería que todos conocen.
+Para unos miles de filas, PySpark sería overkill. Python Shell inicia en ~20 segundos vs 3 minutos de Spark, y el código es pandas — la librería que todos conocen.
 
 En producción con millones de filas, migrar a PySpark Glue Job cambia solo el `command.name = "glueetl"` en `infra/lab2/glue.tf` y los DataFrames de pandas a Spark. La lógica de negocio queda igual.
 
@@ -60,7 +58,7 @@ DQDL (Data Quality Definition Language) es declarativo y legible:
 ```
 Completeness "amount" >= 0.95
 Uniqueness "transaction_id" = 1.0
-ColumnValues "transaction_type" in ["DEPOSIT", "WITHDRAWAL", "TRANSFER"]
+ColumnValues "payment_method" in ["CARD_PRESENT", "QR", "CARD_NOT_PRESENT"]
 ```
 
 Cualquiera puede leer estas reglas y entender qué se está validando. No necesitas saber programar para definir expectativas sobre datos.
@@ -74,20 +72,24 @@ El Crawler auto-descubre el schema técnico (columnas, tipos, particiones). Pero
 ## Arquitectura
 
 ```
-S3 raw/transactions/        ← Output del Lab 1 (DMS)
+S3 raw/acquiring/<tabla>/  ← el core, por DMS con CDC (Parquet)
+S3 raw/legacy/             ← la cartera absorbida (CSV)
     │
     ▼
-┌─────────────────────────────────────┐
-│   AWS Glue Job (Python Shell)       │
-│                                     │
-│   [1] Lee CSV raw                   │
-│   [2] Normaliza fechas/tipos/status │
-│   [3] Evalúa Data Quality           │
-│   [4] Separa válidos vs rechazados  │
-│   [5] Escribe Parquet particionado  │
-│   [6] Genera quality_report.json   │
-└──────────┬──────────────┬───────────┘
-           │              │
+┌─────────────────────────────────────────────┐
+│   AWS Glue Job (Python Shell)               │
+│                                             │
+│   [1] Lee las dos fuentes                   │
+│       · aplica el CDC: última versión de    │
+│         cada fila, sin las borradas         │
+│       · JOIN: una fila por cobro            │
+│       · las une con la columna `source`     │
+│   [2] Normaliza fechas, canales, estados    │
+│   [3] Evalúa las 10 reglas de calidad       │
+│   [4] Separa válidos vs rechazados          │
+│   [5] Escribe Parquet particionado          │
+│   [6] quality_report.json, por fuente       │
+└──────────┬──────────────┬───────────────────┘
            ▼              ▼
     S3 curated/     S3 rejected/
     (Parquet)       (CSV con razón)
@@ -95,21 +97,28 @@ S3 raw/transactions/        ← Output del Lab 1 (DMS)
            ▼
 ┌─────────────────────────────────────┐
 │   Glue Crawler                      │
-│   Descubre schema automáticamente   │
+│   curated/transactions/ y           │
+│   raw/telemetry/ (Lab 4)            │
 └──────────┬──────────────────────────┘
-           │
            ▼
 ┌─────────────────────────────────────┐
 │   Glue Data Catalog                 │
-│   Database: financial_platform      │
-│   Table: transactions              │
-│   + Metadata de negocio             │
+│   financial_platform.transactions   │
+│   financial_platform.telemetry      │
 └─────────────────────────────────────┘
            │
            ▼
     Amazon Athena            Lab 3 (RAG)
-    (SQL sobre S3)           (embeddings)
+    (SQL sobre S3)           (hechos derivados)
 ```
+
+### El JOIN que antes hacía la base
+
+DMS no transforma: entrega `charges`, `merchants`, `terminals` y
+`balance_transactions` por separado. El job hace el mismo JOIN que la vista
+`v_transactions_for_ingestion` del core, y un test lo compara **fila a fila** con
+la vista después de aplicar el CDC (`tests/test_dms_glue.py`): mismos cobros,
+mismos importes, comisiones y códigos. Si alguien cambia uno, el otro avisa.
 
 ---
 
@@ -137,7 +146,21 @@ detecta.
 | **R10** | **CustomSql** | `CAPTURED` ⇒ `response_code = 00` | ❌ | ❌ | ✅ | **rechazo** |
 
 **Total: 5/10 en raw → 7/10 tras transformar → 10/10 en curated.**
-**1000 operaciones → 863 válidas / 137 apartadas.**
+**La cartera legacy: 1000 operaciones → 863 válidas / 137 apartadas.**
+
+### De dónde viene cada problema
+
+El reporte desglosa la calidad **por fuente** (`by_source`), y la historia sale
+sola:
+
+| Fuente | Reglas que fallan en origen | Rechazados |
+|---|---|---|
+| `acquiring` (el core) | **ninguna** | **0** |
+| `legacy` (la cartera absorbida) | 5 | 137 |
+
+El core no aporta rechazados porque la base impide esos errores con constraints.
+Si alguna vez aportara uno, no sería un problema de datos: sería un fallo del
+JOIN o del backend, y `validate.sh` lo marca como error.
 
 ### Dos clases de problema, y por qué importa la diferencia
 
@@ -184,7 +207,7 @@ El job agrega metadata al Glue Catalog que va más allá del schema técnico:
 | Database description | "Base de datos del catálogo FinCorp — datos curados" |
 | `owner` | `data-engineering-team@fincorp.com` |
 | `business_domain` | `Finance / Transactions` |
-| `source` | `DMS via S3 raw zone (Lab 1)` |
+| `source` | `DMS via S3 raw zone (Lab 1)` (la tabla lleva además una columna `source` por fila) |
 | Table: Quality Score | Visible en el quality_report.json |
 | Table: Partitions | `year=2026/month=09/` |
 
@@ -263,7 +286,7 @@ El Catalog por sí solo no consulta nada: es un índice. **Athena** es lo que lo
 convierte en SQL sobre el Parquet, sin mover los datos ni levantar un cluster.
 Eso es lo que hace que esto sea un *lakehouse* y no sólo un lago.
 
-El workgroup se crea con el lab, y trae **cuatro consultas ya guardadas**. En la
+El workgroup se crea con el lab, y trae **ocho consultas ya guardadas**. En la
 consola de Athena: *Query editor* → workgroup `fincorp-dev` → pestaña *Saved
 queries*.
 
@@ -283,8 +306,19 @@ ORDER BY volumen_bruto DESC
 LIMIT 10;
 ```
 
-Las otras tres: tasa de aprobación por MCC, declinaciones por código ISO 8583, y
-una que compara los bytes escaneados con y sin filtro de partición.
+Las demás:
+
+| # | Consulta | Qué enseña |
+|---|---|---|
+| 2 | Tasa de aprobación por MCC | El MCC como señal de riesgo |
+| 3 | Declinaciones por código ISO 8583 | `05`, `51`, `54`: qué dice el emisor |
+| 4 | Por qué particionamos | Bytes escaneados con y sin filtro de partición |
+| 5 | El core frente a la cartera legacy | Lo que aporta cada `source` |
+| 6 | **¿Falló la red o el emisor?** | Cruza la telemetría de cada terminal con sus cobros |
+| 7 | Abandono del QR por terminal | El embudo que la base no ve: cancelados frente a expirados |
+| 8 | Terminales que dejaron de latir | Último latido y batería |
+
+Las 6 a 8 necesitan el Lab 4 (la tabla `telemetry`).
 
 > **Esa última es la que conviene ejecutar.** Athena cobra por byte escaneado,
 > así que el particionado no es orden: es la factura. Ejecuta las dos variantes
@@ -306,29 +340,30 @@ terraform -chdir=infra/lab2 output athena_results_path
 
 ## Outputs esperados
 
-```bash
-# run_job.sh output esperado:
-━━━ PASO 2/4: Quality Report ━━━
+Con el core y el legacy (los números del core dependen de cuántos pagos se
+hayan hecho):
 
-  Filas procesadas : 1000
-  Filas válidas    : ~820
-  Filas rechazadas : 137
-  Score DQ         : 62.5%
-  Reglas pasadas   : 5/8
-  Recomendación    : REVIEW: Se recomienda revisar los registros rechazados
+```
+Calidad por etapa
+  regla                               raw   transf  curated   resuelto por
+  completeness_amount              PASS   PASS   PASS   -
+  uniqueness_transaction_id        FAIL   FAIL   PASS   rechazo
+  validity_payment_method          FAIL   PASS   PASS   transformacion
+  validity_status                  FAIL   PASS   PASS   transformacion
+  ledger_coherence                 FAIL   FAIL   PASS   rechazo
+  captured_implies_approved        FAIL   FAIL   PASS   rechazo
+  ...
 
-  Detalle de reglas:
-  ✗ completeness_amount → score: 0.95 (50 filas)
-  ✓ completeness_transaction_id → score: 1.0
-  ✓ completeness_customer_id → score: 1.0
-  ✗ uniqueness_transaction_id → score: 0.97 (30 filas)
-  ✓ validity_transaction_type → score: 1.0
-  ✓ validity_status → score: 1.0
-  ✓ validity_currency → score: 1.0
-  ✗ ...
+Por fuente
+  acquiring    150 validas /    0 rechazadas   fallaban en origen: ninguna
+  legacy       863 validas /  137 rechazadas   fallaban en origen: captured_implies_approved, ...
 ```
 
-El score del dataset curated (solo registros válidos) será más alto: reglas de tipos y status pasarán porque el job normalizó los datos antes de escribir curated.
+Para verlo sin AWS, con el layout exacto que deja DMS:
+
+```bash
+python scripts/run_pipeline_local.py
+```
 
 ---
 

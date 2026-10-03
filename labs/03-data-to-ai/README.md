@@ -26,9 +26,10 @@ En los labs anteriores construimos la plataforma de datos de FinCorp:
 
 | Lab | Pregunta | Resultado |
 |-----|---------|-----------|
-| **Lab 1** | ¿Cómo llevamos datos distribuidos a una plataforma? | S3 raw zone con transacciones de MySQL via DMS |
-| **Lab 2** | ¿Podemos confiar en esos datos? | S3 curated zone con Parquet validado + Glue Catalog |
+| **Lab 1** | ¿Cómo llevamos cada cambio de producción a una plataforma? | S3 raw zone con las tablas del core, por DMS con CDC, y la cartera legacy |
+| **Lab 2** | ¿Podemos confiar en esos datos? | S3 curated zone con Parquet validado, `source` por fila + Glue Catalog |
 | **Lab 3** | ¿Cómo usamos esos datos para IA? | RAG assistant con 3 capas de memoria |
+| **Lab 4** | ¿Podemos reaccionar ahora? | Scoring en milisegundos y telemetría de los terminales |
 
 El Lab 3 demuestra la idea central de la charla:
 
@@ -43,10 +44,10 @@ FinCorp tiene:
 - Documentos internos: políticas de compliance, KYC, procedimientos de onboarding
 - Necesidad: un asistente que responda preguntas usando esos documentos como base de conocimiento
 
-El equipo de compliance hace preguntas como:
-- *"¿Cuándo es obligatorio hacer un Reporte de Actividad Sospechosa (SAR)?"*
-- *"¿Qué documentos necesito para el onboarding de un cliente de alto riesgo?"*
-- *"¿Cuál es la política de retención de datos para registros de transacciones?"*
+El equipo de compliance y de operaciones del adquirente hace preguntas como:
+- *"¿Cuándo es obligatorio hacer un Reporte de Operaciones Sospechosas (ROS)?"*
+- *"¿Cómo reconozco un card testing en pagos CARD_NOT_PRESENT?"*
+- *"Un terminal tiene muchos http_timeouts: ¿falló la red o el emisor?"*
 
 Sin un asistente, responder cada pregunta requiere buscar manualmente en documentos dispersos.
 
@@ -55,24 +56,23 @@ Sin un asistente, responder cada pregunta requiere buscar manualmente en documen
 ## Conexión con Labs 1 y 2
 
 ```
-Lab 1: RDS MySQL ──DMS──► S3 raw/transactions/
-                                    │
-Lab 2: Glue ETL ─────────────────────┘
-         │ transforma + valida + cataloga
+Lab 1: PostgreSQL del core ──DMS CDC──► S3 raw/acquiring/   (+ raw/legacy/)
+                                              │
+Lab 2: Glue ETL ──────────────────────────────┘
+         │ aplica el CDC + une el legacy + valida + cataloga
          ▼
-       S3 curated/transactions/     ← datos confiables
-       Glue Catalog: financial_platform.transactions
+       S3 curated/transactions/  (source = acquiring | legacy)
                           │
-                          │  (narrativamente: "este es el tipo de dato
-                          │   que la IA consume — datos preparados")
+                          │  scripts/ingest_from_curated.py:
+                          │  los datos se convierten en HECHOS citables
                           ▼
 Lab 3: DocumentLoader ──────────────► Aurora pgvector
          data/compliance/*.md              │ similarity search
-         data/onboarding/*.md              ▼
+         data/operations/*.md              ▼
          data/policies/*.md          RAG Chain (LangChain)
-                                           │ + 3 capas de memoria
+         data/derived/*.md  ← hechos       │ + 3 capas de memoria
                                            ▼
-                                     Amazon Bedrock (Claude/Nova)
+                                     Amazon Bedrock (Nova Pro)
                                            │
                                            ▼
                                      Streamlit UI
@@ -80,9 +80,9 @@ Lab 3: DocumentLoader ──────────────► Aurora pgvec
 
 | Componente | Origen | Cómo llega al Lab 3 |
 |-----------|--------|---------------------|
-| Documentos compliance/policies | `data/` directorio | `DocumentLoader` → chunks → pgvector |
-| Schema del catálogo | Lab 2 `financial_platform` | Referencia narrativa |
-| Datos curados | Lab 2 `curated/transactions/` | Contexto narrativo (conexión técnica: opcional via `ingest_from_curated.py`) |
+| Documentos de compliance, políticas y operación | `data/` directorio | `DocumentLoader` → chunks → pgvector |
+| Schema del catálogo | Lab 2 `financial_platform` | Referencia en el corpus (puente léxico, ADR-017) |
+| Datos curados y telemetría | Lab 2 `curated/`, Lab 4 `raw/telemetry/` | **Hechos derivados** con `ingest_from_curated.py`: resumen mensual, calidad por fuente, canales y emisor, salud de terminales, actividad de hoy (ADR-013) |
 
 ---
 
@@ -384,7 +384,7 @@ Este es el diagrama que se revela al final de la charla, después de los 3 labs.
 │  SERVICIOS REVELADOS DURANTE LOS 3 LABS                               │
 ├───────────────────────────────────────────────────────────────────────┤
 │                                                                        │
-│  RDS MySQL ──[DMS]──► S3 raw/    ← LAB 1: AWS DMS + Amazon S3        │
+│  PostgreSQL core ─[DMS CDC]─► S3 raw/  ← LAB 1: AWS DMS + Amazon S3  │
 │                           │                                            │
 │                      [Glue ETL]  ← LAB 2: AWS Glue Python Shell       │
 │                           │       AWS Glue Data Quality (DQDL)         │

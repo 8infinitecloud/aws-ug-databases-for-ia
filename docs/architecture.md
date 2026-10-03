@@ -14,9 +14,10 @@
 ```mermaid
 flowchart TD
     subgraph SOURCES["📦 DATA SOURCES"]
-        RDS[(RDS MySQL\nDatos transaccionales)]
+        RDS[(PostgreSQL 16 en EC2\nel core on-premises)]
+        LEGACY[Cartera legacy\nvolcado CSV]
         FILES[Archivos / S3\nDocumentos no estructurados]
-        STREAM[Streams\nEventos en tiempo real]
+        STREAM[Terminales\ntelemetría por IoT Core]
     end
 
     subgraph INGESTION["⬇️ INGESTION — Lab 1"]
@@ -25,7 +26,7 @@ flowchart TD
     end
 
     subgraph TRANSFORM["⚙️ TRANSFORMATION + QUALITY + CATALOG — Lab 2"]
-        GLUE[AWS Glue\nETL Jobs PySpark]
+        GLUE[AWS Glue\nPython Shell: CDC + JOIN + calidad]
         GDQ[Glue Data Quality\nValidación y reglas]
         CATALOG[Glue Data Catalog\nMetadata + Schema]
         S3CURATED[(Amazon S3\nCurated Zone)]
@@ -39,10 +40,9 @@ flowchart TD
         direction LR
         subgraph ANALYTICS["Analytics"]
             ATHENA[Amazon Athena\nQuery SQL]
-            REDSHIFT[Amazon Redshift\nData Warehouse]
         end
         subgraph AI["AI / GenAI"]
-            BEDROCK[Amazon Bedrock\nClaude + Titan Embeddings]
+            BEDROCK[Amazon Bedrock\nNova Pro + Titan Embeddings]
             AURORA[(Aurora PostgreSQL\npgvector)]
             DYNAMO[(DynamoDB\nMemoria persistente)]
             REDIS[(ElastiCache Redis\nMemoria de sesión)]
@@ -50,9 +50,10 @@ flowchart TD
         end
     end
 
-    RDS -->|Replicación CDC| DMS
-    DMS -->|Aterrizaje| S3RAW
-    FILES -->|Upload| S3RAW
+    RDS -->|WAL: full load + CDC| DMS
+    DMS -->|raw/acquiring/| S3RAW
+    LEGACY -->|raw/legacy/| S3RAW
+    STREAM -->|Firehose: raw/telemetry/| S3RAW
 
     S3RAW -->|Lee raw data| GLUE
     GLUE -->|Valida| GDQ
@@ -61,7 +62,6 @@ flowchart TD
 
     S3CURATED --> LF
     LF --> ATHENA
-    LF --> REDSHIFT
 
     S3CURATED -->|Documentos curados| BEDROCK
     FILES -->|Documentos directos| BEDROCK
@@ -80,22 +80,25 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    subgraph SOURCE["Fuente"]
-        RDS[(RDS MySQL\nFinancial DB)]
+    subgraph SOURCE["El core on-premises"]
+        RDS[(PostgreSQL 16 en EC2\nwal_level = logical)]
+        SLOT[Replication slot\ntest_decoding]
     end
 
     subgraph DMS_BLOCK["AWS DMS"]
-        REP[Replication Instance]
-        TASK[Replication Task\nFull Load + CDC]
+        REP[Replication Instance\ndms.t3.small]
+        TASK[Replication Task\nFull Load + CDC\ntablas base]
     end
 
     subgraph S3_BLOCK["Amazon S3 — Data Lake"]
-        RAW["s3://bucket/raw/\ntransactions/\ncustomers/"]
+        RAW["raw/acquiring/&lt;tabla&gt;/\nLOAD*.parquet + AAAA/MM/DD/*.parquet\nOp = I / U / D"]
+        LEG["raw/legacy/\nla cartera absorbida"]
     end
 
-    RDS -->|Conexión source endpoint| REP
+    RDS --> SLOT
+    SLOT -->|WAL decodificado| REP
     REP --> TASK
-    TASK -->|Escribe Parquet/CSV| RAW
+    TASK -->|Parquet, cada ~30 s| RAW
 
     style SOURCE fill:#fff3cd
     style DMS_BLOCK fill:#cfe2ff
@@ -105,10 +108,9 @@ flowchart LR
 **Componentes del Lab 1:**
 | Recurso | Tipo | Propósito | Costo estimado demo |
 |---------|------|-----------|---------------------|
-| RDS MySQL db.t3.micro | EC2 | Fuente de datos transaccional | ~$0.02/hr |
-| DMS Replication Instance dms.t3.medium | Managed | Motor de replicación | ~$0.07/hr |
+| PostgreSQL en EC2 (`infra/payments`) | EC2 | El core: fuente de datos transaccional | ~$0.02/hr |
+| DMS Replication Instance `dms.t3.small` | Managed | Motor de replicación con CDC | ~$0.035/hr |
 | S3 bucket | Object Storage | Raw zone del Data Lake | <$0.01 |
-| Secrets Manager | Managed | Credenciales RDS | $0.01/hr |
 
 ---
 
@@ -116,10 +118,11 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    S3RAW["S3 Raw\ntransactions con problemas\nnulos / duplicados / tipos inválidos"]
+    S3RAW["S3 raw/acquiring/\ntablas del core, con sus cambios"]
+    S3LEG["S3 raw/legacy/\nnulos / duplicados / códigos antiguos"]
 
-    subgraph GLUE_JOB["AWS Glue Job (PySpark)"]
-        READ[Leer S3 raw]
+    subgraph GLUE_JOB["AWS Glue Job (Python Shell)"]
+        READ[Leer las dos fuentes\naplicar el CDC + JOIN\ncolumna source]
         CLEAN[Transformar\ntipos, fechas, nulos]
         VALIDATE[Aplicar reglas\nGlue Data Quality]
         WRITE[Escribir curated\nformato Parquet + particiones]
@@ -137,6 +140,7 @@ flowchart TD
     QUALITY_REPORT["Reporte de Calidad\n✓ completeness\n✓ uniqueness\n✗ validity (algunos rechazados)"]
 
     S3RAW --> READ
+    S3LEG --> READ
     READ --> CLEAN
     CLEAN --> VALIDATE
     VALIDATE --> WRITE
@@ -187,7 +191,7 @@ flowchart TD
         EMBED_Q[Embed query\nTitan V2]
         SEARCH[Similarity Search\nTop-K chunks + scores]
         PROMPT[Prompt Builder\ncontexto + memoria + query]
-        LLM[Amazon Bedrock\nClaude Sonnet]
+        LLM[Amazon Bedrock\nNova Pro]
     end
 
     APP_UI["Streamlit UI\nFinancial Compliance Assistant"]
@@ -226,9 +230,9 @@ flowchart TD
     GOV[GOVERNANCE\nLake Formation]
     CUR[CURATED DATA\nAmazon S3]
 
-    ANA[ANALYTICS\nAthena · Redshift]
+    ANA[ANALYTICS\nAthena]
     AI_BLOCK[AI / GenAI\nBedrock · pgvector\nDynamoDB · Redis]
-    RAG_BLOCK[RAG\nLangChain + Claude]
+    RAG_BLOCK[RAG\nLangChain + Nova Pro]
     AGE[AGENTS\nfuture]
 
     DS --> ING --> RAW --> TRF --> DQ --> CAT --> GOV --> CUR
@@ -257,7 +261,7 @@ flowchart TD
 |------|----------|---------------------|
 | Ingestion | AWS DMS | Replica datos de RDS → S3 con CDC |
 | Storage | Amazon S3 | Raw zone + Curated zone del Data Lake |
-| Transformation | AWS Glue (PySpark) | ETL: raw → limpio → curated |
+| Transformation | AWS Glue (Python Shell) | ETL: raw → CDC aplicado → curated |
 | Data Quality | Glue Data Quality | Validación con ruleset declarativo |
 | Catalog | Glue Data Catalog | Schema, metadata, business context |
 | Governance | AWS Lake Formation | Control de acceso a nivel tabla/columna |
@@ -265,7 +269,7 @@ flowchart TD
 | Vector Store | Aurora PostgreSQL + pgvector | Embeddings de documentos y memorias |
 | Session Memory | Amazon ElastiCache Redis | Últimos N mensajes de la sesión |
 | Persistent Memory | Amazon DynamoDB | Perfil y resumen de usuario |
-| LLM + Embeddings | Amazon Bedrock | Claude (generación) + Titan (embeddings) |
+| LLM + Embeddings | Amazon Bedrock | Nova Pro (generación) + Titan (embeddings) |
 
 > **Principio de inclusión**: cada servicio aparece porque resuelve un problema demostrado en el lab, no porque sea un servicio interesante de explicar.
 

@@ -1,30 +1,46 @@
 # Datasets — el del workshop y alternativas reales
 
-El workshop usa un dataset sintético de 1000 transacciones. Esta página explica
-**por qué**, y qué datasets reales puedes usar en su lugar si quieres llevar el
-lab más allá.
+El workshop tiene **dos fuentes** de transacciones, y son distintas a propósito:
+
+| Fuente | De dónde sale | Cómo está |
+|---|---|---|
+| **El core** (`source = acquiring`) | Los pagos reales del sistema: el POS, la web del QR, el generador de tráfico. DMS los replica con CDC | **Limpia**: la base impide los errores con constraints |
+| **La cartera legacy** (`source = legacy`) | Un dataset sintético de 1000 operaciones, el "volcado" del adquirente absorbido | **Sucia a propósito** |
+
+Esta página explica por qué la segunda es sintética, y qué datasets reales
+puedes usar en su lugar si quieres llevar el lab más allá.
 
 ---
 
-## Por qué el workshop usa datos sintéticos
+## Por qué la cartera legacy es sintética
 
 No es pereza: es que un dataset real no sirve para enseñar calidad de datos de
 forma predecible.
 
-El Lab 2 mide 8 reglas y cada una tiene que comportarse de una manera concreta
-para que la lección funcione:
+El Lab 2 mide 10 reglas y cada una tiene que comportarse de una manera concreta
+para que la lección funcione. Medido sobre el CSV del repositorio:
 
-| Problema | Cantidad exacta | Para que el participante vea… |
-|----------|-----------------|-------------------------------|
+| Problema | Cantidad | Para que el participante vea… |
+|----------|----------|-------------------------------|
 | `amount` vacío | 50 de 1000 (5.0%) | `Completeness = 0.9500` contra un umbral `>= 0.95`: **pasa por un pelo**. Un umbral es una decisión, no una verdad. |
-| `transaction_id` duplicado | 55 filas | Uniqueness falla y **no se puede arreglar transformando**: ante dos filas con el mismo id, nadie puede inventar cuál es la buena. Se rechaza. |
-| Tipo en español | 20 (2.0%) | Falla en raw y **la transformación lo resuelve**: `DEPÓSITO` es claramente `DEPOSIT`. El dato era recuperable. |
-| `status` con capitalización inconsistente | 80 (8.0%) | Igual que el anterior, vía `.upper()`. |
+| `transaction_id` duplicado | 53 filas | Uniqueness falla y **no se puede arreglar transformando**: ante dos filas con el mismo id, nadie puede inventar cuál es la buena. Se rechaza. |
+| Canal con código antiguo | 20 (2.0%) | Falla en raw y **la transformación lo resuelve**: `TARJETA` es claramente `CARD_PRESENT`. El dato era recuperable. |
+| `status` sin normalizar | 80 (8.0%) | Igual: minúsculas o en español (`CAPTURADA`). Recuperable. |
 | Fecha en `DD/MM/YYYY` | 100 (10.0%) | No es una regla DQDL: lo arregla la transformación y se ve en `transform_stats`. |
+| **Libro descuadrado** | 24 filas | `net_amount` ≠ `amount` − `fee_amount`. Liquidaría mal al comercio: se rechaza. |
+| **Capturada sin aprobación** | 12 filas | `status = CAPTURED` con `response_code` ≠ `00`: un contracargo esperando. Se rechaza. |
+
+Las dos últimas son las propias de un adquirente: comparan campos entre sí, y
+ninguna herramienta que mire columna a columna las ve. En total, **137 de 1000
+operaciones** acaban en `rejected/`.
 
 Con un dataset real no controlas nada de esto. Podrías acabar con un dataset
 impecable (y el Lab 2 sin nada que enseñar) o con uno tan roto que el pipeline
 falle por razones que distraen del tema.
+
+Y el contraste con el core es la lección: **del core no llega ni un rechazado**,
+porque la base de datos impide esos errores. La deuda de calidad viene de lo que
+se integra de fuera.
 
 **La calibración es auditable**, no magia:
 
@@ -167,49 +183,53 @@ minutos.
 
 ---
 
-## Cómo cambiar el dataset
+## Cómo cambiar la cartera legacy
 
-Lo que toca, en orden:
+La cartera legacy es un fichero: no pasa por ninguna base ni por DMS. Lo que
+toca, en orden:
 
-### 1. El esquema en MySQL
+### 1. El fichero
 
-`labs/01-ingestion-data-lake/dataset/seed.sql` define las tablas. Si el dataset
-nuevo tiene otras columnas, cambia el `CREATE TABLE`.
+`labs/01-ingestion-data-lake/dataset/transactions.csv`, con **las mismas 19
+columnas** que la vista `v_transactions_for_ingestion` del core. Es el contrato:
+el job une las dos fuentes por nombre de columna. El `setup.sh` del Lab 1 lo sube
+a `raw/legacy/transactions/`.
 
-### 2. El mapeo de tablas de DMS
-
-`infra/lab1/dms.tf`, en `table_mappings`, selecciona `transactions` y
-`customers` por nombre. Ajusta los `object-locator`.
-
-### 3. El ETL
+### 2. El ETL
 
 `labs/02-transformation-quality-catalog/glue_job.py`:
 
-- `VALID_TRANSACTION_TYPES`, `VALID_STATUSES`, `VALID_CURRENCIES` — los valores permitidos
-- `TYPE_NORMALIZATION` — el mapeo español → inglés
+- `VALID_PAYMENT_METHODS`, `VALID_STATUSES`, `VALID_CURRENCIES` — los valores permitidos
+- `METHOD_NORMALIZATION`, `STATUS_NORMALIZATION` — los códigos antiguos y su traducción
 - `transform_dataframe()` — qué columnas se normalizan
-- `measure_rules()` — las 8 reglas, por nombre de columna
+- `measure_rules()` — las 10 reglas, por nombre de columna
 
-### 4. El ruleset declarado
+### 3. El ruleset declarado
 
-`labs/02-transformation-quality-catalog/quality_rules.dqdl` y su `.json`. Y el
-bloque `ruleset` en `infra/lab2/glue.tf`, que los duplica: **los tres tienen que
-decir lo mismo**.
+`labs/02-transformation-quality-catalog/quality_rules.dqdl` y su `.json`, y el
+bloque `ruleset` de `infra/lab2/glue.tf`, que los duplica: **los tres tienen que
+decir lo mismo**, y un test compara el `.dqdl` con el de Terraform.
 
-### 5. Los tests y los números documentados
+### 4. Los tests y los números documentados
 
 ```bash
 pytest tests/ -v
 ```
 
-Van a fallar, y eso es lo que se espera: fijan que sean 100 filas rechazadas y
-que la calidad vaya de 5/8 a 8/8. Actualízalos con los números nuevos, y con
+Van a fallar, y eso es lo que se espera: fijan que sean 137 filas rechazadas y
+que la calidad vaya de 5/10 a 10/10. Actualízalos con los números nuevos, y con
 ellos las tablas de `labs/02-transformation-quality-catalog/README.md` y del
 README raíz.
 
 > **Este es el orden que importa:** si cambias el dataset y no actualizas los
 > tests, el workshop sigue funcionando pero su documentación miente. Los tests
 > están ahí justamente para que no pase en silencio.
+
+### ¿Y los datos del core?
+
+No se cambian con un fichero: salen de los pagos. Para más volumen o más
+variedad, `scripts/generate_traffic.py` —ritmo, duración, card testing— o la
+cartera de comercios de `payments/schema/005_demo_portfolio.sql`.
 
 ---
 
@@ -219,7 +239,7 @@ No hace falta cambiar de dataset. El generador escala manteniendo la calibració
 
 ```bash
 python labs/01-ingestion-data-lake/dataset/generate_dataset.py \
-  --rows 500000 --customers 10000
+  --rows 500000 --merchants 10000 --out /tmp/legacy-grande
 ```
 
 Los porcentajes de cada problema se mantienen, así que las reglas del Lab 2 se

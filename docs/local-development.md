@@ -38,8 +38,9 @@ Produce lo mismo que el job real:
 
 ```
 .local-lake/
-├── raw/transactions/LOAD00000001.csv       ← como lo dejaría DMS
-├── raw/customers/LOAD00000001.csv
+├── raw/acquiring/<tabla>/LOAD00000001.parquet        ← la foto inicial, como la deja DMS
+├── raw/acquiring/<tabla>/AAAA/MM/DD/*.parquet       ← los cambios del CDC (I/U/D)
+├── raw/legacy/transactions/transactions.csv         ← la cartera absorbida
 ├── curated/transactions/year=2024/month=01/part-00000.parquet
 │   └── … 33 particiones
 ├── rejected/transactions/<timestamp>/rejected.csv    ← con rejection_reason
@@ -255,7 +256,7 @@ Bedrock. Sin credenciales informa de lo que no pudo verificar, no se rompe.
 
 | Componente | Por qué no | Alternativa |
 |---|---|---|
-| **AWS DMS** (Lab 1) | Es un servicio gestionado sin equivalente local. LocalStack lo emula solo parcialmente y no cubre el CDC sobre binlog, que es lo interesante | Para el Lab 2 no hace falta: `run_pipeline_local.py` siembra `raw/` directamente |
+| **AWS DMS** (Lab 1) | Es un servicio gestionado sin equivalente local | `scripts/dms_emulator.py` escribe su layout exacto (foto inicial + cambios con `Op`), desde la base de los tests o desde un core sintético. Y el CDC en sí se puede ver con un PostgreSQL `wal_level=logical` y un slot `test_decoding`, que es lo que lee DMS |
 | **Glue Catalog y Crawler** (Lab 2) | El descubrimiento de esquema es del servicio | El Parquet local se puede leer con pandas; el esquema se ve igual |
 | **Amazon Bedrock** (Lab 3) | No hay Bedrock local. Los embeddings y el LLM son llamadas al servicio | Ninguna que mantenga el lab igual. Cambiar a un modelo local alteraría lo que el lab enseña |
 | **Aurora pgvector, Redis, DynamoDB** (Lab 3) | Sí tienen equivalentes locales (Postgres+pgvector, Redis y DynamoDB Local en Docker), pero sin Bedrock el RAG no funciona de todos modos | — |
@@ -306,15 +307,19 @@ los workflows de deploy y cleanup, que se ejecutan a mano.
 Se puede trabajar en todo esto sin desplegar nada:
 
 - La API de adquirencia entera (`payments/backend/`), con su base en Docker
-- Las reglas de calidad y las transformaciones del Lab 2 (`glue_job.py`)
+- Las reglas de calidad y las transformaciones del Lab 2 (`glue_job.py`),
+  incluido el CDC y el JOIN contra la vista del core (`tests/test_dms_glue.py`)
+- El generador de tráfico y la telemetría de la flota virtual
+- El script de arranque de la base del core, en un contenedor de Amazon Linux 2023
 - El dataset y su calibración (`generate_dataset.py`)
 - Los documentos derivados (`ingest_from_curated.py`)
 - Los tests
 - Toda la documentación
 - La infraestructura, hasta `validate`
 
-Lo único que exige desplegar es confirmar que DMS completa el full load, que el
-Crawler crea la tabla y que el EC2 arranca Streamlit. Y con el hardware delante,
+Lo único que exige desplegar es confirmar que DMS completa el full load y
+entrega los cambios, que el Crawler crea las tablas y que el EC2 arranca
+Streamlit. Y con el hardware delante,
 que el firmware se graba y la pantalla queda como se espera. Eso no lo verifica
 ninguna prueba estática.
 

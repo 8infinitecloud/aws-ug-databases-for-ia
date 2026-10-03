@@ -19,29 +19,38 @@ falta otra cosa.
 
 ## Lo que se construye
 
+Por IoT Core pasan dos cosas distintas, y cada una tiene su camino:
+
 ```
-  POS (Core2)
-      │  MQTT
-      ▼
-  AWS IoT Core
-      │
-  IoT Rule  ──SELECT * FROM '+/events'
-      │
-      ├──────────────► Lambda ──► DynamoDB          ~milisegundos   REACCIONAR
-      │                (scoring)   (contadores
-      │                             + alertas)
-      │
-      └──────────────► Firehose ──► S3 raw/events/   ~60 segundos    RECORDAR
-                                     │
-                                     └──► Labs 1-2
+  backend de pagos ── <serial>/events ──┐   (al cobrar; online/events sin terminal)
+                                         ▼
+                                    AWS IoT Core
+                                         │
+  IoT Rule  ──'+/events'  ───────────────┼──► Lambda ──► DynamoDB      ~ms    REACCIONAR
+                                         │    (scoring)   (contadores
+                                         │                 + alertas)
+  terminal ── <serial>/telemetry ────────┘
+                                         │
+  IoT Rule  ──'+/telemetry' ─────────────┼──► Firehose ──► S3 raw/telemetry/   ~60 s   RECORDAR
+                                         └──► DynamoDB terminal-state           ~ms    VIGILAR
 ```
 
-Un evento, dos destinos, y la diferencia entre ellos **es el lab**.
+**Los pagos ya no van al lago por aquí.** Llegan por el CDC del Lab 1, que además
+trae lo que el evento no tiene: el cobro que cambia de estado, la devolución, el
+libro mayor. Mandarlos también por Firehose era tenerlos dos veces en `raw/` con
+dos formas distintas.
+
+**Firehose lleva ahora la telemetría de los terminales**: el latido, la batería,
+la señal, la latencia de cada llamada a la API, los QR abandonados. Ese dato no
+está en ninguna base: si no entra por aquí, no entra. Es lo que permite preguntar
+**por qué** falló un cobro, y no solo que falló (ver la consulta 6 de Athena en el
+Lab 2 y el *Runbook de Operación de Terminales* del Lab 3).
 
 > **Firehose no es el camino del insight online.** Su buffer mínimo son 60
-> segundos, y con el Glue del Lab 2 por detrás la latencia real ronda los 4
-> minutos. Eso es batch rápido. Aquí Firehose es la *toma* que alimenta el lago;
-> quien reacciona es la Lambda.
+> segundos. Por eso el último latido de cada terminal se escribe también, sin
+> Lambda, en la tabla `terminal-state`: es lo que responde **ahora** qué terminal
+> lleva más de 2 minutos sin dar señales, la regla con la que se da por
+> desconectado un lector de pagos.
 
 ---
 
@@ -52,9 +61,9 @@ verdad, y detectan lo que un comercio legítimo no produce.
 
 | Regla | Qué mira | Por qué |
 |---|---|---|
-| `VELOCITY_COUNT` | más de 5 operaciones por terminal en 60 s | una cafetería no vende cada tres segundos |
+| `VELOCITY_COUNT` | más de 5 operaciones por terminal en 60 s (30 por tienda online) | una cafetería no vende cada tres segundos |
 | `DECLINE_RATIO` | más del 50 % rechazadas (mín. 4 muestras) | **la firma del card testing** |
-| `VELOCITY_AMOUNT` | más de 500 acumulados en la ventana | monto inusual para la ventana |
+| `VELOCITY_AMOUNT` | más de 500 acumulados en la ventana (20 000 por tienda online) | monto inusual para la ventana |
 | `HIGH_RISK_MCC` | importe alto en un comercio de riesgo alto | el MCC es una señal, no una etiqueta |
 
 **`DECLINE_RATIO` es la interesante.** Quien prueba tarjetas robadas acumula
@@ -110,6 +119,8 @@ pytest tests/test_risk_scorer.py -v    # 21 tests, sin AWS
 ## Desplegar
 
 Necesita el Lab 1 (el bucket) y `payments` (el backend que publica los eventos).
+La telemetría la publican los terminales: la flota virtual del generador de
+tráfico (`--telemetria`) y, si se activa en su firmware, el Core2.
 
 ```bash
 terraform -chdir=infra/lab4 init -backend-config=../backend.hcl
@@ -138,10 +149,29 @@ aws dynamodb query \
   --expression-attribute-values '{":t":{"S":"T#TID00001"},":a":{"S":"ALERT#"}}'
 ```
 
-Y un minuto después, los mismos eventos en el lago:
+Un ataque de card testing por la API real, que además queda en la base, en el
+CDC y en el lago:
 
 ```bash
-aws s3 ls "$(terraform -chdir=infra/lab4 output -raw events_s3_path)" --recursive
+python scripts/generate_traffic.py \
+  --api "$(terraform -chdir=infra/payments output -raw api_endpoint)" --card-testing
+```
+
+La flota virtual latiendo, con un taxi de mala cobertura y otro que se queda sin
+batería:
+
+```bash
+python scripts/generate_traffic.py --api "$API" --duration 900 --telemetria
+
+# Qué terminales están caídos AHORA
+aws dynamodb scan --table-name "$(terraform -chdir=infra/lab4 output -raw terminal_state_table)" \
+  --projection-expression "device_id, terminal_id, battery_pct, rssi_dbm, received_at_ms"
+```
+
+Y un minuto después, la misma telemetría en el lago:
+
+```bash
+aws s3 ls "$(terraform -chdir=infra/lab4 output -raw telemetry_s3_path)" --recursive
 ```
 
 Ese minuto de espera **es el contenido**: enseña por qué existen dos caminos.
@@ -152,7 +182,10 @@ Ese minuto de espera **es el contenido**: enseña por qué existen dos caminos.
 
 **Los contadores van por terminal, no por comercio.** Un local con diez cajas
 mueve diez veces más que uno con una. Agregando por comercio, el mismo umbral
-significaría cosas distintas según el tamaño del local.
+significaría cosas distintas según el tamaño del local. La excepción es la
+tienda online, que no tiene terminal: va por comercio (`M#` en vez de `T#`) y con
+sus propios umbrales, porque suma a todos sus compradores a la vez. El ratio de
+rechazos no se relaja: el card testing online es justo su caso.
 
 **El contador se incrementa con `ADD`, no leyendo y escribiendo.** Un
 `UpdateItem` atómico no pierde eventos simultáneos. Leer-sumar-escribir —que es
