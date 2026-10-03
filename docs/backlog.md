@@ -18,6 +18,7 @@ explicarla y ensayarla; una pieza sin ensayar es un riesgo en vivo.
 | Mejora | Prioridad | Por qué |
 |---|---|---|
 | **Devoluciones** (`POST /v1/refunds`) | ✅ **Hecho** | Es el mejor ejemplo de por qué CDC y no un incremental: un cobro de ayer que hoy pasa a devuelto es un `U` sobre una fila antigua que una consulta por fecha de creación nunca vería. `REFUNDED` ya está en las reglas de calidad y el corpus habla del ratio de devoluciones, pero hoy nada genera una |
+| **Tienda online local "Mercado Andino"** (`store/`, Docker) | **Ahora** | Un supermercado online **ficticio** para hacer compras `CARD_NOT_PRESENT` de verdad durante la demo, y comparar canales con datos que no salen del generador. Es **el comercio**, no el adquirente: contenedor propio con su página y su pequeño backend, que guarda la clave secreta del comercio (nunca en el navegador) y llama a la API de FinCorp. Arranca en local leyendo los outputs de Terraform y `.demo_keys.json`. **Solo local, por decisión**: la sala no podrá comprar desde sus móviles (para eso haría falta publicarla con S3 + CloudFront + Lambda); las compras online las hace el ponente |
 | Captura manual (`capture_method = manual` + `/capture`) | Después | La preautorización del hotel. Correcta, pero el QR pendiente → pagado ya enseña el `U` |
 | Antifraude síncrono antes de autorizar (al estilo Radar) | Mencionar | Toca el camino del cobro y se solapa con el Lab 4. En la charla: *"antes de esto hay un Radar que bloquea en el propio cobro; el Lab 4 ve patrones entre operaciones"*. `charges.risk_score` ya existe para cuando se haga |
 | Contracargos (`/v1/disputes`, evidencia) | Después | El corpus los menciona; el flujo es largo (días) y no cabe en una demo |
@@ -27,6 +28,7 @@ explicarla y ensayarla; una pieza sin ensayar es un riesgo en vivo.
 | `PATCH /v1/intents/{ref}` (update) y `GET /v1/intents` (list) | Después | Completan la API de Stripe; nadie los usa en la demo |
 | El terminal se autentica con su certificado (mTLS con el ATECC608) | Mencionar | Hoy el POS se identifica solo por su `terminal_id`. Es la concesión de seguridad más visible del backend |
 | El Core2 cancela por API el QR abandonado | Después | Hoy cancela solo en pantalla; la intención queda `REQUIRES_CONFIRMATION`. Exige regrabar y probar el firmware |
+| Dominio propio en API Gateway | Después | Cada despliegue crea una URL nueva de API Gateway, y hay que regrabar el Core2 con ella. Con un dominio fijo, no |
 | Desactivar `/docs` y `/openapi.json` | Después | Públicos por la ruta comodín de API Gateway. Útiles en un taller; fuera en producción |
 | Páginas `/pay` y `/3ds` en S3 + CloudFront (mismo dominio) | Después | Lo correcto en producción; en la demo es un servicio más sin lección de datos (ADR-021) |
 
