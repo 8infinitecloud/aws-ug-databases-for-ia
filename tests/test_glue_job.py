@@ -298,8 +298,6 @@ def test_el_pipeline_completo_corre_en_local(tmp_path):
     los pasos en main(), la escritura de Parquet particionado, y que el reporte
     se serialice a JSON sin reventar.
     """
-    import shutil
-
     spec = importlib.util.spec_from_file_location(
         "run_pipeline_local", REPO / "scripts/run_pipeline_local.py"
     )
@@ -309,10 +307,8 @@ def test_el_pipeline_completo_corre_en_local(tmp_path):
 
     root = tmp_path / "lake"
     root.mkdir()
-    for tabla in ("transactions", "merchants"):
-        destino = root / "raw" / tabla / "LOAD00000001.csv"
-        destino.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(REPO / f"labs/01-ingestion-data-lake/dataset/{tabla}.csv", destino)
+    # Las dos fuentes, con el layout exacto de DMS y del legacy.
+    runner.seed_raw_zone(root)
 
     fake_s3 = runner.LocalS3(root)
     job = _load_glue_job()
@@ -338,6 +334,10 @@ def test_el_pipeline_completo_corre_en_local(tmp_path):
     # El reporte publica la comparacion por etapas
     report = json.loads((root / "quality-reports/latest/quality_report.json").read_text())
     assert report["summary"]["total_rows_rejected"] == 137
+    # Los 137 son todos del legacy: el core no trae ninguno, porque la base lo
+    # impide. Es la frase que el lab tiene que poder decir con datos.
+    assert report["by_source"]["acquiring"]["rejected_rows"] == 0
+    assert report["by_source"]["legacy"]["rejected_rows"] == 137
     comparacion = report["rules_raw_vs_curated"]
     assert comparacion["validity_status"]["resolved_by"] == "transformacion"
     assert comparacion["uniqueness_transaction_id"]["resolved_by"] == "rechazo"
@@ -428,3 +428,26 @@ def test_la_matriz_de_decision_sobrevive_al_chunking():
     assert any(
         "transaction_type` | `risk_level" in c or "## 5. Matriz" in c for c in con_fila
     ), "la fila se separo de la cabecera de su tabla: el chunk pierde el significado"
+
+
+def test_el_ruleset_de_terraform_es_el_del_fichero_dqdl():
+    """
+    El ruleset existe dos veces: quality_rules.dqdl (lo que lee el lab) y el
+    heredoc de infra/lab2/glue.tf (lo que se despliega). glue.tf decia que "un
+    test lo comprueba" y no habia ninguno: al anadir CARD_NOT_PRESENT se
+    actualizo uno y no el otro.
+    """
+    def reglas(texto):
+        palabras = ("Completeness", "IsComplete", "Uniqueness", "ColumnValues",
+                    "ColumnLength", "CustomSql")
+        return [
+            re.sub(r"\s+", " ", linea.strip().rstrip(","))
+            for linea in texto.splitlines()
+            if linea.strip().startswith(palabras)
+        ]
+
+    dqdl = (REPO / "labs/02-transformation-quality-catalog/quality_rules.dqdl").read_text()
+    tf = (REPO / "infra/lab2/glue.tf").read_text()
+    heredoc = tf[tf.index("ruleset = <<-DQDL"):tf.index("  DQDL", tf.index("ruleset = <<-DQDL") + 20)]
+    assert len(reglas(dqdl)) == 10
+    assert reglas(heredoc) == reglas(dqdl)

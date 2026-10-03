@@ -74,15 +74,22 @@ S3_BUCKET=$(tf_output lab1 s3_bucket_name)
 [ -n "${S3_BUCKET}" ] || error "No se pudo leer s3_bucket_name del Lab 1"
 success "S3 Bucket (Lab 1): ${S3_BUCKET}"
 
-# Verificar que hay datos en raw/
-TXN_COUNT=$(aws s3 ls "s3://${S3_BUCKET}/raw/transactions/" \
-  --region "${REGION}" 2>/dev/null | grep -c "\.csv" || echo "0")
+# Verificar que hay datos en las dos fuentes de raw/
+CORE=$(aws s3 ls "s3://${S3_BUCKET}/raw/acquiring/charges/" --recursive \
+  --region "${REGION}" 2>/dev/null | grep -c "\.parquet" || true)
+LEGACY=$(aws s3 ls "s3://${S3_BUCKET}/raw/legacy/transactions/" \
+  --region "${REGION}" 2>/dev/null | grep -c "\.csv" || true)
 
-if [ "${TXN_COUNT}" -eq 0 ]; then
-  warn "No se encontraron CSVs en s3://${S3_BUCKET}/raw/transactions/"
-  warn "El Glue job buscará también en staging/. Continúa si usaste ./setup.sh del Lab 1."
+if [ "${CORE}" -eq 0 ]; then
+  warn "Sin datos del core en raw/acquiring/: ¿la tarea DMS del Lab 1 esta en running?"
+  warn "El job correra solo con la cartera legacy."
 else
-  success "Datos raw encontrados: ${TXN_COUNT} archivo(s) en raw/transactions/"
+  success "Core: ${CORE} fichero(s) Parquet de DMS en raw/acquiring/charges/"
+fi
+if [ "${LEGACY}" -eq 0 ]; then
+  warn "Sin cartera legacy en raw/legacy/: vuelve a ejecutar el setup.sh del Lab 1."
+else
+  success "Legacy: raw/legacy/transactions/"
 fi
 
 # ── [2] Subir glue_job.py a S3 ───────────────────────────────────────────────

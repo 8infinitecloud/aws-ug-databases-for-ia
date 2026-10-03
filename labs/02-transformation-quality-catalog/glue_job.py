@@ -4,7 +4,9 @@ glue_job.py — Lab 2: Transformation + Data Quality + Catalog
 AWS Glue Python Shell job (Python 3.x, 1/16 DPU).
 
 Pipeline:
-  1. Lee CSV desde S3 raw/transactions/ (output del Lab 1 vía DMS)
+  1. Lee las dos fuentes de raw/: las tablas del core que replica DMS con CDC
+     (raw/acquiring/, Parquet), aplicando los deltas y reconstruyendo una fila
+     por cobro; y la cartera legacy (raw/legacy/, CSV). Las une con `source`.
   2. Transforma: tipos, fechas, normalización
   3. Aplica Data Quality rules (Python-native, en paralelo al ruleset DQDL del CFN)
   4. Separa registros válidos de rechazados
@@ -14,7 +16,7 @@ Pipeline:
 
 Por qué Python Shell (no PySpark):
   - Inicia en ~20 segundos vs ~3 minutos de PySpark
-  - Dataset ~1000 filas — pandas es suficiente
+  - Unos miles de filas — pandas es suficiente
   - Más legible para la audiencia en vivo
 
 Uso manual (desarrollo local):
@@ -88,8 +90,6 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="FinCorp Glue ETL Job — Lab 2")
     parser.add_argument("--S3_BUCKET",       required=True,              help="Nombre del bucket S3")
     parser.add_argument("--RAW_PREFIX",      default="raw/",             help="Prefijo de la zona raw")
-    parser.add_argument("--SOURCE_PATH",     default=DEFAULT_SOURCE_PATH,
-                        help="Ruta de la tabla dentro de raw/, como la escribe DMS")
     parser.add_argument("--CURATED_PREFIX",  default="curated/",         help="Prefijo de la zona curated")
     parser.add_argument("--REJECTED_PREFIX", default="rejected/",        help="Prefijo para registros rechazados")
     parser.add_argument("--REPORTS_PREFIX",  default="quality-reports/", help="Prefijo para reportes de calidad")
@@ -149,56 +149,220 @@ def write_json_to_s3(s3_client, data: dict, bucket: str, key: str) -> None:
     log.info(f"  → JSON escrito: s3://{bucket}/{key}")
 
 
-# ── PASO 1: Leer datos raw ────────────────────────────────────────────────────
+# ── PASO 1: Leer las dos fuentes de raw/ ──────────────────────────────────────
+#
+#   raw/acquiring/<tabla>/   el core, replicado por DMS con CDC (Lab 1). Una
+#                            carpeta por tabla, en Parquet: LOAD*.parquet es la
+#                            foto inicial y AAAA/MM/DD/*.parquet los cambios.
+#                            Cada fila lleva Op (I/U/D) y dms_timestamp.
+#   raw/legacy/transactions/ la cartera del adquirente absorbido: un volcado CSV,
+#                            sucio, que nunca paso por constraints.
+#
+# DMS NO TRANSFORMA: deja las tablas como estan en el origen. Reconstruir una
+# fila por transaccion —lo que antes hacia la vista v_transactions_for_ingestion
+# en la base— es trabajo de este job. Raw es lo que llego; curated, lo que se
+# hizo con ello.
+ACQUIRING_PATH = "acquiring/"
+LEGACY_PATH = "legacy/transactions/"
 
-# DMS no deja los ficheros donde uno esperaria. Su convencion es
-#     <bucket_folder>/<esquema>/<tabla>/LOAD*.csv
-# asi que con bucket_folder=raw y la tabla del Lab 1 sale
-#     raw/acquiring/tbl_transactions_for_ingestion/
-# y no `raw/transactions/`, que es lo que este job leia antes. Los dos labs eran
-# correctos por separado y nunca se habian ejecutado juntos: el job no encontraba
-# nada y fallaba con un FileNotFoundError que culpaba al Lab 1.
-DEFAULT_SOURCE_PATH = "acquiring/tbl_transactions_for_ingestion/"
+# Las tablas del core que hacen falta para una fila de transaccion.
+ACQUIRING_TABLES = ("charges", "payment_intents", "merchants", "terminals",
+                    "balance_transactions")
+
+# Las columnas de la vista del adquirente, en su orden. Es el contrato con los
+# Labs 3 y 4 y con la cartera legacy, que ya viene con esta forma.
+TRANSACTION_COLUMNS = [
+    "transaction_id", "customer_id", "merchant_name", "mcc", "risk_level",
+    "terminal_id", "device_serial", "amount", "currency", "payment_method",
+    "status", "response_code", "rrn", "auth_code", "fee_amount", "net_amount",
+    "transaction_date", "created_at", "captured_at",
+]
 
 
-def read_raw_data(s3_client, bucket: str, raw_prefix: str,
-                  source_path: str = DEFAULT_SOURCE_PATH) -> tuple[pd.DataFrame, dict]:
-    """Lee los CSV que dejo DMS en la zona raw y los concatena."""
-    prefix = f"{raw_prefix}{source_path}"
-    keys = list_s3_files(s3_client, bucket, prefix)
+def read_parquet_from_s3(s3_client, bucket: str, key: str) -> pd.DataFrame:
+    response = s3_client.get_object(Bucket=bucket, Key=key)
+    return pd.read_parquet(BytesIO(response["Body"].read()), engine="pyarrow")
 
-    if not keys:
-        # Compatibilidad con datasets subidos a mano y con el runner local.
-        for alternativa in (f"{raw_prefix}transactions/", "staging/transactions/"):
-            keys = list_s3_files(s3_client, bucket, alternativa)
-            if keys:
-                log.warning("No habia CSVs en %s; usando %s", prefix, alternativa)
-                prefix = alternativa
-                break
 
-    if not keys:
+def apply_cdc(versions: pd.DataFrame, key: str = "id") -> tuple[pd.DataFrame, dict]:
+    """
+    De todas las versiones de cada fila, el estado actual.
+
+    Un mismo cobro llega varias veces: como I en la foto inicial o al crearse, y
+    como U cada vez que cambia (capturado, devuelto). Aqui se queda la ULTIMA
+    version de cada clave por dms_timestamp, y desaparecen las filas cuya ultima
+    operacion fue un D.
+
+    El orden de llegada desempata: dentro del mismo milisegundo, la version
+    leida despues es la mas reciente (los ficheros se leen en orden de clave, y
+    DMS los nombra por fecha).
+    """
+    if versions.empty:
+        return versions, {"versions": 0, "rows": 0, "updates_applied": 0, "deletes": 0}
+
+    df = versions.reset_index(drop=True)
+    df["_orden"] = range(len(df))
+    if "dms_timestamp" in df.columns:
+        df["_ts"] = pd.to_datetime(df["dms_timestamp"], errors="coerce", utc=True)
+        df = df.sort_values(["_ts", "_orden"], kind="stable")
+    ultima = df.drop_duplicates(subset=[key], keep="last")
+    op = ultima.get("Op", pd.Series("I", index=ultima.index)).astype(str).str.upper()
+    vivas = ultima[op != "D"]
+
+    stats = {
+        "versions": len(df),
+        "rows": len(vivas),
+        "updates_applied": len(df) - len(ultima),
+        "deletes": int((op == "D").sum()),
+    }
+    return vivas.drop(columns=["_orden", "_ts", "Op", "dms_timestamp"], errors="ignore"), stats
+
+
+def read_acquiring(s3_client, bucket: str, raw_prefix: str) -> tuple[pd.DataFrame, dict]:
+    """
+    Lee las tablas replicadas, aplica el CDC y las une en una fila por cobro.
+
+    Devuelve un DataFrame vacio si DMS todavia no ha escrito nada: el job puede
+    correr solo con la cartera legacy.
+    """
+    tablas: dict[str, pd.DataFrame] = {}
+    cdc: dict[str, dict] = {}
+    for tabla in ACQUIRING_TABLES:
+        prefix = f"{raw_prefix}{ACQUIRING_PATH}{tabla}/"
+        keys = list_s3_files(s3_client, bucket, prefix, extension=".parquet")
+        frames = [read_parquet_from_s3(s3_client, bucket, k) for k in keys]
+        versiones = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        tablas[tabla], cdc[tabla] = apply_cdc(versiones)
+        cdc[tabla]["files"] = len(keys)
+        log.info(f"  {tabla}: {len(keys)} fichero(s), {cdc[tabla]['versions']} versiones "
+                 f"-> {cdc[tabla]['rows']} filas ({cdc[tabla]['updates_applied']} updates, "
+                 f"{cdc[tabla]['deletes']} deletes)")
+
+    if tablas["charges"].empty:
+        return pd.DataFrame(columns=TRANSACTION_COLUMNS), {"tables": cdc}
+    return build_transactions(tablas), {"tables": cdc}
+
+
+def _minor_to_text(serie: pd.Series) -> pd.Series:
+    """1850 -> '18.50'. Texto, como lo trae el CSV legacy: el resto del job es comun."""
+    num = pd.to_numeric(serie, errors="coerce")
+    return num.map(lambda v: f"{v / 100:.2f}" if pd.notna(v) else pd.NA)
+
+
+def _ts_to_text(serie: pd.Series) -> pd.Series:
+    ts = pd.to_datetime(serie, errors="coerce", utc=True)
+    return ts.map(lambda v: v.isoformat() if pd.notna(v) else pd.NA)
+
+
+def build_transactions(t: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """
+    El JOIN de v_transactions_for_ingestion (payments/schema/001_schema.sql),
+    hecho aqui en vez de en la base:
+
+        charges
+          JOIN merchants             ON merchants.id = charges.merchant_id
+          LEFT JOIN terminals        ON terminals.id = charges.terminal_id
+          LEFT JOIN balance_transactions
+                 ON charge_id = charges.id AND source_type = 'CHARGE'
+
+    tests/test_dms_glue.py comprueba que el resultado coincide fila a fila con
+    lo que devuelve la vista en la base: si alguien cambia uno, el otro avisa.
+    """
+    c = t["charges"].copy()
+    m = t["merchants"][["id", "merchant_id", "trade_name", "mcc", "risk_level"]].rename(
+        columns={"id": "_m", "merchant_id": "_mid"})
+    term = t["terminals"]
+    if term.empty:
+        term = pd.DataFrame(columns=["id", "terminal_id", "device_serial"])
+    term = term[["id", "terminal_id", "device_serial"]].rename(
+        columns={"id": "_t", "terminal_id": "_tid"})
+    bt = t["balance_transactions"]
+    if bt.empty:
+        bt = pd.DataFrame(columns=["charge_id", "source_type", "fee_minor", "net_minor"])
+    bt = bt[bt["source_type"].astype(str) == "CHARGE"][["charge_id", "fee_minor", "net_minor"]]
+
+    # Las claves foraneas como enteros nullable: un terminal_id nulo (pago
+    # online) no puede convertir la columna en float y romper el JOIN.
+    for df, cols in ((c, ["merchant_id", "terminal_id", "id"]), (m, ["_m"]),
+                     (term, ["_t"]), (bt, ["charge_id"])):
+        for col in cols:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+
+    x = (c.merge(m, left_on="merchant_id", right_on="_m", how="inner")
+          .merge(term, left_on="terminal_id", right_on="_t", how="left")
+          .merge(bt, left_on="id", right_on="charge_id", how="left"))
+
+    out = pd.DataFrame({
+        "transaction_id": x["charge_reference"],
+        # El comercio es el cliente del adquirente: por eso customer_id es el MID.
+        "customer_id":    x["_mid"],
+        "merchant_name":  x["trade_name"],
+        "mcc":            x["mcc"],
+        "risk_level":     x["risk_level"],
+        "terminal_id":    x["_tid"],
+        "device_serial":  x["device_serial"],
+        "amount":         _minor_to_text(x["amount_minor"]),
+        "currency":       x["currency_code"],
+        "payment_method": x["channel"],
+        "status":         x["status"],
+        "response_code":  x["response_code"],
+        "rrn":            x["rrn"],
+        "auth_code":      x["auth_code"],
+        "fee_amount":     _minor_to_text(x["fee_minor"]),
+        "net_amount":     _minor_to_text(x["net_minor"]),
+        # La fecha de negocio en UTC, como created_at::date en la vista.
+        "transaction_date": pd.to_datetime(x["created_at"], errors="coerce", utc=True)
+                              .dt.strftime("%Y-%m-%d"),
+        "created_at":     _ts_to_text(x["created_at"]),
+        "captured_at":    _ts_to_text(x["captured_at"]),
+    })
+    # Todo como texto, igual que el CSV legacy: a partir de aqui el job no
+    # distingue de donde vino cada fila, salvo por la columna source.
+    return out.astype("string").astype(object).where(out.notna(), pd.NA)
+
+
+def read_legacy(s3_client, bucket: str, raw_prefix: str) -> tuple[pd.DataFrame, list[str]]:
+    prefix = f"{raw_prefix}{LEGACY_PATH}"
+    keys = list_s3_files(s3_client, bucket, prefix, extension=".csv")
+    frames = [read_csv_from_s3(s3_client, bucket, k) for k in keys]
+    df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=TRANSACTION_COLUMNS)
+    return df, keys
+
+
+def read_raw_data(s3_client, bucket: str, raw_prefix: str) -> tuple[pd.DataFrame, dict]:
+    """
+    Las dos fuentes, unidas, con una columna `source` que dice de cual viene
+    cada fila. Es lo que permite que el reporte de calidad diga DONDE estan los
+    problemas: en el core no deberia haber ninguno, porque la base los impide.
+    """
+    log.info("Fuente 1 — el core (raw/acquiring/, CDC de DMS):")
+    core, core_meta = read_acquiring(s3_client, bucket, raw_prefix)
+    core["source"] = "acquiring"
+
+    log.info("Fuente 2 — la cartera legacy (raw/legacy/):")
+    legacy, legacy_keys = read_legacy(s3_client, bucket, raw_prefix)
+    legacy["source"] = "legacy"
+    log.info(f"  {len(legacy)} filas desde {len(legacy_keys)} fichero(s)")
+
+    if core.empty and legacy.empty:
         raise FileNotFoundError(
-            f"No se encontraron CSV en s3://{bucket}/{prefix}. "
-            f"Comprueba que la tarea DMS del Lab 1 termino con 'Table completed' "
-            f"y que escribio en esa ruta: DMS usa <bucket_folder>/<esquema>/<tabla>/."
+            f"No hay datos en s3://{bucket}/{raw_prefix}: ni tablas del core en "
+            f"{ACQUIRING_PATH} ni cartera en {LEGACY_PATH}. Comprueba que la tarea "
+            f"DMS del Lab 1 esta en running y que setup.sh subio el legacy."
         )
 
-    frames = []
-    for key in keys:
-        log.info(f"Leyendo: s3://{bucket}/{key}")
-        df = read_csv_from_s3(s3_client, bucket, key)
-        frames.append(df)
-        log.info(f"  → {len(df)} filas, columnas: {list(df.columns)}")
-
-    raw_df = pd.concat(frames, ignore_index=True)
+    raw_df = pd.concat([core[TRANSACTION_COLUMNS + ["source"]],
+                        legacy.reindex(columns=TRANSACTION_COLUMNS + ["source"])],
+                       ignore_index=True)
 
     metadata = {
-        "source_files":      keys,
+        "acquiring":         core_meta,
+        "legacy_files":      legacy_keys,
+        "rows_by_source":    {"acquiring": len(core), "legacy": len(legacy)},
         "total_rows_raw":    len(raw_df),
-        "columns":           list(raw_df.columns),
         "read_at":           datetime.now(timezone.utc).isoformat(),
     }
-    log.info(f"Total cargado: {len(raw_df)} filas desde {len(keys)} archivo(s)")
+    log.info(f"Total: {len(raw_df)} filas ({len(core)} del core, {len(legacy)} legacy)")
     return raw_df, metadata
 
 
@@ -361,9 +525,12 @@ def measure_rules(df: pd.DataFrame) -> dict:
     issuer_declined = df["response_code"] != RESPONSE_CODE_APPROVED
     captured_without_auth = claims_captured & issuer_declined
 
-    # ColumnLength del DQDL: entre 1 y 20 caracteres.
+    # ColumnLength del DQDL: entre 1 y 40, el VARCHAR(40) de charge_reference.
+    # Aqui ponia 20 mientras el DQDL decia 40: con el dataset legacy (ids de 12)
+    # no se notaba, y con el core habria rechazado cada cobro del generador de
+    # trafico (ch_PI + 14 hex + _1 = 21 caracteres).
     txn_id_len  = df["transaction_id"].astype(str).str.len()
-    bad_txn_len = (txn_id_len < 1) | (txn_id_len > 20) | null_txn_id
+    bad_txn_len = (txn_id_len < 1) | (txn_id_len > 40) | null_txn_id
 
     def rule(ok_mask, threshold: float, extra: dict | None = None) -> dict:
         score = float(ok_mask.sum()) / total
@@ -583,6 +750,36 @@ def write_rejected_data(
 
 # ── PASO 6: Quality Report ────────────────────────────────────────────────────
 
+def summarize_by_source(raw_by_source: dict, valid_df: pd.DataFrame,
+                        rejected_df: pd.DataFrame) -> dict:
+    """
+    La calidad de cada fuente por separado: que reglas fallaban en origen, cuantas
+    filas se aceptaron, y por que se rechazaron las demas.
+
+    Es la pregunta que se hace cualquiera que integra una cartera ajena: "de
+    donde viene la basura".
+    """
+    out = {}
+    for src, m in raw_by_source.items():
+        rech = rejected_df[rejected_df["source"] == src] if not rejected_df.empty else rejected_df
+        validas = int((valid_df["source"] == src).sum()) if not valid_df.empty else 0
+        motivos: dict[str, int] = {}
+        if not rech.empty:
+            for razones in rech["rejection_reason"]:
+                for r in filter(None, str(razones).split(";")):
+                    motivos[r] = motivos.get(r, 0) + 1
+        total = validas + len(rech)
+        out[src] = {
+            "rows": total,
+            "valid_rows": validas,
+            "rejected_rows": len(rech),
+            "acceptance_rate": round(validas / total, 4) if total else 1.0,
+            "rules_failed_at_source": sorted(n for n, r in m["rules"].items() if not r["passed"]),
+            "rejection_reasons": dict(sorted(motivos.items(), key=lambda kv: -kv[1])),
+        }
+    return out
+
+
 def write_quality_report(
     s3_client,
     dq_metrics: dict,
@@ -594,6 +791,7 @@ def write_quality_report(
     reports_prefix: str,
     run_timestamp: str,
     job_name: str,
+    by_source: dict | None = None,
 ) -> str:
     """Genera y escribe el reporte de calidad en S3."""
     # Tres medidas, una por etapa del pipeline. Con solo dos (raw y curated) no
@@ -634,6 +832,7 @@ def write_quality_report(
         "data_quality_transformed": transformed_metrics,
         "data_quality_curated":     dq_metrics,
         "rules_raw_vs_curated": comparison,
+        "by_source":       by_source or {},
         "data_quality":    dq_metrics,
         "summary": {
             "total_rows_input":  dq_metrics["total_rows"],
@@ -675,10 +874,18 @@ def main() -> None:
 
     # ── Paso 1: Leer raw data ────────────────────────────────────────────────
     log.info("\n[PASO 1/5] Leyendo datos raw desde S3...")
-    raw_df, read_metadata = read_raw_data(s3_client, args.S3_BUCKET, args.RAW_PREFIX, args.SOURCE_PATH)
+    raw_df, read_metadata = read_raw_data(s3_client, args.S3_BUCKET, args.RAW_PREFIX)
 
     # Medir las reglas ANTES de tocar nada: es la foto del problema real.
     raw_metrics = measure_rules(raw_df)
+    # Y por fuente: el core deberia pasarlas todas en origen, porque la base
+    # impide los errores con constraints. Si no, hay un bug en el JOIN o en el
+    # backend; si el legacy falla, es la deuda que se viene a pagar.
+    raw_by_source = {
+        src: measure_rules(grupo) for src, grupo in raw_df.groupby("source")
+    }
+    for src, m in raw_by_source.items():
+        log.info(f"    {src}: {m['rules_passed']}/{len(m['rules'])} reglas pasan en origen")
     log.info(
         f"  Calidad en raw: {raw_metrics['rules_passed']}/{len(raw_metrics['rules'])} "
         f"reglas pasan (score {raw_metrics['overall_score']:.1%})"
@@ -709,9 +916,11 @@ def main() -> None:
     write_rejected_data(
         s3_client, rejected_df, args.S3_BUCKET, args.REJECTED_PREFIX, run_timestamp
     )
+    by_source = summarize_by_source(raw_by_source, valid_df, rejected_df)
     report_key = write_quality_report(
         s3_client, dq_metrics, raw_metrics, transformed_metrics, transform_stats, read_metadata,
-        args.S3_BUCKET, args.REPORTS_PREFIX, run_timestamp, args.JOB_NAME
+        args.S3_BUCKET, args.REPORTS_PREFIX, run_timestamp, args.JOB_NAME,
+        by_source=by_source,
     )
 
     # ── Resumen final ─────────────────────────────────────────────────────────

@@ -116,6 +116,18 @@ if [ "${REPORT_EXISTS}" -gt 0 ]; then
     echo "  Score DQ       : ${SCORE}"
     echo "  Reglas pasadas : ${RULES}"
     echo "  Rechazados     : ${REJECTED} filas"
+
+    # Por fuente. El core no deberia aportar ni un rechazado: la base impide
+    # esos errores con constraints. Si aparece alguno, el problema no es de
+    # datos sino del JOIN de Glue o del backend, y hay que mirarlo.
+    echo "${REPORT_JSON}" | jq -r '.by_source // {} | to_entries[] |
+      "  \(.key): \(.value.valid_rows) validas / \(.value.rejected_rows) rechazadas"'
+    CORE_RECH=$(echo "${REPORT_JSON}" | jq -r '.by_source.acquiring.rejected_rows // 0')
+    if [ "${CORE_RECH}" = "0" ]; then
+      pass "El core no aporta rechazados: los errores vienen del legacy"
+    else
+      fail "El core aporta ${CORE_RECH} rechazados: revisa el JOIN de Glue o el backend"
+    fi
   fi
 else
   fail "Quality report no encontrado en s3://${S3_BUCKET}/quality-reports/latest/"

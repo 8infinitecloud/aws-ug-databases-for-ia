@@ -64,12 +64,21 @@ resource "aws_glue_job" "etl" {
 # que en la demo se vea aparecer la tabla en el Catalog.
 resource "aws_glue_crawler" "curated" {
   name          = "${var.project_name}-${var.environment}-crawler"
-  description   = "Descubre el schema de curated/transactions/ y actualiza el Catalog"
+  description   = "Descubre el schema de curated/transactions/ y de raw/telemetry/ y actualiza el Catalog"
   role          = aws_iam_role.glue.arn
   database_name = aws_glue_catalog_database.main.name
 
   s3_target {
     path = "s3://${local.s3_bucket}/curated/transactions/"
+  }
+
+  # La telemetria de los terminales que aterriza Firehose (Lab 4). Se cataloga
+  # tal cual llega: no necesita limpieza, la escribe el propio dispositivo. Es
+  # lo que permite cruzar en Athena "como estaba la red" con "que paso con el
+  # cobro". Si el Lab 4 no esta desplegado la carpeta no existe y el Crawler
+  # simplemente no crea la tabla.
+  s3_target {
+    path = "s3://${local.s3_bucket}/raw/telemetry/"
   }
 
   schema_change_policy {
@@ -108,7 +117,7 @@ resource "aws_glue_data_quality_ruleset" "main" {
       IsComplete "transaction_id",
       IsComplete "customer_id",
       Uniqueness "transaction_id" = 1.0,
-      ColumnValues "payment_method" in ["CARD_PRESENT", "QR"],
+      ColumnValues "payment_method" in ["CARD_PRESENT", "QR", "CARD_NOT_PRESENT"],
       ColumnValues "status" in ["CAPTURED", "FAILED", "REFUNDED", "REVERSED"],
       ColumnValues "currency" in ["PEN", "USD", "EUR"],
       ColumnLength "transaction_id" between 1 and 40,

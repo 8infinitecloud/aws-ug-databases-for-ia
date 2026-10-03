@@ -6,19 +6,23 @@ Los tests (tests/test_glue_job.py) prueban las funciones puras del Glue job.
 Esto ejecuta el job **entero**, el mismo `main()` que corre en AWS, contra un
 directorio local que hace de bucket. Sirve para:
 
-  - Ver el quality report de verdad, con las 8 reglas en las tres etapas
+  - Ver el quality report de verdad, con las 10 reglas en las tres etapas y
+    desglosado por fuente (el core frente al legacy)
   - Inspeccionar el Parquet particionado y la zona rejected/ con sus motivos
   - Iterar sobre las reglas de calidad sin esperar 20 segundos de Glue ni pagar
   - Entender el Lab 2 antes de tener una cuenta AWS
 
 No es una reimplementacion: se sustituye el cliente de S3 por un doble que
 guarda en disco. El job no sabe la diferencia, porque solo usa tres metodos
-(get_object, get_paginator, put_object).
+(get_object, get_paginator, put_object). Y raw/ se siembra con la forma exacta
+que deja DMS (scripts/dms_emulator.py): si local sembrara otra cosa, el runner
+pasaria y AWS fallaria, que es exactamente lo que ocurrio la primera vez.
 
 Uso:
     python scripts/run_pipeline_local.py
     python scripts/run_pipeline_local.py --keep      # no borrar la salida al terminar
     python scripts/run_pipeline_local.py --out /tmp/mi-lake
+    python scripts/run_pipeline_local.py --from-db "host=localhost port=55433 dbname=acquiring user=postgres password=demo"
 
 Requiere: pip install -r requirements.txt
 """
@@ -102,22 +106,36 @@ def load_glue_job():
     return mod
 
 
-def seed_raw_zone(root: Path) -> None:
+def seed_raw_zone(root: Path, conninfo: str | None = None) -> dict:
     """
-    Copia el dataset a raw/, imitando lo que deja DMS.
+    Siembra raw/ con las dos fuentes, con la forma exacta que tienen en AWS.
 
-    DMS nombra los ficheros LOAD00000001.csv, y el job los busca por extension,
-    asi que el nombre exacto da igual. Se usa el de DMS para que la estructura
-    local se parezca a la real.
+      raw/acquiring/<tabla>/...   lo que dejaria DMS (scripts/dms_emulator.py):
+                                  foto inicial + un fichero de cambios con los
+                                  I y U que traeria el CDC
+      raw/legacy/transactions/    la cartera absorbida, el CSV tal cual
+
+    Con `conninfo`, el core sale de un PostgreSQL de verdad (el de los tests, o
+    un tunel al de AWS); sin el, de un core sintetico.
     """
-    # Las rutas imitan las de DMS: <bucket_folder>/<esquema>/<tabla>/. Si local
-    # sembrara `raw/transactions/`, el runner pasaria y AWS fallaria, que es
-    # exactamente lo que ocurrio la primera vez que se ejecutaron juntos.
-    for tabla, ruta in (("transactions", "acquiring/tbl_transactions_for_ingestion"),
-                        ("merchants", "acquiring/merchants")):
-        destino = root / "raw" / ruta / "LOAD00000001.csv"
-        destino.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(DATASET / f"{tabla}.csv", destino)
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    import dms_emulator as dms
+    from datetime import datetime, timedelta, timezone
+
+    if conninfo:
+        foto = dms.snapshot_from_db(conninfo)
+        deltas = []
+    else:
+        foto, despues = dms.synthesize()
+        deltas = [(datetime.now(timezone.utc) + timedelta(minutes=1),
+                   dms.cdc_delta(foto, despues))]
+    dms.write_layout(root, foto, deltas)
+
+    destino = root / "raw" / "legacy" / "transactions" / "transactions.csv"
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(DATASET / "transactions.csv", destino)
+    return {"tablas": {t: len(df) for t, df in foto.items()},
+            "cambios": sum(len(df) for _, d in deltas for df in d.values())}
 
 
 def tree(root: Path, prefix: str = "") -> list[str]:
@@ -136,6 +154,8 @@ def main() -> int:
     )
     parser.add_argument("--out", type=Path, help="Directorio que hace de bucket")
     parser.add_argument("--keep", action="store_true", help="No borrar la salida al terminar")
+    parser.add_argument("--from-db", metavar="CONNINFO",
+                        help="tomar el core de un PostgreSQL con el esquema, en vez de sintetico")
     args = parser.parse_args()
 
     root = args.out or (REPO_ROOT / ".local-lake")
@@ -148,10 +168,11 @@ def main() -> int:
     print(f"{BLUE}{'=' * 64}{NC}")
     print(f"  Bucket simulado: {root}\n")
 
-    print(f"{BLUE}[1/3]{NC} Sembrando la zona raw/ con el dataset del Lab 1...")
-    seed_raw_zone(root)
-    print(f"  {GREEN}✓{NC} raw/transactions/ y raw/customers/ listos "
-          f"{DIM}(como los dejaria DMS){NC}\n")
+    print(f"{BLUE}[1/3]{NC} Sembrando raw/ con las dos fuentes...")
+    sembrado = seed_raw_zone(root, args.from_db)
+    print(f"  {GREEN}✓{NC} raw/acquiring/ {DIM}(el layout de DMS: foto inicial + "
+          f"{sembrado['cambios']} cambios del CDC){NC}")
+    print(f"  {GREEN}✓{NC} raw/legacy/ {DIM}(la cartera absorbida, sucia){NC}\n")
 
     print(f"{BLUE}[2/3]{NC} Ejecutando glue_job.main()...")
     print(f"{DIM}{'─' * 64}{NC}")
@@ -202,6 +223,14 @@ def main() -> int:
                 f"{marca(datos.get('transformed_passed')):>17s} "
                 f"{marca(datos.get('curated_passed')):>17s}   {resuelto}"
             )
+
+        por_fuente = report.get("by_source", {})
+        if por_fuente:
+            print(f"\n{BLUE}  Por fuente{NC}")
+            for src, d in por_fuente.items():
+                fallos = ", ".join(d["rules_failed_at_source"]) or "ninguna"
+                print(f"  {src:10s} {d['valid_rows']:>5d} validas / {d['rejected_rows']:>4d} "
+                      f"rechazadas   {DIM}fallaban en origen: {fallos}{NC}")
 
         resumen = report.get("summary", {})
         print(f"\n  {DIM}filas: {resumen.get('total_rows_input')} leidas → "

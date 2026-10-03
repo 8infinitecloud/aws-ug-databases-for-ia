@@ -148,3 +148,102 @@ resource "aws_athena_named_query" "particiones" {
     -- WHERE year = '2024' AND month = '03';
   SQL
 }
+
+
+# -----------------------------------------------------------------------------
+# Las dos fuentes y la telemetria
+# -----------------------------------------------------------------------------
+resource "aws_athena_named_query" "por_fuente" {
+  name        = "5. El core frente a la cartera legacy"
+  workgroup   = aws_athena_workgroup.main.id
+  database    = aws_glue_catalog_database.main.name
+  description = "Lo que aporta cada fuente a la zona curada"
+  query       = <<-SQL
+    -- `source` dice de donde viene cada fila: el core (CDC de DMS) o la cartera
+    -- absorbida (volcado CSV). Los rechazados de cada una estan en el quality
+    -- report (by_source): el core no deberia tener ninguno.
+    SELECT source,
+           COUNT(*)                                     AS transacciones,
+           COUNT(DISTINCT customer_id)                  AS comercios,
+           ROUND(SUM(amount), 2)                        AS volumen,
+           ROUND(AVG(CASE WHEN response_code = '00' THEN 1.0 ELSE 0 END), 3) AS tasa_aprobacion
+    FROM transactions
+    GROUP BY source;
+  SQL
+}
+
+resource "aws_athena_named_query" "red_o_emisor" {
+  name        = "6. Fallo la red o el emisor?"
+  workgroup   = aws_athena_workgroup.main.id
+  database    = aws_glue_catalog_database.main.name
+  description = "Cruza la telemetria de cada terminal con sus cobros"
+  query       = <<-SQL
+    -- La base dice QUE fallo; la telemetria dice POR QUE. Un terminal con muchos
+    -- timeouts y senal baja, pero con declinaciones normales del emisor, no
+    -- tiene un problema de fraude ni de banco: tiene la WiFi mal.
+    -- (Los timeouts no dejan cobro: el POS se rinde y la intencion se cancela.)
+    WITH red AS (
+      SELECT terminal_id,
+             ROUND(AVG(rssi_dbm), 1)           AS senal_media_dbm,
+             SUM(http_timeouts)                AS timeouts,
+             SUM(http_requests)                AS peticiones,
+             ROUND(AVG(http_latency_ms_avg))   AS latencia_media_ms
+      FROM telemetry
+      GROUP BY terminal_id
+    ),
+    emisor AS (
+      SELECT terminal_id,
+             COUNT(*)                                        AS cobros,
+             COUNT_IF(response_code <> '00')                 AS declinados
+      FROM transactions
+      WHERE source = 'acquiring' AND terminal_id IS NOT NULL
+      GROUP BY terminal_id
+    )
+    SELECT r.terminal_id, r.senal_media_dbm, r.timeouts, r.peticiones,
+           r.latencia_media_ms, e.cobros, e.declinados,
+           ROUND(1.0 * e.declinados / NULLIF(e.cobros, 0), 3) AS tasa_declinacion
+    FROM red r LEFT JOIN emisor e ON e.terminal_id = r.terminal_id
+    ORDER BY r.timeouts DESC;
+  SQL
+}
+
+resource "aws_athena_named_query" "abandono_qr" {
+  name        = "7. Abandono del QR por terminal"
+  workgroup   = aws_athena_workgroup.main.id
+  database    = aws_glue_catalog_database.main.name
+  description = "El embudo del QR: mostrados, pagados, cancelados, expirados"
+  query       = <<-SQL
+    -- La base solo ve una intencion que nunca se pago. El terminal sabe si el
+    -- cajero la cancelo o si expiro esperando: son problemas distintos.
+    SELECT terminal_id,
+           SUM(qr_shown)     AS mostrados,
+           SUM(qr_paid)      AS pagados,
+           SUM(qr_canceled)  AS cancelados,
+           SUM(qr_expired)   AS expirados,
+           ROUND(1.0 * SUM(qr_paid) / NULLIF(SUM(qr_shown), 0), 3) AS conversion
+    FROM telemetry
+    GROUP BY terminal_id
+    HAVING SUM(qr_shown) > 0
+    ORDER BY conversion;
+  SQL
+}
+
+resource "aws_athena_named_query" "terminales_caidos" {
+  name        = "8. Terminales que dejaron de latir"
+  workgroup   = aws_athena_workgroup.main.id
+  database    = aws_glue_catalog_database.main.name
+  description = "Ultimo latido de cada terminal y su bateria"
+  query       = <<-SQL
+    -- Para AHORA esta la tabla terminal-state del Lab 4 (DynamoDB, sin el buffer
+    -- de Firehose). Esto es la historia: cuando dejo de latir cada terminal y con
+    -- cuanta bateria. Un latido cada 30 s: mas de 2 minutos sin el es offline,
+    -- la misma regla con la que Stripe da por desconectado un lector.
+    SELECT terminal_id,
+           from_unixtime(MAX(received_at_ms) / 1000)   AS ultimo_latido,
+           MIN_BY(battery_pct, received_at_ms)         AS bateria_al_empezar,
+           MAX_BY(battery_pct, received_at_ms)         AS bateria_al_final
+    FROM telemetry
+    GROUP BY terminal_id
+    ORDER BY ultimo_latido;
+  SQL
+}
