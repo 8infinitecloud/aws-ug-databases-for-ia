@@ -17,6 +17,7 @@
 
 #include "core2forAWS.h"
 
+#include "pos_telemetry.h"
 #include "pos_ui.h"
 #include "wifi.h"
 
@@ -38,4 +39,7 @@ void app_main(void)
         ESP_LOGE(TAG, "sin WiFi: el terminal no puede cobrar");
     }
     pos_ui_set_wifi(wifi_is_connected());
+
+    /* Despues de la red: el latido la necesita, y si no la hay espera. */
+    pos_telemetry_start();
 }

@@ -32,4 +32,28 @@ menu "FinCorp POS"
             DEMO: no es un CVV real. Cualquier otro valor hace que el emisor
             simulado declino con el codigo 05.
 
+    menu "Telemetria"
+
+        config POS_TELEMETRY_ENABLED
+            bool "Publicar telemetria en AWS IoT Core"
+            default n
+            help
+                Un latido cada POS_TELEMETRY_INTERVAL_S en
+                <serial>/telemetry: bateria, senal, memoria, latencia de la API
+                y QR abandonados. Lo consume el Lab 4. Necesita
+                AWS_IOT_MQTT_HOST (menu Amazon Web Services IoT Platform),
+                que da `aws iot describe-endpoint --endpoint-type iot:Data-ATS`.
+                No toca el cobro, que sigue por HTTP.
+
+        config POS_TELEMETRY_INTERVAL_S
+            int "Segundos entre latidos"
+            default 30
+            range 10 600
+            depends on POS_TELEMETRY_ENABLED
+            help
+                El Lab 4 da un terminal por caido a los 2 minutos sin latido:
+                el intervalo tiene que quedar bastante por debajo.
+
+    endmenu
+
 endmenu

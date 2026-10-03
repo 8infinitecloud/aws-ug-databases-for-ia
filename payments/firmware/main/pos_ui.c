@@ -22,6 +22,7 @@
 #include "pos_api.h"
 #include "pos_qr.h"
 #include "pos_ui.h"
+#include "pos_telemetry.h"
 
 static const char *TAG = "pos_ui";
 
@@ -229,6 +230,7 @@ static void tarea_crear_intencion(void *arg)
     /* Cada venta arranca limpia: si no, una cancelacion anterior mataria el
      * sondeo de esta nada mas empezar. */
     qr_cancelado = false;
+    pos_telemetry_set_busy(true);
 
     pos_api_new_reference(carrito.intent_reference, sizeof(carrito.intent_reference));
     esp_err_t err = pos_api_create_intent(&carrito);
@@ -249,6 +251,7 @@ static void tarea_crear_intencion(void *arg)
             estado("No se pudo generar el QR");
         } else {
             lv_obj_align(qr, NULL, LV_ALIGN_IN_TOP_MID, 0, 28);
+            pos_telemetry_note_qr(POS_QR_SHOWN);
         }
 
         char imp[16];
@@ -281,6 +284,8 @@ static void tarea_crear_intencion(void *arg)
              * pantalla de la siguiente. */
             if (qr_cancelado) {
                 ESP_LOGI(TAG, "sondeo de %s cancelado", carrito.intent_reference);
+                pos_telemetry_note_qr(POS_QR_CANCELED);
+                pos_telemetry_set_busy(false);
                 vTaskDelete(NULL);
                 return;
             }
@@ -290,9 +295,11 @@ static void tarea_crear_intencion(void *arg)
             }
             if (strcmp(st, "SUCCEEDED") == 0) {
                 pos_api_fetch_charge(carrito.intent_reference, &cobro);
+                pos_telemetry_note_qr(POS_QR_PAID);
                 xSemaphoreTake(xGuiSemaphore, portMAX_DELAY);
                 ver_resultado();
                 xSemaphoreGive(xGuiSemaphore);
+                pos_telemetry_set_busy(false);
                 vTaskDelete(NULL);
                 return;
             }
@@ -302,8 +309,10 @@ static void tarea_crear_intencion(void *arg)
             estado("El QR expiro. Toca CANCELAR para volver.");
         }
         xSemaphoreGive(xGuiSemaphore);
+        pos_telemetry_note_qr(qr_cancelado ? POS_QR_CANCELED : POS_QR_EXPIRED);
     }
 
+    pos_telemetry_set_busy(false);
     vTaskDelete(NULL);
 }
 

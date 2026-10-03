@@ -3,14 +3,16 @@ set(COMPONENT_SRCS
     "wifi.c"
     "pos_api.c"
     "pos_qr.c"
-    "pos_ui.c")
+    "pos_ui.c"
+    "pos_telemetry.c")
 set(COMPONENT_ADD_INCLUDEDIRS "./includes")
 set(COMPONENT_REQUIRES
     "nvs_flash"
     "esp_http_client"
     "json"
     "core2forAWS"
-    "qrcodegen")
+    "qrcodegen"
+    "esp-aws-iot")
 
 register_component()
 

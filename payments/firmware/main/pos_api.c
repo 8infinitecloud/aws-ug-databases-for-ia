@@ -12,10 +12,12 @@
 #include "esp_log.h"
 #include "esp_http_client.h"
 #include "esp_system.h"   /* esp_random() */
+#include "esp_timer.h"
 #include "cJSON.h"
 
 #include "pos.h"
 #include "pos_api.h"
+#include "pos_telemetry.h"
 
 static const char *TAG = "pos_api";
 
@@ -92,9 +94,16 @@ static esp_err_t request(const char *method, const char *path, const char *body,
         esp_http_client_set_header(cli, "Idempotency-Key", idem_key);
     }
 
+    int64_t inicio = esp_timer_get_time();
     esp_err_t err = esp_http_client_perform(cli);
+    int64_t ms = (esp_timer_get_time() - inicio) / 1000;
     int status = esp_http_client_get_status_code(cli);
     esp_http_client_cleanup(cli);
+
+    /* Para la telemetria: un fallo que agoto el plazo es un timeout de red, no
+     * un rechazo. Es la diferencia entre "fallo el emisor" y "fallo la WiFi". */
+    pos_telemetry_note_http(err == ESP_OK ? status : 0, ms,
+                            err != ESP_OK && ms >= HTTP_TIMEOUT - 250);
 
     if (status_out != NULL) {
         *status_out = status;

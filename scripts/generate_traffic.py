@@ -315,6 +315,8 @@ class Generador:
                 "qr_shown": t.qr_mostrados,
                 "qr_paid": t.qr_pagados,
                 "qr_canceled": t.qr_cancelados,
+                # Un QR virtual no expira: o se paga, o se cancela.
+                "qr_expired": 0,
             })
             t.peticiones = t.errores = t.timeouts = 0
             t.qr_mostrados = t.qr_pagados = t.qr_cancelados = 0

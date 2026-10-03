@@ -90,3 +90,24 @@ def test_el_firmware_no_usa_el_qrcode_display_del_kit():
     qr = codigo(FIRMWARE / "main/pos_qr.c")
     assert "qrcodegen_getModule" in qr, "el QR debe dibujarse modulo a modulo"
     assert "qrcode_display(" not in qr
+
+
+def test_la_telemetria_del_firmware_y_la_de_la_flota_virtual_son_el_mismo_contrato():
+    """
+    El Core2 y los terminales virtuales del generador publican en el mismo topic
+    y los lee la misma tabla de Athena. Si un campo existe en uno y no en otro,
+    la columna sale vacia para media flota sin que nada falle.
+    """
+    import re
+
+    fw = (REPO_ROOT / "payments/firmware/main/pos_telemetry.c").read_text()
+    del_firmware = set(re.findall(r'cJSON_Add\w+ToObject\(m, "(\w+)"', fw))
+
+    gen = (REPO_ROOT / "scripts/generate_traffic.py").read_text()
+    bloque = gen[gen.index("def latido(self)"):gen.index("self.resultado[\"telemetria_latidos\"]")]
+    del_generador = set(re.findall(r'"(\w+)":', bloque))
+
+    # Lo que solo tiene sentido en hardware real.
+    solo_hardware = {"battery_v", "free_psram_bytes"}
+    assert del_generador <= del_firmware, del_generador - del_firmware
+    assert del_firmware - del_generador <= solo_hardware, del_firmware - del_generador

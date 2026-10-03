@@ -121,6 +121,49 @@ test falla antes de que el QR se vuelva ilegible en la charla.
 
 ---
 
+## Telemetría (opcional, desactivada por defecto)
+
+El cobro va por HTTP, como en Stripe Terminal. La telemetría es otra cosa: el
+**latido del dispositivo**, que ninguna base de datos guarda y que explica *por
+qué* falló un cobro, no solo *que* falló.
+
+Cada `POS_TELEMETRY_INTERVAL_S` (30 s), `pos_telemetry.c` publica en
+`<serial del ATECC608>/telemetry`:
+
+| Campo | De dónde sale |
+|---|---|
+| `battery_pct`, `battery_v`, `charging` | AXP192 (tensión de la LiPo, VBUS) |
+| `rssi_dbm` | la WiFi del ESP32 |
+| `free_heap_bytes`, `free_psram_bytes` | el heap |
+| `http_requests`, `http_errors`, `http_timeouts`, `http_latency_ms_*` | medidos en cada llamada a la API (`pos_api.c`) |
+| `qr_shown`, `qr_paid`, `qr_canceled`, `qr_expired` | el ciclo del QR (`pos_ui.c`) |
+
+Los contadores son **deltas** desde el latido anterior. El contrato es el mismo
+que publica la flota virtual de `scripts/generate_traffic.py --telemetria`, y
+`tests/test_firmware.py` comprueba que no se separen.
+
+**Conecta, publica y desconecta** en cada latido, por la misma razón por la que
+el QR sondea por HTTP: una conexión MQTT permanente cuesta memoria todo el rato.
+Si hay una venta en curso, el latido espera (como mucho un minuto). La
+identidad es el certificado del ATECC608 (`"#"` / `"#0"`): la clave privada no
+sale del chip, y la política que creó el *registration helper* del kit ya
+permite publicar bajo `<serial>/*`.
+
+Para activarla (`pio run -t menuconfig`):
+
+1. **FinCorp POS → Telemetría → Publicar telemetría**.
+2. **Amazon Web Services IoT Platform → AWS IoT MQTT Hostname**: el valor de
+   `aws iot describe-endpoint --endpoint-type iot:Data-ATS`.
+
+> **Compilado, no probado en el dispositivo.** Las dos variantes compilan
+> (desactivada: 1.049.292 bytes; activada: 1.104.996, el cliente MQTT añade
+> 55 KB). Falta grabarla y ver en el Core2 que el handshake TLS con el
+> ATECC608 y la memoria aguantan junto a una venta, y que el latido llega a la
+> tabla `terminal-state` del Lab 4. Hasta entonces, déjala desactivada en la
+> charla: el terminal validado no cambia.
+
+---
+
 ## El toolchain, y por qué las versiones van clavadas
 
 El kit es de 2021 y usa ESP-IDF v4.2. **Verificado el 2026-09-28**: compila hoy
