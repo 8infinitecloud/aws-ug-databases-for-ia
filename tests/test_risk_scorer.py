@@ -180,8 +180,40 @@ def test_los_contadores_van_por_terminal():
 
 
 def test_sin_terminal_se_cae_al_comercio():
-    e = evento(pos_id=None)
-    assert rs.partition_key(e) == "T#MID000000012345"
+    e = evento(pos_id=None, payment_method="CARD_NOT_PRESENT")
+    assert rs.partition_key(e) == "M#MID000000012345"
+
+
+# ── Tiendas online ───────────────────────────────────────────────────────────
+def online(**kw) -> dict:
+    return evento(pos_id=None, device_id=None, payment_method="CARD_NOT_PRESENT",
+                  merchant_id="MID000000020007", mcc="5732", **kw)
+
+
+def test_una_tienda_online_con_tarde_normal_no_salta():
+    """10 compras en un minuto de todos sus compradores: no es card testing."""
+    c = contadores(transactions=10, amount=1500.0)
+    assert rs.score(online(amount=150.0), c).alerts == []
+
+
+def test_un_portatil_no_dispara_el_umbral_de_monto_de_un_pos():
+    """Con el umbral del POS (500), cada venta de electronica saltaria."""
+    c = contadores(transactions=1, amount=3499.0)
+    assert rs.rule_velocity_amount(online(amount=3499.0), c) is None
+    # El mismo importe en un terminal si es raro.
+    assert rs.rule_velocity_amount(evento(amount=3499.0), c) is not None
+
+
+def test_el_card_testing_online_si_salta():
+    """Muchas tarjetas probadas contra la misma tienda: el ratio no se relaja."""
+    c = contadores(transactions=12, amount=60.0, declines=10)
+    reglas = {a.rule for a in rs.score(online(response_code="05", status="FAILED"), c).alerts}
+    assert "DECLINE_RATIO" in reglas
+
+
+def test_una_rafaga_online_desmedida_salta():
+    c = contadores(transactions=rs.MAX_TX_PER_WINDOW_ONLINE + 1, amount=100.0)
+    assert rs.rule_velocity_count(online(), c) is not None
 
 
 # ── El conjunto ──────────────────────────────────────────────────────────────

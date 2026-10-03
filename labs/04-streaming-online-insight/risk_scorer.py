@@ -52,6 +52,19 @@ MIN_SAMPLE_FOR_RATIO = int(os.getenv("MIN_SAMPLE_FOR_RATIO", "4"))
 # Importe que, en un comercio de riesgo alto, merece revision manual.
 HIGH_RISK_AMOUNT = float(os.getenv("HIGH_RISK_AMOUNT", "300"))
 
+# Los umbrales de una TIENDA ONLINE. Sus contadores van por comercio y no por
+# terminal (no hay terminal), asi que suman a todos sus compradores a la vez: 5
+# compras en un minuto es una tarde normal para una tienda, no card testing. Y
+# sus tickets son otros: un portatil cuesta mas que los 500 de la ventana de un
+# POS de cafeteria, y con ese umbral cada venta de electronica saltaria.
+#
+# El ratio de declinaciones NO cambia: el card testing online —muchas tarjetas
+# robadas probadas contra la misma tienda— es justo el patron que mide.
+MAX_TX_PER_WINDOW_ONLINE = int(os.getenv("MAX_TX_PER_WINDOW_ONLINE", "30"))
+MAX_AMOUNT_PER_WINDOW_ONLINE = float(os.getenv("MAX_AMOUNT_PER_WINDOW_ONLINE", "20000"))
+
+ONLINE = "CARD_NOT_PRESENT"
+
 # ISO 8583 DE 39: solo el 00 aprueba.
 RESPONSE_CODE_APPROVED = "00"
 
@@ -94,34 +107,41 @@ class Decision:
 
 
 # ── Las reglas, puras ────────────────────────────────────────────────────────
+def is_online(event: dict) -> bool:
+    """Un pago sin terminal: lo hizo una tienda online."""
+    return event.get("payment_method") == ONLINE or not event.get("pos_id")
+
+
 def rule_velocity_count(event: dict, c: Counters) -> Alert | None:
     """
-    Demasiadas operaciones seguidas en el mismo terminal.
+    Demasiadas operaciones seguidas en el mismo terminal (o tienda online).
 
     Un POS de cafeteria hace una venta cada varios minutos. Veinte en un minuto
     no es un dia bueno: es alguien probando tarjetas.
     """
-    if c.transactions <= MAX_TX_PER_WINDOW:
+    limite = MAX_TX_PER_WINDOW_ONLINE if is_online(event) else MAX_TX_PER_WINDOW
+    if c.transactions <= limite:
         return None
     return Alert(
         rule="VELOCITY_COUNT",
         severity="HIGH",
         message=f"{c.transactions} operaciones en {WINDOW_SECONDS}s",
         observed=float(c.transactions),
-        threshold=float(MAX_TX_PER_WINDOW),
+        threshold=float(limite),
     )
 
 
 def rule_velocity_amount(event: dict, c: Counters) -> Alert | None:
     """Monto acumulado inusual para la ventana."""
-    if c.amount <= MAX_AMOUNT_PER_WINDOW:
+    limite = MAX_AMOUNT_PER_WINDOW_ONLINE if is_online(event) else MAX_AMOUNT_PER_WINDOW
+    if c.amount <= limite:
         return None
     return Alert(
         rule="VELOCITY_AMOUNT",
         severity="MEDIUM",
         message=f"{c.amount:.2f} acumulado en {WINDOW_SECONDS}s",
         observed=round(c.amount, 2),
-        threshold=MAX_AMOUNT_PER_WINDOW,
+        threshold=limite,
     )
 
 
@@ -221,8 +241,14 @@ def partition_key(event: dict) -> str:
     Un comercio con diez cajas mueve diez veces mas que uno con una, y agregarlo
     por comercio haria que el umbral no significara lo mismo en los dos. El
     terminal es la unidad donde el patron es comparable.
+
+    Una tienda online no tiene terminal: su unidad es el comercio, y se marca
+    con otro prefijo (M#) para que en DynamoDB no se confunda con un terminal y
+    se lea con sus propios umbrales.
     """
-    return f"T#{event.get('pos_id') or event.get('merchant_id') or 'DESCONOCIDO'}"
+    if event.get("pos_id"):
+        return f"T#{event['pos_id']}"
+    return f"M#{event.get('merchant_id') or 'DESCONOCIDO'}"
 
 
 # ── El handler ───────────────────────────────────────────────────────────────

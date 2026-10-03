@@ -38,8 +38,8 @@ if ! tf_deployed lab4; then
 fi
 
 echo
-warn "Se van a destruir la tabla de velocidad, la Lambda, Firehose y la regla de IoT."
-warn "Los eventos ya escritos en s3://.../raw/events/ NO se borran aqui:"
+warn "Se van a destruir las tablas de velocidad y de estado, la Lambda, Firehose y las reglas de IoT."
+warn "La telemetria ya escrita en s3://.../raw/telemetry/ NO se borra aqui:"
 warn "pertenecen al bucket del Lab 1 y se van con su cleanup."
 echo
 

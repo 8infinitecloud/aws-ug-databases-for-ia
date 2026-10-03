@@ -43,6 +43,18 @@ variable "max_amount_per_window" {
   default     = 500
 }
 
+variable "max_tx_per_window_online" {
+  description = "Operaciones por tienda online y ventana antes de marcar (suma a todos sus compradores)"
+  type        = number
+  default     = 30
+}
+
+variable "max_amount_per_window_online" {
+  description = "Monto acumulado por tienda online y ventana antes de marcar"
+  type        = number
+  default     = 20000
+}
+
 variable "max_decline_ratio" {
   description = "Proporcion de declinaciones que enciende la alarma"
   type        = number

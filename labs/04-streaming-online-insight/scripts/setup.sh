@@ -52,15 +52,17 @@ TABLA=$(tf_output lab4 velocity_table_name)
 LAMBDA=$(tf_output lab4 scorer_function_name)
 LOGS=$(tf_output lab4 scorer_log_group)
 TOPIC=$(tf_output lab4 iot_topic_filter)
-EVENTOS=$(tf_output lab4 events_s3_path)
+TELEMETRIA=$(tf_output lab4 telemetry_s3_path)
+ESTADO=$(tf_output lab4 terminal_state_table)
 
 echo
 success "Lab 4 desplegado"
 echo
 echo "  Tabla de velocidad : ${TABLA}"
 echo "  Lambda del scoring : ${LAMBDA}"
-echo "  Topic MQTT         : ${TOPIC}"
-echo "  Eventos en el lago : ${EVENTOS}"
+echo "  Topic de pagos     : ${TOPIC}"
+echo "  Telemetria al lago : ${TELEMETRIA}"
+echo "  Estado de la flota : ${ESTADO}"
 echo
 info "Ver el scoring en vivo (dejalo en una terminal aparte):"
 echo "  aws logs tail ${LOGS} --follow"

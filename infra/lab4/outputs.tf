@@ -14,18 +14,28 @@ output "scorer_log_group" {
 }
 
 output "iot_topic_filter" {
-  description = "Topic MQTT en el que publica el POS"
+  description = "Topic MQTT de los eventos de pago (los publica el backend)"
   value       = local.iot_topic_filter
 }
 
-output "firehose_stream_name" {
-  description = "Stream que aterriza los eventos en el lago"
-  value       = aws_kinesis_firehose_delivery_stream.events.name
+output "telemetry_topic_filter" {
+  description = "Topic MQTT de la telemetria de los terminales"
+  value       = local.telemetry_topic_filter
 }
 
-output "events_s3_path" {
-  description = "Zona del lago donde caen los eventos del stream"
-  value       = "s3://${local.s3_bucket}/raw/events/"
+output "firehose_stream_name" {
+  description = "Stream que aterriza la telemetria en el lago"
+  value       = aws_kinesis_firehose_delivery_stream.telemetry.name
+}
+
+output "telemetry_s3_path" {
+  description = "Zona del lago donde cae la telemetria"
+  value       = "s3://${local.s3_bucket}/raw/telemetry/"
+}
+
+output "terminal_state_table" {
+  description = "Tabla de DynamoDB con el ultimo latido de cada terminal"
+  value       = aws_dynamodb_table.terminal_state.name
 }
 
 output "thresholds" {
@@ -36,5 +46,7 @@ output "thresholds" {
     max_amount_per_window = var.max_amount_per_window
     max_decline_ratio     = var.max_decline_ratio
     high_risk_amount      = var.high_risk_amount
+    max_tx_online         = var.max_tx_per_window_online
+    max_amount_online     = var.max_amount_per_window_online
   }
 }

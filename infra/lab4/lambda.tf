@@ -19,7 +19,7 @@ data "archive_file" "scorer" {
 
 resource "aws_lambda_function" "scorer" {
   function_name = "${local.name_prefix}-scorer"
-  description   = "Scoring de riesgo online sobre los eventos del POS"
+  description   = "Scoring de riesgo online sobre los eventos de pago"
   role          = aws_iam_role.scorer.arn
 
   filename         = data.archive_file.scorer.output_path
@@ -55,6 +55,9 @@ resource "aws_lambda_function" "scorer" {
       MAX_AMOUNT_PER_WINDOW = tostring(var.max_amount_per_window)
       MAX_DECLINE_RATIO     = tostring(var.max_decline_ratio)
       HIGH_RISK_AMOUNT      = tostring(var.high_risk_amount)
+      # Las tiendas online agregan a todos sus compradores: otros umbrales.
+      MAX_TX_PER_WINDOW_ONLINE     = tostring(var.max_tx_per_window_online)
+      MAX_AMOUNT_PER_WINDOW_ONLINE = tostring(var.max_amount_per_window_online)
     }
   }
 

@@ -58,7 +58,7 @@ resource "aws_iam_role_policy" "scorer" {
   policy = data.aws_iam_policy_document.scorer.json
 }
 
-# ── IoT Core: puede invocar la Lambda y escribir en Firehose ─────────────────
+# ── IoT Core: escribe la telemetria en Firehose y en DynamoDB ───────────────
 data "aws_iam_policy_document" "iot_assume" {
   statement {
     actions = ["sts:AssumeRole"]
@@ -76,10 +76,16 @@ resource "aws_iam_role" "iot_rule" {
 
 data "aws_iam_policy_document" "iot_rule" {
   statement {
-    sid       = "EntregarAlLago"
+    sid       = "TelemetriaAlLago"
     effect    = "Allow"
     actions   = ["firehose:PutRecord", "firehose:PutRecordBatch"]
-    resources = [aws_kinesis_firehose_delivery_stream.events.arn]
+    resources = [aws_kinesis_firehose_delivery_stream.telemetry.arn]
+  }
+  statement {
+    sid       = "UltimoEstadoDelTerminal"
+    effect    = "Allow"
+    actions   = ["dynamodb:PutItem"]
+    resources = [aws_dynamodb_table.terminal_state.arn]
   }
 
   statement {

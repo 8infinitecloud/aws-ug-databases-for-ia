@@ -47,3 +47,37 @@ resource "aws_dynamodb_table" "velocity" {
     Name = "${local.name_prefix}-velocity"
   }
 }
+
+
+# =============================================================================
+# El ultimo estado de cada terminal
+# =============================================================================
+# Lo escribe directamente la regla de telemetria de IoT Core, sin Lambda: no hay
+# nada que calcular, solo guardar el ultimo latido encima del anterior. Un item
+# por dispositivo, sobrescrito cada ~30 s.
+#
+# Sin TTL a proposito: un terminal que deja de latir tiene que SEGUIR aqui, con
+# su ultimo `received_at_ms` envejeciendo. Si expirara, el terminal caido
+# desapareceria de la lista justo cuando hay que verlo.
+resource "aws_dynamodb_table" "terminal_state" {
+  name         = "${local.name_prefix}-terminal-state"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "device_id"
+
+  attribute {
+    name = "device_id"
+    type = "S"
+  }
+
+  point_in_time_recovery {
+    enabled = false # se reconstruye con el siguiente latido
+  }
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  tags = {
+    Name = "${local.name_prefix}-terminal-state"
+  }
+}

@@ -34,6 +34,7 @@ tf_deployed lab4 || { echo -e "${RED}[✗]${NC} El Lab 4 no esta desplegado."; e
 TABLA=$(tf_output lab4 velocity_table_name)
 LAMBDA=$(tf_output lab4 scorer_function_name)
 STREAM=$(tf_output lab4 firehose_stream_name)
+ESTADO=$(tf_output lab4 terminal_state_table)
 
 # ── 1. Los recursos responden ────────────────────────────────────────────────
 if aws dynamodb describe-table --table-name "${TABLA}" \
@@ -110,12 +111,40 @@ else
     fail "Se marco una venta corriente: los umbrales estan mal calibrados"
 fi
 
+# ── 5. La telemetria llega al ultimo estado del terminal ─────────────────────
+# Esta si pasa por IoT Core: lo que se prueba es la regla, que es quien escribe
+# en DynamoDB. Un serial de validacion, para no pisar el estado de un terminal
+# real.
+info "Publicando un latido de telemetria de prueba..."
+ENDPOINT=$(aws iot describe-endpoint --endpoint-type iot:Data-ATS \
+             --query endpointAddress --output text)
+aws iot-data publish --endpoint-url "https://${ENDPOINT}" \
+    --topic "validate-serial/telemetry" --qos 1 --cli-binary-format raw-in-base64-out \
+    --payload '{"type":"heartbeat","rssi_dbm":-61,"battery_pct":88}' >/dev/null
+
+LATIDO=""
+for _ in 1 2 3 4 5 6; do
+    sleep 2
+    LATIDO=$(aws dynamodb get-item --table-name "${ESTADO}" \
+        --key '{"device_id":{"S":"validate-serial"}}' \
+        --query 'Item.rssi_dbm.N' --output text 2>/dev/null || true)
+    [ -n "${LATIDO}" ] && [ "${LATIDO}" != "None" ] && break
+done
+if [ "${LATIDO}" = "-61" ]; then
+    success "El latido llego a ${ESTADO} por la regla de IoT"
+else
+    fail "El latido no aparecio en ${ESTADO}: revisa el log de errores de la regla"
+fi
+aws dynamodb delete-item --table-name "${ESTADO}" \
+    --key '{"device_id":{"S":"validate-serial"}}' >/dev/null 2>&1 || true
+
 # ── Resumen ──────────────────────────────────────────────────────────────────
 echo
 if [ "${FALLOS}" -eq 0 ]; then
     success "Lab 4 validado"
     echo
-    info "Genera trafico realista con:  ./run_demo.sh card-testing"
+    info "Un ataque por la API real:  python scripts/generate_traffic.py --api \$API --card-testing"
+    info "Sin API (plan B):           ./run_demo.sh card-testing"
 else
     echo -e "${RED}[✗]${NC} ${FALLOS} comprobacion(es) fallaron"
     exit 1
