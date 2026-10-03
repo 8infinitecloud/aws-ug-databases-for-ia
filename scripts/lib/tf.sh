@@ -53,8 +53,14 @@ tf_destroy() {
 
 # tf_output <modulo> <nombre>  — cadena vacia si no existe, para que el
 # 'set -euo pipefail' de los scripts no aborte al comprobar si algo esta creado.
+#
+# Por -json y no -raw: con el state sin outputs, `output -raw` no devuelve vacio
+# sino un aviso de varias lineas POR STDOUT, que se colaba como valor. Asi le
+# llego a ECS como nombre de imagen en el primer despliegue real.
 tf_output() {
-  terraform -chdir="${TF_INFRA_DIR}/$1" output -raw "$2" 2>/dev/null || echo ""
+  terraform -chdir="${TF_INFRA_DIR}/$1" output -json "$2" 2>/dev/null \
+    | jq -r 'if type == "string" then . elif . == null then "" else tostring end' 2>/dev/null \
+    || echo ""
 }
 
 # tf_deployed <modulo>  — 0 si el modulo tiene recursos en su state.

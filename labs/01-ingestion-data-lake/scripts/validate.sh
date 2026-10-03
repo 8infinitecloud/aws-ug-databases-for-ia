@@ -4,7 +4,7 @@
 # =============================================================================
 # Comprueba, en este orden:
 #   1. La tarea DMS esta en `running` con la foto inicial al 100%
-#   2. Cada tabla replicada tiene su foto inicial en raw/acquiring/<tabla>/
+#   2. Cada tabla replicada termino su foto inicial (estadisticas de DMS)
 #   3. EL CDC FUNCIONA: hace un pago de verdad por la API y espera a que ese
 #      cambio aparezca en raw/ como un fichero nuevo. Es la prueba que importa:
 #      que la foto inicial exista solo dice que DMS sabe leer, no que escucha.
@@ -55,14 +55,21 @@ else
 fi
 
 # ── [2] La foto inicial de cada tabla ────────────────────────────────────────
+# Por las estadisticas de la tarea y no buscando ficheros: DMS no escribe nada
+# para una tabla vacia (refunds, disputes y payouts lo estan hasta que algun
+# flujo las use), y buscar LOAD*.parquet las daba por fallidas.
 echo ""
-info "[2/5] Foto inicial en raw/acquiring/..."
+info "[2/5] Foto inicial de cada tabla (estadisticas de DMS)..."
+STATS=$(aws dms describe-table-statistics --replication-task-arn "${DMS_TASK_ARN}" \
+  --region "${REGION}" --output json 2>/dev/null || echo '{"TableStatistics":[]}')
 for t in ${TABLAS}; do
-  if aws s3 ls "s3://${S3_BUCKET}/raw/acquiring/${t}/" --region "${REGION}" 2>/dev/null \
-       | grep -q "LOAD.*\.parquet"; then
-    pass "${t}"
+  LINEA=$(echo "${STATS}" | jq -r --arg t "${t}" '.TableStatistics[] | select(.TableName == $t)
+    | "\(.TableState)|\(.FullLoadRows)|\(.Inserts)|\(.Updates)|\(.Deletes)"')
+  IFS='|' read -r ESTADO_T FILAS INS UPD DEL <<< "${LINEA:-ausente|0|0|0|0}"
+  if [ "${ESTADO_T}" = "Table completed" ]; then
+    pass "${t}: ${FILAS} filas en la foto inicial · CDC: ${INS} I / ${UPD} U / ${DEL} D"
   else
-    fail "${t}: sin LOAD*.parquet"
+    fail "${t}: estado ${ESTADO_T}"
   fi
 done
 

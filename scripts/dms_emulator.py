@@ -108,6 +108,10 @@ def _iguales(a: pd.Series, b: pd.Series) -> bool:
     return True
 
 
+def _dms_ts(ts: datetime) -> str:
+    return ts.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
+
+
 def write_layout(root: Path, load: dict[str, pd.DataFrame],
                  deltas: list[tuple[datetime, dict[str, pd.DataFrame]]] = (),
                  load_ts: datetime | None = None) -> list[Path]:
@@ -119,7 +123,9 @@ def write_layout(root: Path, load: dict[str, pd.DataFrame],
         if df.empty:
             continue
         dms = df.copy()
-        dms.insert(0, "dms_timestamp", load_ts.replace(tzinfo=None))
+        # Texto y no timestamp: es como lo escribe DMS de verdad en Parquet
+        # ("2026-10-03 01:34:13.774290"), comprobado en el bucket real.
+        dms.insert(0, "dms_timestamp", _dms_ts(load_ts))
         dms.insert(0, "Op", "I")  # include_op_for_full_load = true
         p = base / t / "LOAD00000001.parquet"
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -130,7 +136,7 @@ def write_layout(root: Path, load: dict[str, pd.DataFrame],
             if df.empty:
                 continue
             dms = df.copy()
-            dms.insert(1, "dms_timestamp", ts.replace(tzinfo=None))
+            dms.insert(1, "dms_timestamp", _dms_ts(ts))
             # date_partition_enabled + YYYYMMDD
             p = base / t / ts.strftime("%Y/%m/%d") / f"{ts.strftime('%Y%m%d-%H%M%S%f')}.parquet"
             p.parent.mkdir(parents=True, exist_ok=True)

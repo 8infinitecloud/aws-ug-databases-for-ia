@@ -37,8 +37,13 @@ export TF_VAR_aws_region="${REGION}"
 
 info "[1/4] infra/payments (red, base en EC2, ECR, ALB, API Gateway)..."
 tf_init payments
-# Si ya habia una imagen desplegada, se conserva en este primer apply.
-IMAGEN_ACTUAL=$(terraform -chdir="${TF_INFRA_DIR}/payments" output -raw backend_image 2>/dev/null || true)
+# Si ya habia una imagen desplegada, se conserva en este primer apply. Por -json
+# y no -raw: con el state vacio, -raw no devuelve vacio sino un aviso de varias
+# lineas POR STDOUT, que acababa como nombre de la imagen ("Container.image
+# should be 255 characters or less"). Y solo se acepta algo con forma de imagen.
+IMAGEN_ACTUAL=$(terraform -chdir="${TF_INFRA_DIR}/payments" output -json backend_image 2>/dev/null \
+                  | jq -r 'select(type == "string")' 2>/dev/null || true)
+[[ "${IMAGEN_ACTUAL}" =~ ^[a-z0-9.-]+/[a-z0-9._/-]+:[A-Za-z0-9._-]+$ ]] || IMAGEN_ACTUAL=""
 tf_apply payments -var "backend_image=${IMAGEN_ACTUAL}" >/dev/null
 REPO=$(tf_output payments ecr_repository_url)
 ok "Infraestructura aplicada"
