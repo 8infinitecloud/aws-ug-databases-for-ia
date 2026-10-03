@@ -50,7 +50,7 @@ CONF
 # sigue viva. Es preferible perder el CDC a perder el core.
 echo "max_slot_wal_keep_size = '${wal_keep_size}'" >> "$PGDATA/postgresql.conf"
 
-# Solo la VPC: el backend y DMS. Ni un rango publico.
+# La VPC (el backend y DMS) y, por la DEMO, cualquier origen con contrasena.
 cat > "$PGDATA/pg_hba.conf" <<HBA
 local   all          postgres                    peer
 local   all          all                         scram-sha-256
@@ -58,6 +58,9 @@ host    all          all          127.0.0.1/32   scram-sha-256
 host    all          all          ${vpc_cidr}    scram-sha-256
 # DMS abre una conexion de REPLICACION, que pg_hba trata aparte.
 host    replication  all          ${vpc_cidr}    scram-sha-256
+# DEMO: cualquier origen, para pgAdmin desde cualquier red. Va de la mano de la
+# regla 0.0.0.0/0 del security group (network.tf). Sigue pidiendo contrasena.
+host    all          all          0.0.0.0/0      scram-sha-256
 HBA
 
 systemctl enable --now postgresql

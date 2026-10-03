@@ -100,7 +100,21 @@ terraform apply                 # sube los ficheros nuevos al bucket
 ../../scripts/apply_schema.sh   # la instancia los reaplica (SSM Run Command)
 ```
 
-Para conectarte a la base desde tu máquina, sin abrir ningún puerto:
+Para conectarte con pgAdmin, en la demo el 5432 está **abierto a internet**
+(decisión explícita; ver `docs/well-architected.md`):
+
+| Campo | Valor |
+|---|---|
+| Host | `terraform output -raw db_public_ip` |
+| Puerto | `5432` |
+| Base | `acquiring` |
+| Usuario | `fincorpadmin` |
+| Contraseña | `aws secretsmanager get-secret-value --secret-id "$(terraform output -raw db_secret_arn)" --query SecretString --output text \| jq -r .password` |
+| SSL | `prefer` (la base no tiene certificado) |
+
+Para cerrarlo, quita el bloque marcado como DEMO en `network.tf` y la línea
+`0.0.0.0/0` de `pg_hba.conf`. Sin abrir ningún puerto también se puede, por un
+túnel de Session Manager:
 
 ```bash
 $(terraform output -raw db_tunnel_command)   # deja el túnel abierto

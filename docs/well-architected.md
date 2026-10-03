@@ -28,7 +28,7 @@ que esto dejara de ser un lab.
 | SG por defecto de la VPC sin reglas | `aws_default_security_group` vacío en ambas VPC |
 | Buckets sin acceso público | `block_public_acls` y compañía en los tres |
 | IAM acotado a los recursos del lab | DMS y Glue solo a su bucket; Bedrock solo a los dos modelos |
-| Sin acceso SSH | el despliegue va por SSM Run Command, no hay `key_name` |
+| Sin acceso SSH | el despliegue va por SSM Run Command, no hay `key_name` (el 5432 de la base sí está abierto en la demo: ver concesiones) |
 | State cifrado y privado | SSE-S3 + `block_public_*` en el bucket del state |
 
 ### Se concede, a propósito
@@ -42,7 +42,8 @@ que esto dejara de ser un lab.
 | Sin VPC Flow Logs | Cuestan ingesta y almacenamiento de CloudWatch | Activados, con retención y alarma |
 | Sin autenticación IAM en las bases de datos | Añade pasos al lab sin enseñar nada nuevo | IAM auth en vez de contraseña |
 | `ec2:Describe*` con `Resource = "*"` en el rol de DMS | Esas acciones no admiten ARN de recurso | Igual: es inevitable, se acota con condiciones |
-| La base del core en EC2 con IP pública de salida | En la subred privada haría falta un NAT (~1 USD/día) o tres endpoints de interfaz solo para SSM. El SG no abre **ningún** puerto a internet, ni el 22 | Subred privada con endpoints, o un *on-premises* de verdad tras VPN/Direct Connect |
+| La base del core en EC2 con IP pública | En la subred privada haría falta un NAT (~1 USD/día) o tres endpoints de interfaz solo para SSM | Subred privada con endpoints, o un *on-premises* de verdad tras VPN/Direct Connect |
+| **El 5432 de la base, abierto a internet, con el superusuario** | Decisión explícita para la demo: conectarse con pgAdmin desde cualquier red sin túnel. Regla `0.0.0.0/0` en el SG y línea `0.0.0.0/0` en `pg_hba.conf`; sigue pidiendo contraseña (`scram-sha-256`, 24 caracteres aleatorios). Sin SSL: las consultas viajan en claro. **Es la concesión más arriesgada del repo**: un superusuario de PostgreSQL puede ejecutar comandos del sistema, y los escáneres encuentran un 5432 abierto en minutos | Cerrado: túnel de Session Manager (`terraform output db_tunnel_command`), o como mucho la IP de quien administra, un usuario de solo lectura y `hostssl` |
 | Egress `0.0.0.0/0` en el SG de la base | Necesita `dnf`, Secrets Manager, S3, SSM y CloudWatch | VPC endpoints y egress solo a ellos |
 | El usuario de la base es `SUPERUSER` y DMS lo usa | DMS sobre un PostgreSQL autogestionado necesita crear el slot; es el equivalente al usuario maestro de RDS | Un usuario solo con `REPLICATION` y `SELECT` sobre las tablas replicadas |
 | Las claves de API de la demo van a `.demo_keys.json` | Las lee el generador de tráfico; el fichero está en `.gitignore` y con permisos 600 | Un gestor de secretos; y nunca en un portátil |

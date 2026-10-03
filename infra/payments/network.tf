@@ -186,6 +186,17 @@ resource "aws_security_group" "db" {
     cidr_blocks = [aws_vpc.main.cidr_block]
   }
 
+  # DEMO: abierto a internet para conectarse con pgAdmin desde cualquier red.
+  # Riesgo aceptado a proposito (ver docs/well-architected.md). Quitar este
+  # bloque lo vuelve a cerrar.
+  ingress {
+    description = "PostgreSQL desde internet (DEMO, pgAdmin)"
+    from_port   = 5432
+    to_port     = 5432
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   egress {
     description = "Paquetes, Secrets Manager, S3, SSM y CloudWatch"
     from_port   = 0
