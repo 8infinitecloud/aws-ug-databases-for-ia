@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Mercado Andino — tu pedido</title>
+<style>
+  :root { --verde: #1f7a4d; --texto: #1c2321; --tenue: #66706b; --rojo: #c0392b;
+          --fondo: #f6f8f7; --borde: #dfe5e1; }
+  body { margin: 0; background: var(--fondo); color: var(--texto);
+         font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  .demo { background: #fff4e0; color: #b26a00; text-align: center; font-size: 13px;
+          font-weight: 600; padding: 6px 12px; }
+  header { background: var(--verde); color: #fff; padding: 16px 24px; }
+  header h1 { margin: 0; font-size: 24px; }
+  .tarjeta { max-width: 480px; margin: 40px auto; background: #fff; border: 1px solid var(--borde);
+             border-radius: 16px; padding: 32px; text-align: center; }
+  .icono { font-size: 56px; }
+  .ref { color: var(--tenue); font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
+  a { display: inline-block; margin-top: 20px; color: var(--verde); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="demo">DEMO EDUCATIVA · Tienda ficticia · No se cobra nada real</div>
+<header><h1>🛒 Mercado Andino</h1></header>
+<div class="tarjeta">
+  <div class="icono" id="icono">⏳</div>
+  <h2 id="titulo">Consultando tu pedido…</h2>
+  <p id="detalle"></p>
+  <div class="ref" id="ref"></div>
+  <a href="/">Volver a la tienda</a>
+</div>
+<script>
+(function () {
+  "use strict";
+  // A esta página vuelve el comprador: tras pagar, o desde su banco tras 3DS.
+  // El resultado NO se toma de la URL, que el navegador puede manipular: se
+  // pregunta al servidor de la tienda, que lo pregunta a FinCorp.
+  var ref = new URLSearchParams(window.location.search).get("payment_intent") || "";
+  var $ = function (id) { return document.getElementById(id); };
+  $("ref").textContent = ref ? "Pedido " + ref : "";
+  if (!ref) { $("titulo").textContent = "No hay ningún pedido que mostrar"; $("icono").textContent = "🤷"; return; }
+  fetch("/api/pedidos/" + encodeURIComponent(ref))
+    .then(function (r) { return r.json(); })
+    .then(function (p) {
+      if (p.estado === "SUCCEEDED") {
+        $("icono").textContent = "✅";
+        $("titulo").textContent = "¡Pago aprobado!";
+        $("detalle").textContent = "Cobramos S/ " + (p.importe / 100).toFixed(2) + ". Gracias por tu compra.";
+      } else {
+        $("icono").textContent = "❌";
+        $("titulo").textContent = "El pago no se completó";
+        $("detalle").textContent = p.ultimo_error === "AUTH_3DS"
+          ? "Tu banco no pudo verificar que eras tú. Prueba de nuevo o con otra tarjeta."
+          : "Puedes volver a la tienda e intentarlo con otra tarjeta.";
+      }
+    })
+    .catch(function () { $("titulo").textContent = "No pudimos consultar el pedido"; });
+})();
+</script>
+</body>
+</html>

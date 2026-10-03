@@ -45,3 +45,7 @@ pytest>=8.3.0,<9.0.0
 # saltaba en silencio, y llevaba roto desde que el corpus dejo de hablar de
 # WITHDRAWAL sin que nadie lo viera.
 langchain-text-splitters>=0.3.0,<0.4.0
+
+# La tienda de demo (store/) genera el QR de "pagar en caja" con segno; sus
+# tests lo necesitan.
+segno>=1.6,<2

@@ -1,5 +1,5 @@
 -- =============================================================================
--- 005 — La cartera de comercios del core
+-- 005 — La cartera de comercios del core (doce, con Mercado Andino)
 -- =============================================================================
 -- Con un solo comercio (Smart Coffee) los labs no tienen nada que comparar: no
 -- hay MCC distintos, ni niveles de riesgo, ni tarifas, ni canales. Esta es la
@@ -69,7 +69,12 @@ INSERT INTO merchants (
      399, 30, TRUE, TRUE, 7, '{"canal":"ONLINE"}'),
     ('MID000000020010', 'PixelPlay Store S.R.L.', 'PixelPlay Store', '20600000010',
      '5816', 'PE', 'USD', 'ACTIVE', 'HIGH',   NOW() - INTERVAL '45 days',
-     499, 30, TRUE, TRUE, 7, '{"canal":"ONLINE"}')
+     499, 30, TRUE, TRUE, 7, '{"canal":"ONLINE"}'),
+    -- La tienda de store/: un supermercado que vende online y en caja. Es el
+    -- comercio que usa el ponente durante la demo.
+    ('MID000000020012', 'Mercado Andino S.A.C.', 'Mercado Andino', '20600000012',
+     '5411', 'PE', 'PEN', 'ACTIVE', 'LOW',    NOW() - INTERVAL '500 days',
+     249, 20, TRUE, TRUE, 2, '{"canal":"POS+ONLINE","app":"store/"}')
 ON CONFLICT (merchant_id) DO NOTHING;
 
 -- Sin KYC: la constraint merchants_charges_need_kyc impide charges_enabled.
@@ -93,7 +98,9 @@ FROM (VALUES
     ('MID000000020004', 'TID00006', 'Unidad 14',     'sim-tid00006'),
     ('MID000000020004', 'TID00007', 'Unidad 22',     'sim-tid00007'),
     ('MID000000020005', 'TID00008', 'Ventanilla',    'sim-tid00008'),
-    ('MID000000020006', 'TID00009', 'Recepcion',     'sim-tid00009')
+    ('MID000000020006', 'TID00009', 'Recepcion',     'sim-tid00009'),
+    -- La caja de Mercado Andino: el QR de "pagar en caja" de store/ sale de aqui.
+    ('MID000000020012', 'TID00010', 'Caja web',      'sim-tid00010')
 ) AS t(mid, tid, label, serial)
 JOIN merchants m ON m.merchant_id = t.mid
 ON CONFLICT (terminal_id) DO NOTHING;

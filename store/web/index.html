@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Mercado Andino — tienda de demo</title>
+<style>
+  :root {
+    --verde: #1f7a4d;
+    --verde-claro: #e7f4ec;
+    --texto: #1c2321;
+    --tenue: #66706b;
+    --borde: #dfe5e1;
+    --fondo: #f6f8f7;
+    --blanco: #ffffff;
+    --rojo: #c0392b;
+    --aviso: #b26a00;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--fondo);
+    color: var(--texto);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  .demo {
+    background: #fff4e0; color: var(--aviso); text-align: center;
+    font-size: 13px; font-weight: 600; padding: 6px 12px;
+  }
+  header {
+    background: var(--verde); color: var(--blanco);
+    padding: 16px 24px; display: flex; align-items: center; gap: 12px;
+  }
+  header h1 { margin: 0; font-size: 24px; }
+  header span { opacity: .85; font-size: 14px; }
+  main {
+    max-width: 1100px; margin: 0 auto; padding: 24px 16px;
+    display: grid; grid-template-columns: 1fr 340px; gap: 24px;
+  }
+  @media (max-width: 820px) { main { grid-template-columns: 1fr; } }
+  .productos { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 16px; }
+  .producto {
+    background: var(--blanco); border: 1px solid var(--borde); border-radius: 12px;
+    padding: 16px; display: flex; flex-direction: column; gap: 8px;
+  }
+  .producto .emoji { font-size: 44px; text-align: center; }
+  .producto .nombre { font-weight: 600; min-height: 48px; }
+  .producto .precio { color: var(--verde); font-size: 20px; font-weight: 700; }
+  button {
+    font: inherit; border: 0; border-radius: 10px; cursor: pointer; padding: 10px 14px;
+  }
+  .agregar { background: var(--verde-claro); color: var(--verde); font-weight: 600; }
+  .agregar:hover { background: #d6ecdf; }
+  aside {
+    background: var(--blanco); border: 1px solid var(--borde); border-radius: 12px;
+    padding: 20px; align-self: start; position: sticky; top: 16px;
+  }
+  aside h2 { margin: 0 0 12px; font-size: 18px; }
+  .linea { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0;
+           border-bottom: 1px dashed var(--borde); font-size: 15px; }
+  .linea button { background: none; color: var(--tenue); padding: 0 4px; }
+  .vacio { color: var(--tenue); }
+  .total { display: flex; justify-content: space-between; font-size: 20px;
+           font-weight: 700; margin: 16px 0; }
+  .principal { background: var(--verde); color: var(--blanco); width: 100%;
+               font-weight: 600; padding: 14px; margin-top: 8px; }
+  .secundario { background: var(--blanco); color: var(--verde); width: 100%;
+                border: 2px solid var(--verde); font-weight: 600; padding: 12px; margin-top: 8px; }
+  button:disabled { opacity: .45; cursor: default; }
+  .aviso-config { background: #fdecea; color: var(--rojo); border-radius: 8px;
+                  padding: 10px; font-size: 14px; margin-bottom: 12px; }
+  /* Las ventanas: tarjetas de prueba, el QR de la caja, el resultado */
+  .capa { position: fixed; inset: 0; background: rgba(20, 30, 25, .55);
+          display: none; align-items: center; justify-content: center; padding: 16px; }
+  .capa.abierta { display: flex; }
+  .ventana { background: var(--blanco); border-radius: 16px; padding: 24px;
+             width: 100%; max-width: 460px; }
+  .ventana h3 { margin: 0 0 4px; }
+  .ventana p { color: var(--tenue); margin: 0 0 16px; }
+  .tarjeta { display: block; width: 100%; text-align: left; background: var(--fondo);
+             border: 1px solid var(--borde); margin-bottom: 8px; }
+  .tarjeta:hover { border-color: var(--verde); }
+  .caja { max-width: 640px; text-align: center; }
+  .caja img { width: min(420px, 80vw); height: auto; image-rendering: pixelated; }
+  .caja .importe { font-size: 34px; font-weight: 700; color: var(--verde); }
+  .estado { margin-top: 12px; font-weight: 600; }
+  .ok { color: var(--verde); } .mal { color: var(--rojo); }
+  .cerrar { background: none; color: var(--tenue); margin-top: 12px; }
+</style>
+</head>
+<body>
+<div class="demo">DEMO EDUCATIVA · Tienda ficticia · No se cobra nada real · Tarjetas de prueba</div>
+<header>
+  <h1>🛒 Mercado Andino</h1>
+  <span>Supermercado online · pagos procesados por FinCorp</span>
+</header>
+
+<main>
+  <section class="productos" id="productos"></section>
+
+  <aside>
+    <h2>Tu carrito</h2>
+    <div id="aviso-config" class="aviso-config" hidden>
+      La tienda no está conectada a FinCorp. Arráncala con <code>scripts/store_local.sh</code>.
+    </div>
+    <div id="lineas"><p class="vacio">Todavía no has añadido nada.</p></div>
+    <div class="total"><span>Total</span><span id="total">S/ 0.00</span></div>
+    <button class="principal" id="btn-online" disabled>Pagar online</button>
+    <button class="secundario" id="btn-caja" disabled>Pagar en caja (QR)</button>
+  </aside>
+</main>
+
+<!-- Pago online: el comprador elige una tarjeta de prueba -->
+<div class="capa" id="capa-tarjetas" role="dialog" aria-modal="true">
+  <div class="ventana">
+    <h3>Elige una tarjeta de prueba</h3>
+    <p>Cada una fuerza una respuesta distinta del banco simulado.</p>
+    <div id="tarjetas"></div>
+    <div class="estado" id="estado-online" role="status"></div>
+    <button class="cerrar" data-cerrar>Cancelar</button>
+  </div>
+</div>
+
+<!-- Pago en caja: el QR grande, para proyectar -->
+<div class="capa" id="capa-caja" role="dialog" aria-modal="true">
+  <div class="ventana caja">
+    <h3>Escanea para pagar</h3>
+    <div class="importe" id="caja-importe"></div>
+    <img id="caja-qr" alt="Código QR del pago">
+    <div class="estado" id="estado-caja" role="status">Esperando el pago…</div>
+    <button class="cerrar" data-cerrar>Cerrar</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var catalogo = {};
+  var carrito = {};               // sku -> cantidad
+  var sondeo = null;
+
+  function soles(minor) { return "S/ " + (minor / 100).toFixed(2); }
+
+  // El carrito solo lleva productos y cantidades. El total que se cobra lo
+  // calcula el servidor de la tienda con sus propios precios: este es solo
+  // para mostrarlo.
+  function lineas() {
+    return Object.keys(carrito).map(function (sku) {
+      return { sku: sku, cantidad: carrito[sku] };
+    });
+  }
+
+  function pintarCarrito() {
+    var cont = $("lineas");
+    var total = 0;
+    cont.textContent = "";
+    var skus = Object.keys(carrito);
+    if (!skus.length) {
+      var p = document.createElement("p");
+      p.className = "vacio";
+      p.textContent = "Todavía no has añadido nada.";
+      cont.appendChild(p);
+    }
+    skus.forEach(function (sku) {
+      var prod = catalogo[sku];
+      var sub = prod.precio * carrito[sku];
+      total += sub;
+      var fila = document.createElement("div");
+      fila.className = "linea";
+      var txt = document.createElement("span");
+      txt.textContent = carrito[sku] + " × " + prod.nombre;
+      var der = document.createElement("span");
+      der.textContent = soles(sub) + " ";
+      var quitar = document.createElement("button");
+      quitar.textContent = "✕";
+      quitar.setAttribute("aria-label", "Quitar " + prod.nombre);
+      quitar.onclick = function () { delete carrito[sku]; pintarCarrito(); };
+      der.appendChild(quitar);
+      fila.appendChild(txt); fila.appendChild(der);
+      cont.appendChild(fila);
+    });
+    $("total").textContent = soles(total);
+    var listo = skus.length > 0 && !$("aviso-config").hasAttribute("data-mal");
+    $("btn-online").disabled = !listo;
+    $("btn-caja").disabled = !listo;
+  }
+
+  function abrir(id) { $(id).classList.add("abierta"); }
+  function cerrarTodo() {
+    document.querySelectorAll(".capa").forEach(function (c) { c.classList.remove("abierta"); });
+    if (sondeo) { clearInterval(sondeo); sondeo = null; }
+  }
+  document.querySelectorAll("[data-cerrar]").forEach(function (b) { b.onclick = cerrarTodo; });
+
+  function post(ruta, cuerpo) {
+    return fetch(ruta, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(cuerpo)
+    }).then(function (r) {
+      return r.json().then(function (j) {
+        if (!r.ok) { throw new Error(j.detail || "Error del servidor"); }
+        return j;
+      });
+    });
+  }
+
+  function estado(id, texto, clase) {
+    $(id).textContent = texto;
+    $(id).className = "estado " + (clase || "");
+  }
+
+  // ── Pago online ────────────────────────────────────────────────────────────
+  function pagarOnline(tarjeta) {
+    estado("estado-online", "Procesando…");
+    document.querySelectorAll(".tarjeta").forEach(function (b) { b.disabled = true; });
+    post("/api/pagar-online", { lineas: lineas(), tarjeta: tarjeta })
+      .then(function (r) {
+        if (r.estado === "verificar") {
+          // El banco pide autenticar: el comprador se va a su página y vuelve
+          // a /gracias. Así es el 3-D Secure de verdad.
+          window.location.assign(r.redirigir);
+        } else if (r.estado === "pagado") {
+          carrito = {}; pintarCarrito();
+          window.location.assign("/gracias?payment_intent=" + encodeURIComponent(r.pedido));
+        } else {
+          estado("estado-online", r.mensaje + " (código " + r.codigo + ")", "mal");
+          document.querySelectorAll(".tarjeta").forEach(function (b) { b.disabled = false; });
+        }
+      })
+      .catch(function (e) {
+        estado("estado-online", e.message, "mal");
+        document.querySelectorAll(".tarjeta").forEach(function (b) { b.disabled = false; });
+      });
+  }
+
+  // ── Pago en caja ───────────────────────────────────────────────────────────
+  function pagarEnCaja() {
+    post("/api/pagar-en-caja", { lineas: lineas() })
+      .then(function (r) {
+        $("caja-importe").textContent = soles(r.importe);
+        $("caja-qr").src = "/api/qr/" + encodeURIComponent(r.pedido) + ".svg";
+        estado("estado-caja", "Esperando el pago…");
+        abrir("capa-caja");
+        // La tienda pregunta cada dos segundos, como el POS: el pago lo hace el
+        // comprador en su móvil, en la página de FinCorp.
+        sondeo = setInterval(function () {
+          fetch("/api/pedidos/" + encodeURIComponent(r.pedido))
+            .then(function (x) { return x.json(); })
+            .then(function (p) {
+              if (p.estado === "SUCCEEDED") {
+                clearInterval(sondeo); sondeo = null;
+                estado("estado-caja", "✅ ¡Pagado! Gracias por tu compra.", "ok");
+                carrito = {}; pintarCarrito();
+              }
+            })
+            .catch(function () { /* un fallo de red puntual: se reintenta */ });
+        }, 2000);
+      })
+      .catch(function (e) { alert(e.message); });
+  }
+
+  $("btn-online").onclick = function () { estado("estado-online", ""); abrir("capa-tarjetas"); };
+  $("btn-caja").onclick = pagarEnCaja;
+
+  fetch("/api/catalogo").then(function (r) { return r.json(); }).then(function (c) {
+    if (!c.configurada) {
+      $("aviso-config").hidden = false;
+      $("aviso-config").setAttribute("data-mal", "1");
+    }
+    c.productos.forEach(function (p) {
+      catalogo[p.sku] = p;
+      var card = document.createElement("div");
+      card.className = "producto";
+      var e = document.createElement("div"); e.className = "emoji"; e.textContent = p.emoji;
+      var n = document.createElement("div"); n.className = "nombre"; n.textContent = p.nombre;
+      var pr = document.createElement("div"); pr.className = "precio"; pr.textContent = soles(p.precio);
+      var b = document.createElement("button"); b.className = "agregar"; b.textContent = "Agregar";
+      b.onclick = function () { carrito[p.sku] = (carrito[p.sku] || 0) + 1; pintarCarrito(); };
+      card.appendChild(e); card.appendChild(n); card.appendChild(pr); card.appendChild(b);
+      $("productos").appendChild(card);
+    });
+    c.tarjetas.forEach(function (t) {
+      var b = document.createElement("button");
+      b.className = "tarjeta"; b.textContent = "💳 " + t.nombre;
+      b.onclick = function () { pagarOnline(t.id); };
+      $("tarjetas").appendChild(b);
+    });
+    pintarCarrito();
+  });
+})();
+</script>
+</body>
+</html>

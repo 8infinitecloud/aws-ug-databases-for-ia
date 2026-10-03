@@ -1,0 +1,7 @@
+# Mercado Andino — la tienda de demo (el comercio, no el adquirente)
+fastapi>=0.115.0,<0.120.0
+uvicorn>=0.32.0,<0.40.0
+pydantic>=2.9.0,<3.0.0
+# El QR de "pagar en caja", en SVG y en Python puro: sin librerias de un CDN
+# que la WiFi del evento podria no cargar.
+segno>=1.6,<2

@@ -47,7 +47,7 @@ jobs:
 
       - name: Lint with ruff — API de adquirencia (payments)
         run: |
-          ruff check payments/backend/ tests/ labs/04-streaming-online-insight/ \
+          ruff check payments/backend/ tests/ labs/04-streaming-online-insight/ store/ \
             --ignore E501,F401 \
             --output-format=concise
 

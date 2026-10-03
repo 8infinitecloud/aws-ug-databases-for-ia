@@ -48,6 +48,8 @@ TIENDAS_ONLINE = (
     "MID000000020009",
     "MID000000020010",
     "MID000000020011",
+    # Mercado Andino: la tienda de store/. Su clave la lee scripts/store_local.sh.
+    "MID000000020012",
 )
 
 
