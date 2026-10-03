@@ -4,10 +4,9 @@
 # =============================================================================
 # Existe por dos razones:
 #
-#   1. Es el plan B de la charla. Si el POS fisico falla —wifi del local, cable,
-#      lo que sea— la demo del Lab 4 sigue funcionando desde el portatil.
+#   1. Funciona sin el POS fisico ni la API: publica directamente en IoT Core.
 #   2. Un ataque de card testing de verdad son veinte operaciones en un minuto,
-#      y eso no se teclea en un terminal en directo.
+#      y eso no se teclea en un terminal.
 #
 # Uso:
 #   ./run_demo.sh                 escenario normal (no dispara nada)

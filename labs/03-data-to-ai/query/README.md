@@ -59,4 +59,4 @@ En aplicaciones de compliance, la reproducibilidad importa más que la creativid
 ## Alternativas consideradas
 
 - **Bedrock ConversationHistory**: Feature managed de Bedrock para historial. Descartado porque abstrae la memoria de sesión y no permite mostrarla en la UI del lab.
-- **LangChain ConversationBufferMemory**: Más simple, pero almacena en memoria del proceso (no persiste entre reinicios de la app, problema para demos en vivo).
+- **LangChain ConversationBufferMemory**: Más simple, pero almacena en memoria del proceso (no persiste entre reinicios de la app).

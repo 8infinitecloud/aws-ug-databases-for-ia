@@ -1,15 +1,15 @@
 # De los Datos a la IA — Workshop de Plataforma de Datos en AWS
 
 > Construye, paso a paso, la plataforma de datos que hace posible un asistente
-> de IA. Tres laboratorios, ~2 horas, menos de $1 en tu cuenta AWS.
+> de IA: un core de pagos y cuatro laboratorios, ~2 h 20, menos de $1 en tu
+> cuenta AWS si haces cleanup.
 >
-> Presentado en **AWS Community Day Perú 2026**. El repositorio está pensado
-> para seguirlo por tu cuenta, no solo para verlo en la charla.
+> Material del **AWS Community Day Perú 2026**. Cada paso se sigue por tu cuenta.
 
 | | |
 |---|---|
 | **Duración** | ~2 h 20 en total (Lab 1: 25 min · Lab 2: 15 min · Lab 3: 40 min · Lab 4: 20 min) |
-| **Coste** | ~$0.50 si haces cleanup al terminar ([desglose](COST_ESTIMATE.md)) |
+| **Coste** | ~$0.25/h con todo desplegado; ~$0.60 la sesión completa con cleanup ([desglose](COST_ESTIMATE.md)) |
 | **Nivel** | Básico-intermedio. Necesitas soltura con la terminal y nociones de SQL. |
 | **Requisitos** | Cuenta AWS con permisos de admin, AWS CLI v2, Terraform ≥ 1.6 |
 | **Región** | `us-east-1` |
@@ -47,8 +47,8 @@ Al terminar tendrás corriendo en tu cuenta:
   problema
 - Un **catálogo de datos** con esquema y metadata de negocio, consultable con SQL
 - Un **asistente de compliance** con RAG sobre Amazon Bedrock, con tres capas de
-  memoria (sesión, persistente y semántica), que al final responde con los pagos
-  que la sala hizo cinco minutos antes
+  memoria (sesión, persistente y semántica), que responde sobre los pagos
+  procesados minutos antes
 - **Scoring de fraude en milisegundos** y la **telemetría de los terminales** por
   AWS IoT Core
 
@@ -101,7 +101,17 @@ python scripts/generate_traffic.py --api "$(terraform -chdir=infra/payments outp
 Es el sistema del que salen todos los datos: sin él no hay nada que replicar.
 La base arranca sola con su esquema y su cartera de comercios.
 
-### 5. Haz el Lab 1
+### 5. Opcional: la tienda online y el terminal físico
+
+```bash
+./scripts/store_local.sh        # Mercado Andino en http://localhost:8090
+```
+
+Pagos `CARD_NOT_PRESENT` desde un checkout con tarjetas de prueba: ver
+[store/README.md](store/README.md). Para el terminal M5Stack Core2, ver
+[payments/firmware/README.md](payments/firmware/README.md).
+
+### 6. Haz el Lab 1
 
 ```bash
 cd labs/01-ingestion-data-lake
@@ -121,7 +131,7 @@ pip install -r requirements.txt
 # Produce Parquet particionado, el quality report y la zona rejected/.
 python scripts/run_pipeline_local.py --keep
 
-# 19 tests del pipeline
+# Los tests: pipeline, API de pagos, tienda, firmware, RAG
 pytest tests/ -v
 
 # La infraestructura compila y el grafo resuelve
@@ -157,9 +167,10 @@ reales son que el Lab 2 y el Lab 4 necesitan el bucket del Lab 1.
 > Puedes hacerlos en días distintos y destruir cada uno al acabar. Es más
 > barato que dejarlos encendidos.
 
-Si quieres que la conexión Lab 2 → Lab 3 sea técnica y no solo narrativa,
-`scripts/ingest_from_curated.py` convierte los datos curados en hechos agregados
-y los ingesta al vector store. Ver [ADR-013](DECISIONS.md).
+La conexión Lab 2 → Lab 3 la hace `scripts/demo_cierre.sh`: ejecuta el Glue
+del Lab 2, convierte los datos curados en hechos agregados y los ingesta en el
+vector store del Lab 3. Ver [ADR-013](DECISIONS.md) y el paso final del
+[Lab 3](labs/03-data-to-ai/README.md#paso-5-del-pago-a-la-respuesta).
 
 ---
 
@@ -170,8 +181,8 @@ comercios afiliados. No es el comercio — es quien autoriza, captura, liquida y
 cobra la comisión.
 
 Su cartera tiene once comercios —una picantería, una casa de cambio, tiendas
-online, un hotel— y uno de ellos es **Smart Coffee**, una cafetería cuyo
-terminal físico genera pagos en vivo durante la demo. Su core corre en un
+online, un hotel— y uno de ellos es **Smart Coffee**, una cafetería con un
+terminal físico (M5Stack Core2) que cobra contra la API real. Su core corre en un
 servidor propio que nadie va a migrar este trimestre: la nube entra por los
 datos.
 
@@ -254,12 +265,13 @@ aws-ug-databases-for-ia/
 │   ├── run_pipeline_local.py    ← El Lab 2 completo, sin AWS
 │   ├── dms_emulator.py          ← El layout exacto que deja DMS, para probar sin AWS
 │   ├── ingest_from_curated.py   ← Conecta el Lab 2 con el Lab 3 de verdad
-│   ├── demo_cierre.sh           ← El cierre en vivo: del pago a la respuesta de la IA
+│   ├── demo_cierre.sh           ← Del pago a la respuesta de la IA (Glue + hechos + RAG)
 │   └── lib/                     ← tf.sh (Terraform) y core.sh (SQL en el core por SSM)
 │
 ├── payments/                    ← El core: esquema, API, web del QR, firmware del POS
+├── store/                       ← Mercado Andino: tienda online local (Docker)
 │
-├── tests/                       ← 180 tests, contra PostgreSQL real y sin AWS
+├── tests/                       ← Tests contra PostgreSQL real y sin AWS
 │
 ├── infra/                       ← TODA la infraestructura (Terraform)
 │   ├── README.md                ← Cómo funciona el backend y los módulos
@@ -307,7 +319,7 @@ vistazo todo lo que se crea en tu cuenta, y el `terraform destroy` es evidente.
 
 ## Cleanup — importante
 
-**Hazlo al terminar.** Si lo olvidas son unos $5/día, casi todo de Aurora y
+**Hazlo al terminar.** Si lo olvidas son unos $6/día, casi todo de Aurora y
 ElastiCache del Lab 3, DMS y el ALB del core, que no escalan a cero. El cleanup
 del Lab 1 borra además el slot de replicación del core: si se quedara, acabaría
 llenando su disco.
@@ -319,8 +331,11 @@ bash labs/04-streaming-online-insight/scripts/cleanup.sh
 bash labs/02-transformation-quality-catalog/scripts/cleanup.sh
 bash labs/01-ingestion-data-lake/scripts/cleanup.sh
 bash labs/03-data-to-ai/infrastructure/cleanup.sh
-terraform -chdir=infra/payments destroy      # el core, al final
+terraform -chdir=infra/payments destroy      # el core, al final (necesita TF_VAR_db_password)
 ```
+
+Si un destroy falla con `Error acquiring the state lock`, ver
+[troubleshooting](docs/troubleshooting.md#error-acquiring-the-state-lock).
 
 Comprueba que no queda nada:
 
@@ -348,14 +363,11 @@ También desde GitHub Actions: `Actions → Cleanup → Run workflow → ELIMINA
 | [COST_ESTIMATE.md](COST_ESTIMATE.md) | Costes por lab y cómo poner un presupuesto |
 | [infra/README.md](infra/README.md) | Cómo están organizados los módulos de Terraform |
 | [docs/local-development.md](docs/local-development.md) | Qué se puede hacer sin AWS, y cómo |
-| [docs/architecture-demo-proposal.md](docs/architecture-demo-proposal.md) | **Propuestas, no implementado.** Smart Coffee: POS físico con M5Stack |
 | [docs/datasets.md](docs/datasets.md) | Por qué el dataset es sintético, y alternativas reales (PaySim, NYC TLC, datos abiertos del Perú) |
-| [docs/cases.md](docs/cases.md) | AJE, BMW y United: los tres casos reales, con cifras verificadas |
-| [docs/frameworks.md](docs/frameworks.md) | Los frameworks de AWS detrás de cada decisión |
 | [docs/well-architected.md](docs/well-architected.md) | Qué cumple, qué se concede a propósito, y qué cambiar en producción |
 | [docs/architecture.md](docs/architecture.md) | Diagramas de arquitectura completos |
 | [DECISIONS.md](DECISIONS.md) | Por qué Glue Python Shell y no PySpark, etc. |
-| [docs/backlog.md](docs/backlog.md) | Mejoras posibles, y cuáles merecen la pena antes de la charla |
+| [docs/backlog.md](docs/backlog.md) | Mejoras posibles y su prioridad |
 | [docs/github-actions-setup.md](docs/github-actions-setup.md) | Desplegar desde CI con OIDC |
 
 ---

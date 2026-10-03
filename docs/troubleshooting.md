@@ -58,7 +58,33 @@ proceso corriendo y luego:
 terraform -chdir=infra/lab1 force-unlock <LOCK_ID>
 ```
 
-El `LOCK_ID` sale en el propio mensaje de error.
+El `LOCK_ID` sale en el propio mensaje de error. Si el error no lo muestra, el
+lock está en la tabla de locks:
+
+```bash
+aws dynamodb scan --table-name fincorp-datalake-tflock \
+  --query 'Items[?Info].[LockID.S, Info.S]' --output text
+```
+
+Un `plan` o `apply` interrumpido con Ctrl+C también deja el lock: el campo
+`Operation` lo dice (`OperationTypePlan`).
+
+### `Error: No value for required variable` (`state_bucket`, `db_password`)
+
+Al ejecutar `terraform` a mano, sin los scripts del lab. Los módulos `lab2`,
+`lab3`, `lab4` leen otros states y necesitan saber dónde viven; `payments` y
+`lab3` necesitan la contraseña de su base incluso para `destroy`:
+
+```bash
+export TF_VAR_state_bucket=$(sed -n 's/^bucket *= *"\(.*\)"/\1/p' infra/backend.hcl)
+export TF_VAR_db_password='...'
+```
+
+### `failed to upload state: ... request stream is not seekable`
+
+Un corte de red al final de un `apply` o `destroy`: los recursos cambiaron pero
+el state remoto no se actualizó. Vuelve a ejecutar el mismo comando: Terraform
+compara con lo que existe y termina el trabajo.
 
 ---
 
@@ -186,6 +212,13 @@ aws dms describe-replication-tasks   --query "ReplicationTasks[].[ReplicationTas
 Tiene que estar en `running`. Si está en `stopped`, `setup.sh` la retoma donde
 lo dejó. `validate.sh` hace un pago real y espera a verlo llegar.
 
+**Las carpetas de fecha van en UTC.** Desde las 19:00 de Lima, los cambios caen
+en la carpeta del día siguiente (`…/2026/10/03/` cuando en Lima aún es el 2).
+
+Para ver el CDC sin buscar ficheros: consola de DMS → la tarea → *Table
+statistics*. Las columnas *Inserts* y *Updates* suben ~30 s después de cada pago.
+`Table completed` solo indica que la foto inicial de esa tabla terminó.
+
 ### La alarma `wal-retenido` está en `ALARM`
 
 Un slot de replicación retiene WAL sin que nadie lo consuma: la tarea DMS está
@@ -236,9 +269,20 @@ aws s3 cp labs/02-transformation-quality-catalog/glue_job.py \
 
 ### El quality report dice que fallan reglas
 
-**Eso es lo esperado.** El dataset trae problemas deliberados para que las
-reglas los detecten. Un report con todo en verde significaría que la validación
-no está mirando de verdad.
+**Eso es lo esperado en `raw`.** El dataset legacy trae problemas deliberados
+para que las reglas los detecten. En `curated` las 10 pasan, y los rechazados
+(~137, todos `source = legacy`) quedan en `rejected/`.
+
+### Athena: `Only one sql statement is allowed`
+
+El texto tiene más de una sentencia. Un comentario después de un `;` cuenta
+como una segunda. Ejecuta una sola consulta, sin `;` seguido de más texto.
+
+### Athena: `TABLE_NOT_FOUND ... financial_platform.telemetry`
+
+Las consultas guardadas 6 a 8 leen la telemetría del Lab 4. Despliega el Lab 4,
+deja que llegue telemetría a `raw/telemetry/` (~1 min) y vuelve a ejecutar el
+crawler: `./labs/02-transformation-quality-catalog/scripts/run_job.sh`.
 
 ### El Crawler no crea la tabla `transactions`
 
@@ -284,11 +328,22 @@ sudo tail -50 /var/log/streamlit.log
 El `UserData` del EC2 solo escribe el `.env`; el código lo sube
 `deploy-app.sh`. Si nunca lo corriste, no hay app que responder.
 
+### `deploy-app.sh`: `.env no encontrado. El UserData del EC2 no completó`
+
+`deploy-app.sh` se ejecutó mientras el EC2 todavía arrancaba. El script espera a
+`cloud-init`; si aun así falla, comprueba el arranque y vuelve a ejecutarlo:
+
+```bash
+aws ssm send-command --instance-ids <instance-id> --document-name AWS-RunShellScript \
+  --parameters 'commands=["cloud-init status --long","tail -20 /var/log/user-data.log"]'
+```
+
 ### `could not connect to server: Connection timed out` contra Aurora
 
 Aurora vive en subnets privadas: **no es alcanzable desde tu laptop**, por
-diseño. `init_db.py` e `ingest_documents.py` tienen que correr desde el EC2, o
-a través de un túnel SSM:
+diseño. `deploy-app.sh` y `demo_cierre.sh` ya ejecutan la inicialización y la
+ingesta en el EC2. Para conectarte tú, un túnel SSM (necesita el
+`session-manager-plugin`):
 
 ```bash
 aws ssm start-session --target <instance-id> \
@@ -325,6 +380,65 @@ Si es una pregunta corta que **sí** está en el corpus, mira el score real: el
 retriever acepta `min_score=0.0` y devuelve todo ordenado. Con el umbral antiguo
 (0.70), "¿qué comercios hicieron pagos hoy?" dejaba el documento correcto el
 primero con 0.687 y lo descartaba.
+
+### El asistente dice que hoy no hay pagos, y sí los hay
+
+Por orden:
+
+1. **No se ejecutó `demo_cierre.sh` después de los pagos.** El RAG no se
+   actualiza solo.
+2. **Los pagos aún no estaban en `raw/`.** Espera ~30 s después del último pago
+   antes de ejecutarlo.
+3. **"Hoy" es el día de Lima**, no el UTC.
+
+Comprueba el documento que se ingestó:
+
+```bash
+aws ssm send-command --instance-ids <instance-id> --document-name AWS-RunShellScript \
+  --parameters 'commands=["sed -n 1,40p /opt/rag-lab/data/derived/operaciones-actividad-hoy.md"]'
+```
+
+### `demo_cierre.sh`: `La ingesta termino en Failed`
+
+La salida muestra las últimas líneas del error. Las causas habituales: el Lab 3
+sin `deploy-app.sh` (no está el script en el EC2) o el EC2 sin permiso de
+lectura sobre el bucket del Lab 1 (`terraform apply` de `infra/lab3` después de
+crear el Lab 1).
+
+---
+
+## Terminal Core2 y pgAdmin
+
+### El Core2: `wifi: desconectado, reintento 8/8`
+
+El punto de acceso no está o rechaza la conexión. El ESP32 solo ve redes de
+**2,4 GHz**: en el hotspot de un iPhone activa *Maximizar compatibilidad*. Las
+credenciales están en `payments/firmware/sdkconfig` (`CONFIG_WIFI_SSID`,
+`CONFIG_WIFI_PASSWORD`).
+
+### El Core2: `couldn't get hostname` o `ESP_ERR_HTTP_CONNECT`
+
+Sin WiFi, o con la URL de un despliegue anterior. Cada `infra/payments` nuevo
+tiene otra URL de API Gateway: actualiza `CONFIG_API_BASE_URL` y vuelve a
+grabar. Ver [payments/firmware/README.md](../payments/firmware/README.md#después-de-redesplegar-el-core).
+
+### pgAdmin: el Query Tool se queda en blanco o `connection to the server has been lost`
+
+Si la conexión aparece en la base (`SELECT * FROM pg_stat_activity WHERE
+application_name LIKE 'pgAdmin%'`) pero el Query Tool no muestra nada, el fallo
+es de pgAdmin, no de la base. pgAdmin 9.1 sobre Python 3.13 registra
+`urlopen() got an unexpected keyword argument 'cafile'` en
+`~/.pgadmin/pgadmin4.log`. Actualiza pgAdmin y borra sus sesiones:
+
+```bash
+rm -rf ~/.pgadmin/sessions
+brew install --cask pgadmin4      # o descarga la última de pgadmin.org
+```
+
+Los servidores guardados están en `~/.pgadmin/pgadmin4.db` y se conservan.
+
+Si la conexión se corta tras un rato sin uso, la base tiene keepalives TCP
+(60 s) para que el NAT no deje conexiones medio cerradas.
 
 ---
 
@@ -385,7 +499,7 @@ pip install -r requirements.txt
 # El pipeline COMPLETO del Lab 2 sin AWS: Parquet, rejected/ y quality report
 python scripts/run_pipeline_local.py --keep
 
-# Los 20 tests
+# Los tests
 pytest tests/ -v
 
 # La infraestructura compila y el grafo resuelve

@@ -1,5 +1,14 @@
 # Lab 4 — Streaming e insight online
 
+> **Lab 4 de 4** · [← Lab 3](../03-data-to-ai/README.md) · [Índice](../../README.md)
+
+| | |
+|---|---|
+| **Tiempo** | ~20 min |
+| **Coste** | ~$0 en reposo: todo es por uso |
+| **Qué despliegas** | Reglas de IoT Core, Lambda de scoring, DynamoDB, Firehose |
+| **Requisitos** | El core (`infra/payments`) y el Lab 1 (su bucket) desplegados |
+
 Los tres primeros labs responden **qué pasó**. Este responde **si podemos
 reaccionar ahora**, y esa no es la misma pregunta hecha más rápido: es otra
 arquitectura.
@@ -111,70 +120,148 @@ regla de fraude se itera decenas de veces, y hacerlo contra un servicio
 desplegado es inviable.
 
 ```bash
-pytest tests/test_risk_scorer.py -v    # 21 tests, sin AWS
+pytest tests/test_risk_scorer.py -v    # sin AWS
 ```
 
 ---
 
-## Desplegar
-
-Necesita el Lab 1 (el bucket) y `payments` (el backend que publica los eventos).
-La telemetría la publican los terminales: la flota virtual del generador de
-tráfico (`--telemetria`) y, si se activa en su firmware, el Core2.
+## Paso 1: Desplegar
 
 ```bash
-terraform -chdir=infra/lab4 init -backend-config=../backend.hcl
-terraform -chdir=infra/lab4 apply
+./labs/04-streaming-online-insight/scripts/setup.sh
 ```
 
-Los umbrales son variables y llegan a la Lambda por entorno, así que se ajustan
-desde la consola antes de la charla sin redesplegar ni reflashear el POS:
+Crea las reglas de IoT (`+/events` y `+/telemetry`), la Lambda de scoring, las
+tablas de velocidad y de estado de la flota, y el Firehose que escribe en
+`raw/telemetry/` del bucket del Lab 1.
+
+Los umbrales son variables de Terraform y llegan a la Lambda por entorno: se
+ajustan en la consola de Lambda sin redesplegar ni regrabar el terminal.
 
 ```bash
 terraform -chdir=infra/lab4 output thresholds
 ```
 
----
-
-## Ver la demo
+## Paso 2: Validar
 
 ```bash
-# El scoring, en vivo
-aws logs tail "$(terraform -chdir=infra/lab4 output -raw scorer_log_group)" --follow
-
-# Lo que quedó marcado
-aws dynamodb query \
-  --table-name "$(terraform -chdir=infra/lab4 output -raw velocity_table_name)" \
-  --key-condition-expression "pk = :t AND begins_with(sk, :a)" \
-  --expression-attribute-values '{":t":{"S":"T#TID00001"},":a":{"S":"ALERT#"}}'
+./labs/04-streaming-online-insight/scripts/validate.sh
 ```
 
-Un ataque de card testing por la API real, que además queda en la base, en el
-CDC y en el lago:
+Resultado esperado:
+
+```
+[✓] Tabla fincorp-datalake-lab-velocity activa
+[✓] Lambda fincorp-datalake-lab-scorer desplegada (concurrencia reservada: 10)
+[✓] Firehose fincorp-datalake-lab-telemetry activo
+[✓] La Lambda marco la operacion: {"flagged": true, "rules": ["HIGH_RISK_MCC"]}
+[✓] La alerta quedo en DynamoDB (1 encontrada/s)
+[✓] Una venta corriente no se marca
+[✓] El latido llego a fincorp-datalake-lab-terminal-state por la regla de IoT
+[✓] Lab 4 validado
+```
+
+## Paso 3: El scoring
+
+En una terminal aparte, el log de la Lambda:
+
+```bash
+aws logs tail "$(terraform -chdir=infra/lab4 output -raw scorer_log_group)" --follow
+```
+
+Haz un pago (tienda, terminal Core2 o generador). Cada cobro aparece en menos de
+un segundo:
+
+```
+evento: {"event_type": "payment.captured", "pos_id": "TID00001", "amount": 26.5, ...}
+ok ch_PIADCB14FB_1 | 1 tx / 26.50 en la ventana
+```
+
+Un ataque de card testing contra la tienda online PixelPlay (`MID000000020010`)
+por la API real; queda también en la base, en el CDC y en el lago:
 
 ```bash
 python scripts/generate_traffic.py \
   --api "$(terraform -chdir=infra/payments output -raw api_endpoint)" --card-testing
 ```
 
-La flota virtual latiendo, con un taxi de mala cobertura y otro que se queda sin
-batería:
+Resultado esperado: a partir del cuarto intento el log muestra `MARCADA` con
+`DECLINE_RATIO`. Lo marcado queda en DynamoDB:
 
 ```bash
-python scripts/generate_traffic.py --api "$API" --duration 900 --telemetria
+aws dynamodb query \
+  --table-name "$(terraform -chdir=infra/lab4 output -raw velocity_table_name)" \
+  --key-condition-expression "pk = :t AND begins_with(sk, :a)" \
+  --expression-attribute-values '{":t":{"S":"M#MID000000020010"},":a":{"S":"ALERT#"}}'
+```
 
-# Qué terminales están caídos AHORA
+Las tiendas online van por comercio (`M#<merchant_id>`); los terminales, por
+terminal (`T#<terminal_id>`).
+
+Sin la API desplegada, `./labs/04-streaming-online-insight/scripts/run_demo.sh
+card-testing` publica los eventos directamente en IoT Core.
+
+## Paso 4: La telemetría
+
+**La flota virtual** (nueve terminales, con un taxi de mala cobertura y otro
+que se queda sin batería):
+
+```bash
+API="$(terraform -chdir=infra/payments output -raw api_endpoint)"
+python scripts/generate_traffic.py --api "$API" --duration 900 --telemetria
+```
+
+**El terminal Core2**: activa la telemetría en su firmware y grábalo, ver
+[payments/firmware/README.md](../../payments/firmware/README.md#telemetría-opcional-desactivada-por-defecto).
+Publica un latido cada 30 s en `<serial>/telemetry`.
+
+El estado de la flota, al instante:
+
+```bash
 aws dynamodb scan --table-name "$(terraform -chdir=infra/lab4 output -raw terminal_state_table)" \
   --projection-expression "device_id, terminal_id, battery_pct, rssi_dbm, received_at_ms"
 ```
 
-Y un minuto después, la misma telemetría en el lago:
+La misma telemetría en el lago, ~60 s después (el buffer mínimo de Firehose):
 
 ```bash
 aws s3 ls "$(terraform -chdir=infra/lab4 output -raw telemetry_s3_path)" --recursive
 ```
 
-Ese minuto de espera **es el contenido**: enseña por qué existen dos caminos.
+Las carpetas `year=/month=/day=` de Firehose van en UTC.
+
+## Paso 5: La telemetría en Athena y en el RAG
+
+1. Ejecuta el job y el crawler del Lab 2 para registrar la tabla `telemetry`:
+
+   ```bash
+   ./labs/02-transformation-quality-catalog/scripts/run_job.sh
+   ```
+
+2. En Athena (workgroup `fincorp-datalake-lab`), ejecuta las consultas guardadas
+   6, 7 y 8: terminales caídos, red o emisor, abandono del QR.
+3. Con el Lab 3 desplegado, actualiza los hechos y pregunta al asistente:
+
+   ```bash
+   ./scripts/demo_cierre.sh
+   ```
+
+   ```
+   ¿Qué terminales están caídos o con batería baja?
+   Un terminal tiene muchos http_timeouts: ¿falló la red o el emisor?
+   ```
+
+---
+
+## Cleanup
+
+```bash
+./labs/04-streaming-online-insight/scripts/cleanup.sh
+```
+
+Destruye las reglas, la Lambda, Firehose y las tablas. La telemetría escrita en
+`raw/telemetry/` es del bucket del Lab 1 y se borra con su cleanup. Hazlo
+**antes** del cleanup del Lab 1.
 
 ---
 
@@ -213,7 +300,7 @@ sobre DynamoDB costaría bastante más de lo que aporta a esta escala.
 
 - **No bloquea el cobro.** Marca. Bloquear en línea exige que el scoring esté
   *dentro* del flujo de autorización, con su latencia en el camino crítico y un
-  plan para cuando falle. Es otra conversación.
+  plan para cuando falle.
 - **No detecta fraude.** Eso lo hace el emisor, que ve la tarjeta. Esto detecta
   *patrones* que un comercio legítimo no produce.
 - **No aprende.** Son umbrales, no un modelo. Un modelo necesitaría etiquetas
@@ -222,3 +309,6 @@ sobre DynamoDB costaría bastante más de lo que aporta a esta escala.
 ---
 
 ¿Algo no cuadra? → [docs/troubleshooting.md](../../docs/troubleshooting.md)
+
+| [← Lab 3](../03-data-to-ai/README.md) | [Índice](../../README.md) | [Costes](../../COST_ESTIMATE.md) |
+|---|---|---|

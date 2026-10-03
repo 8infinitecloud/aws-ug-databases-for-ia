@@ -22,11 +22,11 @@ La UI es el corazón del laboratorio: muestra en tiempo real qué está pasando 
 
 ## Decisiones de UI
 
-**Tres columnas fijas:** La audiencia del lab debe ver las tres capas simultáneamente. Un layout de tabs ocultaría información clave — el punto del lab es mostrar todo junto.
+**Tres columnas fijas:** las tres capas se ven a la vez. Un layout de tabs ocultaría información clave — el punto del lab es mostrar todo junto.
 
 **Plotly para el gráfico de scores:** Interactivo (hover para ver detalles), más impactante visualmente que `st.bar_chart`. La escala de color verde→amarillo→rojo hace inmediatamente obvio qué chunks son relevantes.
 
-**st.expander para chunks:** La audiencia puede ver el contenido completo del chunk más relevante (expandido por defecto) sin sobrecargar la pantalla con todos los chunks.
+**st.expander para chunks:** se ve el contenido completo del chunk más relevante (expandido por defecto) sin sobrecargar la pantalla con todos los chunks.
 
 **Sidebar para configuración:** Filtros de retrieval, perfil de usuario y preguntas de ejemplo en el sidebar mantienen el área principal limpia para el demo.
 
@@ -44,8 +44,7 @@ streamlit run app/app.py
 # Abre: http://localhost:8501
 ```
 
-Para demo en una presentación con proyector:
+Sin telemetría de uso de Streamlit:
 ```bash
-# Aumentar el zoom del navegador al 125% para mejor visibilidad
 streamlit run app/app.py --server.port 8501 --browser.gatherUsageStats false
 ```

@@ -37,8 +37,8 @@ actualización de una fila que ya existía.
 └──────────────────────┘            └───────────────┬──────────────────┘
                                                     ▼
                                     s3://…/raw/acquiring/<tabla>/
-                                      LOAD00000001.parquet      la foto inicial
-                                      2026/10/15/*.parquet      cada cambio, ~30 s
+                                      LOAD00000001.parquet      la foto inicial (full load)
+                                      2026/10/15/*.parquet      cada cambio (CDC), ~30 s
 ```
 
 ---
@@ -98,6 +98,27 @@ s3://fincorp-datalake-<cuenta>/
 
 ---
 
+## La configuración de DMS
+
+Todo está en [`infra/lab1/dms.tf`](../../infra/lab1/dms.tf).
+
+| Pieza | Valor | Por qué |
+|---|---|---|
+| **Instancia** | `dms.t3.small`, 50 GB, Single-AZ, privada | Sobra para el volumen del workshop. Vive en las subnets privadas del core: llega a la base por la red de la VPC y a S3 por el gateway endpoint |
+| **Endpoint de origen** | PostgreSQL, plugin `test_decoding` | Viene con PostgreSQL (`postgresql16-contrib`); `pglogical` exige instalar una extensión |
+| | `capture_ddls = false` | DMS no crea objetos propios en la base del core |
+| | Heartbeat cada minuto | Hace avanzar el slot aunque no haya pagos |
+| **Endpoint de destino** | S3, **Parquet** 2.0, GZIP | El formato lo define el endpoint, no la tarea. Por defecto DMS escribe CSV sin cabecera y todo como texto |
+| | `include_op_for_full_load = true` | La foto inicial también lleva `Op` (= `I`): un solo esquema por carpeta |
+| | Partición por fecha `YYYYMMDD` | Una carpeta por día para los cambios. La fecha es **UTC** |
+| | `cdc_max_batch_interval = 30` | Un fichero de cambios cada 30 s como mucho: la latencia del lab |
+| **Tarea** | `full-load-and-cdc` | La foto inicial y después cada cambio, sin huecos |
+| | 9 tablas + `remove-column` | Ver *Lo que se replica* |
+| | LOBs limitados a 32 KB | Para DMS, `text` y `jsonb` son LOBs: con `SupportLobs = false` los **descarta sin avisar** |
+| | Arranque manual | La arranca `setup.sh`: desde ese momento existe el slot |
+
+---
+
 ## El riesgo que hay que conocer: el slot de replicación
 
 Para el CDC, DMS crea un *replication slot* en PostgreSQL, y la base **retiene el
@@ -126,8 +147,8 @@ cd labs/01-ingestion-data-lake/scripts
 3. **Arranca la tarea** y espera a que la foto inicial esté al 100 %. Desde ese
    momento el CDC escucha.
 
-Si la tarea estaba parada (por ejemplo, entre ensayos), `setup.sh` la **retoma**
-donde lo dejó en vez de recargar.
+Si la tarea estaba parada, `setup.sh` la **retoma** (`resume-processing`) donde
+lo dejó en vez de recargar.
 
 ---
 
@@ -152,6 +173,61 @@ python ../../../scripts/generate_traffic.py \
 BUCKET=$(terraform -chdir=../../../infra/lab1 output -raw s3_bucket_name)
 aws s3 ls "s3://$BUCKET/raw/acquiring/payment_intents/" --recursive
 ```
+
+### Leer lo que llegó
+
+Cada tabla tiene dos tipos de fichero:
+
+| Fichero | Qué es | `Op` |
+|---|---|---|
+| `raw/acquiring/<tabla>/LOAD00000001.parquet` | La foto de la tabla al arrancar la tarea | `I` |
+| `raw/acquiring/<tabla>/AAAA/MM/DD/*.parquet` | Los cambios posteriores, un fichero cada ≤ 30 s | `I`, `U`, `D` |
+
+Las tablas vacías al arrancar (`refunds`, `disputes`, `payouts`) no tienen
+`LOAD`: solo ficheros de cambios.
+
+**Las carpetas de fecha van en UTC.** En Lima, desde las 19:00 los cambios caen
+en la carpeta del día siguiente.
+
+**El CDC no incluye la foto: hay que combinarlos.** Un mismo pago aparece varias
+veces (`I` al crearse, `U` al capturarse). El estado actual de cada fila es la
+versión con el `dms_timestamp` más reciente, descartando las que terminan en
+`D`. Eso lo hace el Glue del Lab 2 (`apply_cdc`).
+
+### Ver el CDC en la consola
+
+**DMS → Database migration tasks → la tarea → Table statistics.** En una tarea
+`full-load-and-cdc`:
+
+- El estado de la tarea se queda en *Running* (o *Load complete, replication
+  ongoing*). No hay un estado "CDC" aparte.
+- `Table completed` en cada tabla significa que su foto inicial terminó, no que
+  dejó de replicar.
+- El CDC se ve en las columnas **Inserts / Updates / Deletes** y en *Last
+  updated*. Haz un pago y en ~30 s suben.
+
+La pestaña *CloudWatch metrics* muestra `CDCLatencySource` y `CDCLatencyTarget`.
+
+### Repetir la foto inicial
+
+El full load solo se ejecuta al arrancar la tarea por primera vez. Para
+repetirlo:
+
+```bash
+ARN=$(terraform -chdir=../../../infra/lab1 output -raw dms_task_arn)
+
+# Todas las tablas (con la tarea parada)
+aws dms stop-replication-task --replication-task-arn "$ARN"
+aws dms start-replication-task --replication-task-arn "$ARN" \
+  --start-replication-task-type reload-target
+
+# Una sola tabla (con la tarea en marcha)
+aws dms reload-tables --replication-task-arn "$ARN" \
+  --tables-to-reload SchemaName=acquiring,TableName=merchants
+```
+
+Hace falta tras un cambio de esquema (con `capture_ddls = false` DMS no lo
+recoge), si se perdió el slot o si se añade una tabla a la tarea.
 
 ¿Algo no cuadra? → [docs/troubleshooting.md](../../docs/troubleshooting.md#lab-1--ingestion--data-lake)
 
@@ -185,49 +261,6 @@ y la une a la cartera legacy con una columna `source`. El core no debería aport
 ningún rechazado: la base impide esos errores. La deuda viene del legacy.
 
 → **Continúa en:** [Lab 2 — Transformation + Quality + Catalog](../02-transformation-quality-catalog/README.md)
-
----
-
-## Casos reales que aplican este patrón
-
-### AJE Group (empresa peruana)
-
-AJE tenía datos de ventas, distribución e inventario distribuidos en múltiples ERPs por país. La arquitectura que implementaron sigue exactamente el mismo patrón de este lab:
-
-```
-ERP locales (múltiples países)
-    │ AWS DMS — migración inicial + CDC
-    ▼
-Amazon RDS / Amazon S3 (zona de aterrizaje)
-    │
-    ▼ AWS Glue
-Amazon Redshift (Data Warehouse)
-    │
-    ▼ Amazon QuickSight
-Analytics consolidado de 24 países
-```
-
-**El punto:** AJE no empezó con IA. Empezó con el problema básico que estamos resolviendo en este lab — llevar datos distribuidos a un lugar centralizado y confiable. Y con DMS con CDC desde sistemas que no iba a migrar, como nuestro core.
-
-### BMW Group
-
-BMW consolidó datos de más de 3,000 sistemas (vehículos, manufactura, clientes) usando el mismo patrón de Data Lake en S3 como zona de aterrizaje neutral, con DMS para la ingestion desde fuentes relacionales.
-
-```
-3,000+ sistemas fuente
-    │ AWS DMS + Amazon Kinesis
-    ▼
-Amazon S3 — Cloud Data Hub
-(zona raw — datos sin transformar)
-    │
-    ▼ [siguiente capa: Lab 2]
-Glue + Redshift + SageMaker
-```
-
-**Referencia oficial:** [AWS Case Study — BMW Group](https://aws.amazon.com/solutions/case-studies/bmw-group/)
-
-> *"Implementamos una versión simplificada de los mismos patrones arquitectónicos. El problema que resolvemos en este lab — centralizar datos distribuidos en una zona de aterrizaje confiable — es exactamente el punto de partida de BMW y AJE."*
-
 
 ---
 

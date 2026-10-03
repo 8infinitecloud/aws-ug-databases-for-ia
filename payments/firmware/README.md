@@ -98,7 +98,7 @@ que preguntar cada dos segundos.
 
 ---
 
-## El QR: lo que hay que saber antes de la demo
+## El QR
 
 El kit trae un componente `qrcode` con `qrcode_display()`. **No sirve aquí**:
 hace `printf` del QR como arte ASCII en la consola serie. Está pensado para
@@ -112,12 +112,11 @@ Gateway (69 caracteres) sale un QR versión 4, 33×33 módulos, a 4 px por módu
 En una pantalla de 2″ a ~200 ppp eso son **21 mm** reales, con módulos de
 0,63 mm: la distancia de lectura práctica ronda los **25 cm**.
 
-Para la charla significa que alguien sube y escanea, lo cual además se ve mejor
-en cámara. Si hiciera falta a distancia, la palanca es acortar la URL con un
-dominio propio, no agrandar la pantalla.
+Escanéalo a ~25 cm de la pantalla. Para leerlo a más distancia, la palanca es
+acortar la URL con un dominio propio, no agrandar la pantalla.
 
 `tests/test_firmware.py` fija esto: si alguien alarga la URL o la referencia, el
-test falla antes de que el QR se vuelva ilegible en la charla.
+test falla antes de que el QR se vuelva ilegible.
 
 ---
 
@@ -153,14 +152,19 @@ Para activarla (`pio run -t menuconfig`):
 
 1. **FinCorp POS → Telemetría → Publicar telemetría**.
 2. **Amazon Web Services IoT Platform → AWS IoT MQTT Hostname**: el valor de
-   `aws iot describe-endpoint --endpoint-type iot:Data-ATS`.
+   `aws iot describe-endpoint --endpoint-type iot:Data-ATS`. Es fijo por cuenta
+   y región: no cambia al redesplegar.
 
-> **Compilado, no probado en el dispositivo.** Las dos variantes compilan
-> (desactivada: 1.049.292 bytes; activada: 1.104.996, el cliente MQTT añade
-> 55 KB). Falta grabarla y ver en el Core2 que el handshake TLS con el
-> ATECC608 y la memoria aguantan junto a una venta, y que el latido llega a la
-> tabla `terminal-state` del Lab 4. Hasta entonces, déjala desactivada en la
-> charla: el terminal validado no cambia.
+Con la telemetría activada el firmware ocupa ~1,1 MB (el cliente MQTT añade
+~55 KB). Al arrancar, el log muestra el topic:
+
+```
+I (20705) pos_telemetry: latido cada 30 s en 012370911FD7211101/telemetry
+```
+
+**Validado en el dispositivo** (2026-10-03): el latido llega a la tabla
+`terminal-state` del Lab 4 y a `raw/telemetry/` por Firehose, y convive con
+cobros con tarjeta y QR.
 
 ---
 
@@ -177,8 +181,8 @@ sin tocar nada.
 | Tiempo de compilación | ~45 s en caliente, ~56 s en frío |
 | Tamaño | 1,0 MB · 16 % del flash · 0,9 % de la RAM |
 
-Por eso `platformio.ini` no lleva rangos de versión: una demo tiene que compilar
-igual el día de la charla que hoy.
+Por eso `platformio.ini` no lleva rangos de versión: el firmware compila igual
+hoy que dentro de un año.
 
 ---
 
@@ -237,7 +241,7 @@ Verificado el 2026-09-28 con el terminal conectado a un hotspot de móvil y
 +42.0s  POST /v1/intents/PIEF4950CA/confirm -> 200 (alguien pagó)
 ```
 
-El cobro llegó entero a Aurora:
+El cobro llegó entero a la base del core:
 
 ```
 PIEF4950CA · SUCCEEDED · 38,50 PEN · Smart Coffee
@@ -267,3 +271,34 @@ pio run -t menuconfig     # menú "FinCorp POS"
 ```
 
 `API_BASE_URL` sale de `terraform -chdir=infra/payments output -raw api_endpoint`.
+
+**La WiFi tiene que ser de 2,4 GHz.** El ESP32 no ve redes de 5 GHz. Con el
+hotspot de un iPhone, activa *Maximizar compatibilidad*. Si el log muestra
+`wifi: desconectado, reintento 8/8` y `state: auth -> init`, el punto de acceso
+no está disponible o rechaza la contraseña.
+
+### Después de redesplegar el core
+
+Cada `terraform apply` que recrea `infra/payments` genera una URL de API Gateway
+nueva. El terminal hay que volver a grabarlo:
+
+1. Lee la URL nueva:
+
+   ```bash
+   terraform -chdir=infra/payments output -raw api_endpoint
+   ```
+
+2. Cámbiala en `payments/firmware/sdkconfig` (`CONFIG_API_BASE_URL`), o con
+   `pio run -t menuconfig`.
+3. Compila y graba con el Core2 conectado por USB:
+
+   ```bash
+   ls /dev/cu.*                        # el puerto: cu.SLAB_USBtoUART en macOS
+   pio run -t upload --upload-port /dev/cu.SLAB_USBtoUART
+   pio device monitor -b 115200        # el log de arranque
+   ```
+
+   Si `pio` no está en el PATH: `~/.platformio/penv/bin/pio`.
+
+4. Comprueba que la API responde: `curl <api_endpoint>/health` devuelve
+   `{"status":"ok","database":"ok","iot":"ok"}`.

@@ -1,11 +1,6 @@
 # ARCHITECTURE — Data Platform for AI en AWS
 
-> Este documento describe la arquitectura **implementada**. Para componentes en
-> evaluación y no construidos, ver
-> [architecture-demo-proposal.md](architecture-demo-proposal.md).
-
-> Arquitectura completa de la charla "De los Datos a la IA"  
-> Ver `docs/STRATEGY.md` para el contexto narrativo
+> Arquitectura implementada del workshop "De los Datos a la IA".
 
 ---
 
@@ -174,6 +169,11 @@ flowchart TD
         DOCS["Documentos no estructurados\ncompliance / policies / onboarding"]
     end
 
+    subgraph FACTS["Hechos derivados (EC2 del Lab 3, por SSM)"]
+        GLUEJOB["Glue job del Lab 2\n(demo_cierre.sh)"]
+        DERIVE["ingest_from_curated.py\nagregados → data/derived/*.md"]
+    end
+
     subgraph INGESTION_BLOCK["Pipeline de Ingesta (Embeddings)"]
         LOADER[Document Loader]
         CHUNKER[Text Splitter\nchunk_size=1000, overlap=200]
@@ -189,7 +189,7 @@ flowchart TD
 
     subgraph RAG_CHAIN["RAG Chain (LangChain)"]
         EMBED_Q[Embed query\nTitan V2]
-        SEARCH[Similarity Search\nTop-K chunks + scores]
+        SEARCH[Similarity Search\nTop-K, score ≥ 0.60\n+ pregunta anterior]
         PROMPT[Prompt Builder\ncontexto + memoria + query]
         LLM[Amazon Bedrock\nNova Pro]
     end
@@ -197,6 +197,9 @@ flowchart TD
     APP_UI["Streamlit UI\nFinancial Compliance Assistant"]
 
     DOCS --> LOADER
+    GLUEJOB --> CURATED
+    CURATED --> DERIVE
+    DERIVE --> LOADER
     LOADER --> CHUNKER
     CHUNKER --> EMBEDDER
     EMBEDDER --> STORE
@@ -217,23 +220,23 @@ flowchart TD
 
 ---
 
-## Arquitectura de reveal final (slide de cierre)
+## Vista general por capas
 
 ```mermaid
 flowchart TD
-    DS[DATA SOURCES\nRDS · Files · Streams]
+    DS[DATA SOURCES\nPostgreSQL · Files · IoT]
     ING[INGESTION\nAWS DMS]
     RAW[RAW DATA\nAmazon S3]
     TRF[TRANSFORMATION\nAWS Glue]
     DQ[DATA QUALITY\nGlue Data Quality]
     CAT[CATALOG / METADATA\nGlue Data Catalog]
-    GOV[GOVERNANCE\nLake Formation]
+    GOV[GOVERNANCE\nLake Formation\nsiguiente paso]
     CUR[CURATED DATA\nAmazon S3]
 
     ANA[ANALYTICS\nAthena]
     AI_BLOCK[AI / GenAI\nBedrock · pgvector\nDynamoDB · Redis]
     RAG_BLOCK[RAG\nLangChain + Nova Pro]
-    AGE[AGENTS\nfuture]
+    AGE[AGENTS\nsiguiente paso]
 
     DS --> ING --> RAW --> TRF --> DQ --> CAT --> GOV --> CUR
     CUR --> ANA
@@ -259,23 +262,26 @@ flowchart TD
 
 | Capa | Servicio | Rol en la plataforma |
 |------|----------|---------------------|
-| Ingestion | AWS DMS | Replica datos de RDS → S3 con CDC |
+| Core transaccional | PostgreSQL 16 en EC2, Fargate, API Gateway | El origen: pagos por terminal, QR y online |
+| Ingestion | AWS DMS | Replica el PostgreSQL del core → S3 con CDC |
 | Storage | Amazon S3 | Raw zone + Curated zone del Data Lake |
 | Transformation | AWS Glue (Python Shell) | ETL: raw → CDC aplicado → curated |
 | Data Quality | Glue Data Quality | Validación con ruleset declarativo |
 | Catalog | Glue Data Catalog | Schema, metadata, business context |
-| Governance | AWS Lake Formation | Control de acceso a nivel tabla/columna |
+| Governance | AWS Lake Formation | Siguiente paso: control de acceso a nivel tabla/columna (no desplegado) |
 | Analytics | Amazon Athena | SQL serverless sobre S3 curated |
 | Vector Store | Aurora PostgreSQL + pgvector | Embeddings de documentos y memorias |
 | Session Memory | Amazon ElastiCache Redis | Últimos N mensajes de la sesión |
 | Persistent Memory | Amazon DynamoDB | Perfil y resumen de usuario |
 | LLM + Embeddings | Amazon Bedrock | Nova Pro (generación) + Titan (embeddings) |
+| Streaming | AWS IoT Core, Lambda, DynamoDB | Scoring de fraude en ms y estado de la flota (Lab 4) |
+| Telemetría | Amazon Data Firehose | Latidos de los terminales → `raw/telemetry/` (Lab 4) |
 
 > **Principio de inclusión**: cada servicio aparece porque resuelve un problema demostrado en el lab, no porque sea un servicio interesante de explicar.
 
 ---
 
-## Relación con la arquitectura de la charla 2025 (v1.0.0)
+## Relación con la versión 2025 (v1.0.0)
 
 El código heredado de 2025 implementa el Lab 3 completo, y hoy vive en
 `labs/03-data-to-ai/`:

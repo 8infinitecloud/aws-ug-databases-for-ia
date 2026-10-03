@@ -57,7 +57,7 @@ chmod +x cleanup.sh && ./cleanup.sh
 
 ## Por qué Aurora Serverless v2 y no Aurora Provisioned
 
-`MinCapacity: 0.5` permite que Aurora escale casi a cero cuando está idle. Para el lab esto es crucial: si el presentador hace una pausa de 15 minutos, la DB no está consumiendo 2 ACU en espera. El costo mínimo efectivo en lab es ~$0.06/hora.
+`MinCapacity: 0.5` permite que Aurora escale casi a cero cuando está idle. Durante las pausas del lab la base no consume 2 ACU en espera. El costo mínimo efectivo en lab es ~$0.06/hora.
 
 ## Tiempo de Provisioning
 
@@ -66,4 +66,4 @@ chmod +x cleanup.sh && ./cleanup.sh
 - ElastiCache Redis: ~3-5 minutos
 - **Total: ~15-20 minutos**
 
-Ejecutar `setup.sh` al menos 20 minutos antes del demo en vivo.
+Ejecuta `setup.sh` al menos 20 minutos antes de usar el lab.

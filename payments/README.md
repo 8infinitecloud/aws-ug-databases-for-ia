@@ -30,7 +30,7 @@ Smart Coffee          FinCorp Payments        Red de tarjetas      Emisor
 
 Por eso este directorio se llama `payments/` y no `smart-coffee/`: contiene
 **nuestra** plataforma. Smart Coffee aparece dentro, como el comercio de los datos
-de demo y como dueño del POS físico que se usa en la charla.
+de demo y como dueño del POS físico (M5Stack Core2).
 
 > FinCorp es la empresa ficticia que ya usa todo el workshop: sus clientes con
 > `risk_level`, su corpus de KYC y AML, su monitoreo transaccional. **Ese perfil
@@ -60,10 +60,10 @@ La infraestructura está en [`../infra/payments/`](../infra/payments/).
 | Dominio de adquirencia (autorizar, capturar, libro mayor) | ✅ Probado contra PostgreSQL real |
 | API HTTP + idempotencia | ✅ Tests de integración · imagen construida |
 | Generador de tráfico y cartera de 11 comercios | ✅ Probado por HTTP contra la API |
-| Terraform (EC2, Fargate, API Gateway) | ✅ `validate` · arranque de la base probado en Amazon Linux 2023 |
+| Terraform (EC2, Fargate, API Gateway) | ✅ Desplegado y validado en AWS (2026-10-02) |
 | Web de pago QR | ✅ Validada en el dispositivo y en AWS (2026-09-28) |
 | Firmware del terminal | ✅ Grabado y validado de punta a punta (2026-09-28) |
-| Telemetría del firmware | ⚠️ Compila · **sin probar en el dispositivo**, desactivada por defecto |
+| Telemetría del firmware | ✅ Validada en el dispositivo y en AWS (2026-10-03) · desactivada por defecto en `Kconfig` |
 
 ---
 
@@ -216,7 +216,7 @@ curl -X POST localhost:8080/v1/intents/PIWEB1/confirm -H "Authorization: Bearer 
 # → status REQUIRES_ACTION y next_action.redirect_to_url: ábrela en el navegador
 ```
 
-Tráfico de toda la cartera, como lo haría la audiencia:
+Tráfico de toda la cartera:
 
 ```bash
 python ../scripts/generate_traffic.py --api http://localhost:8080 --keys /tmp/keys.json --count 200

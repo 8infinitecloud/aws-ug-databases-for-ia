@@ -4,8 +4,18 @@
 > Los precios de AWS cambian: verifica en la
 > [calculadora oficial](https://calculator.aws/) antes de asumir nada.
 
-**Resumen: hacer el workshop completo en una sesión de ~2 horas cuesta menos de
-$1. Olvidarte del cleanup cuesta unos $5 al día.**
+**Resumen: con todo desplegado, ~$0.25 por hora. El workshop completo en una
+sesión de ~2 horas cuesta menos de $1. Olvidarte del cleanup cuesta unos $6 al
+día.**
+
+| Con todo encendido | $/hora |
+|---|---|
+| Core de pagos | ~$0.07 |
+| Lab 1 (DMS) | ~$0.04 |
+| Lab 3 (Aurora, Redis, EC2) | ~$0.12 |
+| IPs públicas IPv4 (3) | ~$0.015 |
+| Labs 2 y 4, Bedrock | por uso, céntimos |
+| **Total fijo** | **~$0.25** |
 
 ---
 
@@ -23,6 +33,9 @@ Es lo primero que se despliega: todos los labs leen de él.
 | API Gateway HTTP API | $1 por millón de peticiones | — | ~$0 |
 | ECR, Secrets Manager, S3, CloudWatch | | — | < $0.01 |
 | **Total core** | | **~$0.07/h** | **~$0.14** |
+
+> **IPs públicas IPv4:** AWS cobra $0.005/h por cada una. El workshop usa tres:
+> la base del core, la tarea de Fargate y el EC2 del Lab 3 (~$0.015/h, ~$0.36/día).
 
 > Antes era Aurora Serverless v2 (mín. 0,5 ACU, ~$0.06/h solo la base): el core
 > en EC2 cuesta un tercio menos y es lo que justifica DMS con CDC (ADR-024).
@@ -105,16 +118,17 @@ Es lo primero que se despliega: todos los labs leen de él.
 | Lab 3 (2 h) | ~$0.25 |
 | Lab 4 | ~$0.01 |
 | Bedrock | ~$0.05 |
+| IPs públicas IPv4 (2 h) | ~$0.03 |
 | Backend de Terraform (S3 + DynamoDB) | < $0.01 |
-| **Total** | **~$0.55** |
+| **Total** | **~$0.58** |
 
 ### Si te olvidas del cleanup
 
-| Periodo | Core | Lab 1 | Lab 3 | Total |
-|---------|------|-------|-------|-------|
-| 1 día | ~$1.60 | ~$0.85 | ~$2.86 | **~$5.30** |
-| 1 semana | ~$11 | ~$6 | ~$20 | **~$37** |
-| 1 mes | ~$48 | ~$26 | ~$86 | **~$160** |
+| Periodo | Core | Lab 1 | Lab 3 | IPv4 | Total |
+|---------|------|-------|-------|------|-------|
+| 1 día | ~$1.60 | ~$0.85 | ~$2.86 | ~$0.36 | **~$5.70** |
+| 1 semana | ~$11 | ~$6 | ~$20 | ~$2.50 | **~$40** |
+| 1 mes | ~$48 | ~$26 | ~$86 | ~$11 | **~$171** |
 
 > Aurora Serverless v2 (Lab 3) no baja de 0.5 ACU: **cobra aunque nadie la use.**
 > ElastiCache, EC2, el ALB del core y la instancia de DMS tampoco tienen escala a

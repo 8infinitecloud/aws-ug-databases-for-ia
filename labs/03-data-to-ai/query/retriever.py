@@ -2,7 +2,7 @@
 Búsqueda por similitud semántica en Aurora pgvector.
 
 Retorna chunks con sus scores de similitud para visualización en la UI.
-Los scores permiten a la audiencia ver concretamente qué tan relevante
+Los scores muestran concretamente qué tan relevante
 es cada fragmento recuperado — el corazón visual del lab.
 """
 

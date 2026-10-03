@@ -69,8 +69,8 @@ ninguna base. Ver ADR-024 y ADR-026.
 | `lab3` | — | Tiene su propia infraestructura para el vector store |
 | `lab4` | `lab1` | El bucket del data lake, donde Firehose aterriza la telemetría |
 
-> `lab3` es independiente a propósito: si el core falla en la charla, el Lab 3
-> arranca igual. Ver ADR-016.
+> `lab3` es independiente a propósito: se despliega aunque el core no esté.
+> Ver ADR-016.
 
 ---
 

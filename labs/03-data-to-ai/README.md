@@ -1,6 +1,6 @@
 # Lab 3 — Data to AI: RAG sobre la Plataforma de Datos
 
-> **Lab 3 de 3** · [← Lab 2](../02-transformation-quality-catalog/README.md) · [Índice](../../README.md)
+> **Lab 3 de 4** · [← Lab 2](../02-transformation-quality-catalog/README.md) · [Índice](../../README.md) · [Lab 4 →](../04-streaming-online-insight/README.md)
 
 | | |
 |---|---|
@@ -15,8 +15,8 @@ sobre la plataforma de datos.
 **Qué te llevas:** que el RAG es la última etapa y la más corta. Todo lo que lo
 hace funcionar — datos accesibles, limpios y con significado — son los Labs 1 y 2.
 
-> Este lab se puede hacer solo, sin los anteriores. Pero entonces te pierdes el
-> punto del workshop.
+> El lab se despliega sin los anteriores. El paso 5 (del pago a la respuesta)
+> necesita los Labs 1 y 2 desplegados.
 
 ---
 
@@ -31,7 +31,7 @@ En los labs anteriores construimos la plataforma de datos de FinCorp:
 | **Lab 3** | ¿Cómo usamos esos datos para IA? | RAG assistant con 3 capas de memoria |
 | **Lab 4** | ¿Podemos reaccionar ahora? | Scoring en milisegundos y telemetría de los terminales |
 
-El Lab 3 demuestra la idea central de la charla:
+La idea central del workshop:
 
 > *"RAG no comienza en el vector database. Comienza con la preparación de los datos."*
 
@@ -153,312 +153,244 @@ La Capa 3 es el diferenciador: permite que el asistente recuerde *el contenido* 
 
 ## Prerrequisitos
 
-- Labs 1 y 2 completados (no estrictamente requerido, pero narración asume que sí)
 - Amazon Bedrock habilitado en `us-east-1`:
   - `amazon.titan-embed-text-v2:0`
-  - `amazon.nova-pro-v1:0` (o `anthropic.claude-3-5-sonnet-20241022-v2:0`)
-- AWS CLI v2
-- Python 3.11+
+  - `amazon.nova-pro-v1:0`
+- AWS CLI v2, Terraform ≥ 1.6, `jq`
+- Para el paso 5: Labs 1 y 2 desplegados y la tarea DMS en `running`
 
-### Habilitar modelos en Bedrock
+Comprueba el acceso a los modelos:
 
 ```bash
-aws bedrock list-foundation-models \
-  --by-provider amazon \
-  --query "modelSummaries[?contains(modelId, 'titan-embed-text-v2')]" \
-  --region us-east-1
+aws bedrock list-foundation-models --region us-east-1 \
+  --query "modelSummaries[?contains(modelId,'titan-embed-text-v2')||contains(modelId,'nova-pro')].modelId"
 ```
 
-Si no tienes acceso: **Bedrock Console → Model access → Request access**.
+Si no aparecen: **Bedrock Console → Model access → Request access**.
 
 ---
 
-## Deployment
-
-### Paso 1: Infraestructura (~20 min — preparar ANTES del demo)
+## Paso 1: Infraestructura (~20 min)
 
 ```bash
 cd labs/03-data-to-ai/infrastructure
 
-# Elige una tuya: esta la vería cualquiera que lea este repositorio.
-export TF_VAR_db_password="CambiaEstaPassword2026!"
-export AWS_REGION="us-east-1"
+# Una contraseña tuya para Aurora (mínimo 8 caracteres)
+export TF_VAR_db_password='...'
 
-chmod +x setup.sh
 ./setup.sh
 ```
 
-Crea: VPC, Aurora PostgreSQL Serverless v2 + pgvector, ElastiCache Redis, DynamoDB, S3, EC2 App Server, Secrets Manager.
+Crea la VPC, Aurora PostgreSQL Serverless v2 con pgvector, ElastiCache Redis,
+DynamoDB, el bucket de documentos, el secreto de Aurora y el EC2 de la app.
+Aurora tarda ~8 minutos; el resto, menos.
 
-> Este paso tarda ~20 minutos. Ejecútalo antes del demo en vivo.
+Al terminar imprime la URL de Streamlit. Todavía no responde: falta el paso 2.
 
-### Paso 2: Inicializar DB e ingestar documentos (~10 min)
-
-```bash
-cd labs/03-data-to-ai
-
-cp .env.example .env
-# Editar .env con AURORA_HOST, REDIS_HOST, etc.
-
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-
-python scripts/init_db.py
-python scripts/ingest_documents.py --source data/
-```
-
-> El `.env` va dentro de `labs/03-data-to-ai/`, no en la raíz: es donde
-> `cleanup.sh` lo busca para borrarlo al final.
-
-### Paso 3: Desplegar la app (~5 min)
+## Paso 2: Desplegar la app (~5 min)
 
 ```bash
-./infrastructure/deploy-app.sh
+./deploy-app.sh
 ```
 
-Empaqueta el código, lo sube a S3, lo ejecuta en EC2 via SSM. Al terminar imprime la URL de Streamlit.
+1. Empaqueta el código y el corpus (`data/`) y los sube a S3.
+2. Por SSM Run Command, el EC2 los descarga, crea el esquema de pgvector
+   (`init_db.py`), ingesta los 11 documentos e inicia Streamlit.
+3. Espera a que el EC2 termine su arranque si acabas de ejecutar `setup.sh`.
 
-### Desarrollo local (sin EC2)
+Aurora está en una subnet privada: la inicialización y la ingesta corren en el
+EC2, que está en la VPC. Tu máquina no se conecta a Aurora.
+
+Vuelve a ejecutarlo cada vez que cambies código o documentos.
+`./deploy-app.sh --reingest` borra los chunks y reingesta el corpus completo.
+
+## Paso 3: Comprobar
 
 ```bash
-cd labs/03-data-to-ai
-
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env  # completar con outputs del stack Lab 3
-
-python scripts/init_db.py
-python scripts/ingest_documents.py --source data/
-streamlit run app/app.py  # http://localhost:8501
+terraform -chdir=../../../infra/lab3 output streamlit_url
+curl -sS -o /dev/null -w "HTTP %{http_code}\n" \
+  "$(terraform -chdir=../../../infra/lab3 output -raw streamlit_url)"
 ```
 
----
-
-## ✅ Checkpoint — ¿funcionó?
-
-```bash
-# 1. La infraestructura está en pie
-terraform -chdir=../../infra/lab3 output
-
-# 2. Streamlit responde
-curl -sSf -o /dev/null -w "HTTP %{http_code}\n" \
-  "$(terraform -chdir=../../infra/lab3 output -raw streamlit_url)"
-```
-
-Y desde la raíz del repositorio, el semáforo completo:
+Desde la raíz del repositorio, el semáforo completo:
 
 ```bash
 python scripts/validate_setup.py --lab 3
 ```
 
-Abre la URL de Streamlit y haz una pregunta. Debe responder **citando las
-fuentes** — si responde sin fuentes o dice que no encuentra nada, el corpus no
-se ingestó.
+Resultado esperado: `HTTP 200` y, en el log de `deploy-app.sh`,
+`✓ 114 chunks almacenados en pgvector` (11 documentos).
 
 ¿Algo no cuadra? → [docs/troubleshooting.md](../../docs/troubleshooting.md#lab-3--data-to-ai)
 
 ---
 
-## Preguntas de demo
+## Paso 4: Preguntar
 
-Las mismas que la app ofrece a cada persona. Todas usan el vocabulario exacto de
-los datos (`CARD_NOT_PRESENT`, `risk_level`, `source`, `http_timeouts`...), que es
-lo que conecta la pregunta con el corpus (ADR-017); un test comprueba que cada
-término exista en él.
+Abre la URL de Streamlit, elige una persona en la barra lateral y usa las
+preguntas de ejemplo. Cada respuesta debe **citar sus fuentes**; el panel derecho
+muestra los chunks recuperados, su score y las tres capas de memoria.
 
-**Sobre las políticas**, que solo usan el Lab 3:
+Todas usan el vocabulario exacto de los datos (`CARD_NOT_PRESENT`, `risk_level`,
+`source`, `http_timeouts`...), que es lo que conecta la pregunta con el corpus
+(ADR-017); un test comprueba que cada término exista en él.
 
-```
-"¿Qué documentos necesito para afiliar a un comercio de riesgo alto?"
-"¿Por qué un comercio en PENDING_KYC no puede cobrar?"
-"¿Cuándo es obligatorio hacer un Reporte de Operaciones Sospechosas (ROS)?"
-"¿Cuándo se considera caído un terminal?"
-```
-
-**Las que atraviesan los cuatro labs.** La respuesta solo es posible porque la
-plataforma existe: el CDC del Lab 1 trajo los datos, el Lab 2 los curó y separó
-por fuente, y el Lab 4 trajo la telemetría:
+**Sobre las políticas** (solo necesitan este lab):
 
 ```
-"¿Qué hago con un pago QR de un comercio con risk_level HIGH que supera el umbral?"
-"¿Cómo reconozco un card testing en pagos CARD_NOT_PRESENT?"
-"Un terminal tiene muchos http_timeouts: ¿falló la red o el emisor?"
-"¿Qué hago con un registro rechazado por NULL_AMOUNT con source legacy?"
+¿Qué documentos necesito para afiliar a un comercio de riesgo alto?
+¿Por qué un comercio en PENDING_KYC no puede cobrar?
+¿Cuándo es obligatorio hacer un Reporte de Operaciones Sospechosas (ROS)?
+¿Cuándo se considera caído un terminal?
 ```
 
-> La última sigue siendo la que mejor explica el taller: la respuesta dice que
-> una operación en `rejected/` **existió y no está siendo vigilada**, así que es
-> una brecha de compliance, no un problema de datos, y que viene de la cartera
-> absorbida, no de nuestro core. Eso solo se puede responder porque el Lab 2
-> conservó los rechazados con su motivo y con su `source`.
-
-### El cierre en vivo
-
-```bash
-./scripts/demo_cierre.sh
-```
-
-Glue cura lo que el CDC trajo, los datos se convierten en hechos y entran al
-vector store. Los hechos se generan e ingestan **en el EC2 del Lab 3** (por SSM
-Run Command), que está dentro de la VPC y alcanza Aurora: tu portátil solo
-orquesta, sin túnel ni `.env` local. Tarda ~1 minuto. Después, la pregunta:
+**Las que atraviesan los cuatro labs** (el CDC del Lab 1 trajo los datos, el
+Lab 2 los curó y separó por fuente, el Lab 4 trajo la telemetría):
 
 ```
-"¿Cuántos pagos se procesaron hoy y con qué tasa de aprobación?"
+¿Qué hago con un pago QR de un comercio con risk_level HIGH que supera el umbral?
+¿Cómo reconozco un card testing en pagos CARD_NOT_PRESENT?
+Un terminal tiene muchos http_timeouts: ¿falló la red o el emisor?
+¿Qué hago con un registro rechazado por NULL_AMOUNT con source legacy?
 ```
 
-**El pago que alguien de la sala hizo hace cinco minutos está en la respuesta.**
-El script mide cuánto tarda cada paso: es lo que se narra mientras corre. Si
-falla en vivo, se usa la respuesta grabada en el ensayo; no se reintenta delante
-del público.
+La última responde que una operación en `rejected/` existió y no está siendo
+vigilada (una brecha de compliance, no un problema de datos) y que viene de la
+cartera absorbida. Es posible porque el Lab 2 conserva los rechazados con su
+motivo y su `source`.
 
-Reingestar un documento **sustituye** sus chunks en pgvector. Antes los
-acumulaba (los ids eran aleatorios), y la cifra de un ensayo anterior habría
-convivido con la nueva.
+### Las capas de memoria
 
-Para demostrar las capas de memoria:
-1. Haz 2-3 preguntas como **Ana García** (Ejecutiva de Afiliación)
-2. Cambia a **Carlos Mendoza** (Analista de Monitoreo) — nueva sesión Redis, perfil DynamoDB diferente
-3. Regresa a Ana — observa que el sistema "recuerda" el resumen de la sesión anterior
+1. Haz 2-3 preguntas como **Ana García** (Ejecutiva de Afiliación).
+2. Cambia a **Carlos Mendoza** (Analista de Monitoreo): nueva sesión en Redis,
+   otro perfil en DynamoDB.
+3. Vuelve a Ana: el asistente recupera el resumen de su sesión anterior.
+
+Las preguntas de seguimiento (*"¿y a qué hora fueron?"*) funcionan dentro de una
+sesión: la búsqueda se hace con la pregunta sola y con la anterior delante, y se
+quedan los mejores resultados.
+
+---
+
+## Paso 5: Del pago a la respuesta
+
+Requiere los Labs 1 y 2 desplegados. Desde la raíz del repositorio, en tu
+máquina:
+
+1. Haz uno o más pagos: con la tienda (`./scripts/store_local.sh`), el terminal
+   Core2 o `python scripts/generate_traffic.py --api <api_endpoint> --count 20`.
+2. Espera ~30 s: DMS escribe los cambios en `raw/acquiring/`.
+3. Ejecuta:
+
+   ```bash
+   ./scripts/demo_cierre.sh
+   ```
+
+   | Paso | Qué hace | Dónde corre |
+   |---|---|---|
+   | 1 | Ejecuta el job de Glue del Lab 2: el CDC pasa a `curated/` | AWS Glue |
+   | 2-3 | Genera los hechos derivados y los ingesta en pgvector | EC2 del Lab 3, por SSM |
+
+   Tarda ~1 minuto. Tu máquina solo orquesta: no necesita `.env`, túnel ni
+   `session-manager-plugin`.
+
+4. En Streamlit, pregunta:
+
+   ```
+   ¿Cuántos pagos se procesaron hoy y con qué tasa de aprobación?
+   ¿Qué comercios hicieron pagos hoy?
+   ¿A qué hora se dieron y con qué montos?
+   ```
+
+   Resultado esperado: las cifras de los pagos del paso 1, citando
+   `operaciones-actividad-hoy.md`. "Hoy" es el día en hora de Lima.
+
+**Los hechos derivados** (`data/derived/`, generados por
+`scripts/ingest_from_curated.py`):
+
+| Documento | Contenido |
+|---|---|
+| `operaciones-actividad-hoy.md` | Pagos de hoy: total, aprobación, canal, moneda, comercios y el detalle de los 15 más recientes (hora, importe, resultado) |
+| `operaciones-resumen-mensual.md` | Volumen e importe por mes |
+| `operaciones-calidad-datos.md` | Rechazos por regla y por fuente (`acquiring` / `legacy`) |
+| `operaciones-perfil-riesgo.md` | Distribución por `risk_level` y MCC |
+| `operaciones-canales-emisor.md` | Aprobación por canal y códigos de rechazo del emisor |
+| `operaciones-salud-terminales.md` | Terminales caídos, batería, timeouts (telemetría del Lab 4) |
+
+Son agregados, no filas: el código calcula las cifras y el modelo solo las cita
+(ADR-013). Reingestar un documento **sustituye** sus chunks en pgvector, así que
+la cifra anterior no convive con la nueva.
+
+Para que el RAG incorpore pagos nuevos, vuelve a ejecutar `demo_cierre.sh`: no
+hay refresco automático.
 
 ---
 
 ## Cleanup
 
 ```bash
-cd infrastructure && ./cleanup.sh
+./cleanup.sh        # desde labs/03-data-to-ai/infrastructure
 ```
 
-> **IMPORTANTE**: Aurora + ElastiCache cuestan ~$15-25 USD/día si se dejan corriendo.  
-> Siempre hacer cleanup al terminar el lab o el demo.
+Aurora, Redis y el EC2 no escalan a cero: **~$2.86/día** si se quedan
+encendidos. El script vacía el bucket de documentos, destruye el módulo
+`infra/lab3` y borra el `.env` local si existe.
 
 ---
 
 ## Estructura de archivos
 
-El código de este lab viene de la charla anterior, "Databases for AI" (AWS
-Community Day Perú 2025), y se conserva sin cambios funcionales. El repositorio
-de 2025 íntegro sigue accesible en el tag `v1.0.0`.
-
 ```
 labs/03-data-to-ai/
 ├── ingestion/              # Pipeline de embeddings
-│   ├── config.py          # Configuración centralizada
-│   ├── loader.py          # Carga de documentos Markdown
-│   ├── chunker.py         # RecursiveCharacterTextSplitter
-│   ├── embedder.py        # Titan Embeddings V2 con retry
-│   ├── store.py           # pgvector (HNSW index)
-│   └── pipeline.py        # Orquestador completo
+│   ├── config.py           # Configuración centralizada (umbral de retrieval: 0.60)
+│   ├── loader.py           # Carga de documentos Markdown y su doc_type
+│   ├── chunker.py          # RecursiveCharacterTextSplitter
+│   ├── embedder.py         # Titan Embeddings V2 con retry
+│   ├── store.py            # pgvector (HNSW); reingestar sustituye por fichero
+│   └── pipeline.py         # Orquestador completo
 ├── query/                  # Pipeline de consulta RAG
-│   ├── retriever.py       # Búsqueda coseno en pgvector
-│   ├── memory.py          # 3 capas: Redis + DynamoDB + pgvector
-│   ├── prompt_builder.py  # Construcción del prompt con contexto
-│   └── chain.py           # Orquestador RAG (embed → search → prompt → LLM)
+│   ├── retriever.py        # Búsqueda coseno en pgvector + fusión de búsquedas
+│   ├── memory.py           # 3 capas: Redis + DynamoDB + pgvector
+│   ├── prompt_builder.py   # Construcción del prompt con contexto
+│   └── chain.py            # embed → search (+ pregunta anterior) → prompt → LLM
 ├── app/
-│   └── app.py             # Streamlit UI con chat + observabilidad RAG
+│   └── app.py              # Streamlit: chat, personas y observabilidad RAG
 ├── data/
-│   ├── compliance/        # aml_policy.md, kyc_procedures.md
-│   ├── onboarding/        # client_onboarding.md, employee_onboarding.md
-│   └── policies/          # data_privacy.md, risk_management.md, acceptable_use.md
+│   ├── compliance/         # aml_policy, kyc_procedures, monitoreo_operativo,
+│   │                       # pagos_online, cartera_legacy
+│   ├── operations/         # runbook_terminales
+│   ├── onboarding/         # client_onboarding, employee_onboarding
+│   ├── policies/           # data_privacy, risk_management, acceptable_use
+│   └── derived/            # hechos generados (no versionados)
 ├── scripts/
-│   ├── init_db.py         # Crea schema pgvector
-│   └── ingest_documents.py # Ingesta documentos con --source y --clear
+│   ├── init_db.py          # Crea el esquema de pgvector
+│   └── ingest_documents.py # Ingesta documentos (--source, --clear)
 ├── infrastructure/
-│   ├── setup.sh            # Provisiona infraestructura (~20 min)
-│   ├── deploy-app.sh       # Despliega solo la app (~5 min)
+│   ├── setup.sh            # Provisiona la infraestructura (~20 min)
+│   ├── deploy-app.sh       # Despliega la app e ingesta el corpus (~5 min)
 │   └── cleanup.sh          # Elimina todos los recursos
-├── requirements.txt        # Dependencias del Lab 3
-└── .env.example            # Template de variables de entorno
+├── requirements.txt
+└── .env.example            # Variables de la app (las escribe el EC2 al arrancar)
 ```
+
+El código base viene del workshop "Databases for AI" (2025), accesible en el tag
+`v1.0.0`.
 
 ---
 
-← **Lab 2:** `labs/02-transformation-quality-catalog/README.md`
+## Desarrollo local
 
----
-
-## La plataforma completa — diagrama de cierre
-
-Este es el diagrama que se revela al final de la charla, después de los 3 labs. Muestra todos los servicios en contexto:
-
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│  SERVICIOS REVELADOS DURANTE LOS 3 LABS                               │
-├───────────────────────────────────────────────────────────────────────┤
-│                                                                        │
-│  PostgreSQL core ─[DMS CDC]─► S3 raw/  ← LAB 1: AWS DMS + Amazon S3  │
-│                           │                                            │
-│                      [Glue ETL]  ← LAB 2: AWS Glue Python Shell       │
-│                           │       AWS Glue Data Quality (DQDL)         │
-│                     S3 curated/  AWS Glue Data Catalog                 │
-│                     ┌─────┤                                            │
-│                     │     │                                            │
-│                  Athena   │       ← (Analytics serverless)             │
-│                           │                                            │
-│              [Bedrock Titan] → Aurora pgvector  ← LAB 3               │
-│              [Bedrock Nova]  → Redis (sesión)                          │
-│                           │  → DynamoDB (usuario)                     │
-│                           │  → Streamlit (UI)                         │
-│                           │                                            │
-└──────────────────────────────────────────────────────────────────────┘
-```
-
-## Evolución desde la charla anterior (2025)
-
-```
-ANTES — Databases for AI (2025):
-  Base de datos → pgvector → RAG → AI
-
-AHORA — Data Platform for AI (2026):
-  Datos distribuidos
-    → DMS (ingestion)
-    → S3 raw (aterrizaje)
-    → Glue (transformación + calidad)
-    → S3 curated (datos confiables)
-    → Glue Catalog (contexto y metadata)
-    → pgvector / RAG (consumo por IA)   ← mismo punto de llegada que antes
-    → AI
-
-El Lab 3 es el mismo que en 2025. Lo que cambió es todo lo que lo precede.
-```
-
-
----
-
-## Has terminado el workshop
-
-Recorriste el camino completo: de una base de datos de producción a un asistente
-de IA que responde sobre datos en los que puedes confiar. Sin saltarte la parte
-aburrida, que es justo la que hace que la IA funcione.
-
-### ⚠️ Cleanup — hazlo ahora
-
-Este lab es el más caro: Aurora, Redis y EC2 no escalan a cero. **~$2.86/día si
-lo dejas.**
+Los tests del retrieval y de los hechos derivados no necesitan AWS:
 
 ```bash
-bash labs/03-data-to-ai/infrastructure/cleanup.sh
-bash labs/02-transformation-quality-catalog/scripts/cleanup.sh
-bash labs/01-ingestion-data-lake/scripts/cleanup.sh
+pytest tests/test_rag_retrieval.py tests/test_derived_docs.py -v
 ```
 
-Comprueba que no queda nada:
+Para ejecutar la app en local hace falta un PostgreSQL con pgvector alcanzable y
+acceso a Bedrock: ver [docs/local-development.md](../../docs/local-development.md).
 
-```bash
-for M in payments lab1 lab2 lab3 lab4; do
-  echo -n "infra/$M: "
-  terraform -chdir="infra/$M" state list 2>/dev/null | wc -l
-done
-# Los tres deben dar 0
-```
+---
 
-### Para seguir
-
-- **Lake Formation** — control de acceso a nivel de fila y columna sobre el catálogo
-- **Catalog Federation** — consultar Redshift o Databricks desde Athena sin mover datos
-- **Ingestar el `curated/` del Lab 2 al vector store** — hoy la conexión Lab 2 → Lab 3
-  es narrativa; hacerla técnica es un buen ejercicio
-- **Agentes** — el asistente responde preguntas; un agente además actúa
-
-| [← Lab 2](../02-transformation-quality-catalog/README.md) | [Índice](../../README.md) | [Costes](../../COST_ESTIMATE.md) |
+| [← Lab 2](../02-transformation-quality-catalog/README.md) | [Índice](../../README.md) | [Lab 4 →](../04-streaming-online-insight/README.md) |
 |---|---|---|

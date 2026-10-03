@@ -2,7 +2,7 @@
 """
 validate_setup.py — Verificación pre-demo de los 3 labs.
 
-Se ejecuta ANTES de la charla para confirmar que todo lo que la demo necesita
+Se ejecuta antes de usar los labs para confirmar que todo lo que necesitan
 está en pie. No crea ni modifica nada: solo lee estado.
 
 Uso:

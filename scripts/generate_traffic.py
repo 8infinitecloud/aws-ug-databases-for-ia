@@ -2,7 +2,7 @@
 """
 generate_traffic.py — trafico de pagos realista contra la API de FinCorp.
 
-Sirve para ensayar la demo sin publico: con el generador corriendo, el CDC del
+Con el generador corriendo, el CDC del
 Lab 1 tiene deltas que mostrar, el Lab 2 tiene canales y comercios que comparar,
 y el scoring del Lab 4 tiene velocidad que medir.
 
@@ -219,8 +219,8 @@ def http_sender(base_url: str, timeout: float = 15.0) -> Send:
             except json.JSONDecodeError:
                 return err.code, {}
         except (urllib.error.URLError, TimeoutError, ConnectionError):
-            # La red cae a mitad de la demo: se cuenta y se sigue. Un traceback
-            # en pantalla delante del publico no ayuda a nadie.
+            # Si la red cae a mitad de la corrida, se cuenta y se sigue: un
+            # traceback no ayuda a nadie.
             return 0, {}
 
     return send

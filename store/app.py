@@ -210,8 +210,8 @@ def crear_app(send: Send | None = None, api_url: str | None = None, clave: str |
         """
         La tienda abre el cobro en su terminal y muestra el QR.
 
-        Es el mismo flujo que el Core2, pero con el QR en el proyector en vez
-        de en una pantalla de 2 pulgadas. El comprador paga en la página de
+        Es el mismo flujo que el Core2, pero con el QR en la pantalla de la
+        tienda en vez de en una de 2 pulgadas. El comprador paga en la página de
         FinCorp; la tienda solo espera.
         """
         importe, lineas = _total(carrito)

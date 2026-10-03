@@ -4,7 +4,7 @@ Configuración centralizada del laboratorio.
 Por qué un módulo de config en vez de leer os.getenv() en cada archivo:
 - Punto único de fallo visible: si falta una variable, el error ocurre aquí al importar
 - Facilita testing: basta con mockear este módulo
-- La audiencia del lab ve todos los parámetros del sistema en un solo lugar
+- Todos los parámetros del sistema están en un solo lugar
 """
 
 import os

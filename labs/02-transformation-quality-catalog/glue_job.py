@@ -17,7 +17,7 @@ Pipeline:
 Por qué Python Shell (no PySpark):
   - Inicia en ~20 segundos vs ~3 minutos de PySpark
   - Unos miles de filas — pandas es suficiente
-  - Más legible para la audiencia en vivo
+  - Más legible: es pandas
 
 Uso manual (desarrollo local):
   python glue_job.py --S3_BUCKET mi-bucket --RAW_PREFIX raw/ --CURATED_PREFIX curated/

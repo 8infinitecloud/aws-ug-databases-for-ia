@@ -61,7 +61,7 @@ repositorio son la referencia y `tests/test_glue_job.py` los verifica.
 
 ## Alternativas reales
 
-Ordenadas por lo bien que encajan con la narrativa del workshop.
+Ordenadas por lo bien que encajan con el caso del workshop (un adquirente de pagos).
 
 ### 1. PaySim — transacciones financieras sintéticas con fraude etiquetado
 
@@ -103,7 +103,7 @@ no rechaza nada. Tendrías que inyectar problemas — y para eso ya tienes
 saltarte el Lab 1 y empezar directamente por el Glue Crawler y Athena. Es el
 camino más corto para ver el catálogo funcionando sobre datos de verdad.
 
-**Lo que no encaja:** no es financiero, así que se pierde la narrativa de
+**Lo que no encaja:** no es financiero, así que se pierde el caso de
 compliance del Lab 3. Y está muy usado en tutoriales: como demo no sorprende a
 nadie.
 
@@ -134,16 +134,15 @@ También hay portales sectoriales:
 - [sinia.minam.gob.pe](https://sinia.minam.gob.pe/portal/datos-abiertos/) — Ministerio del Ambiente
 - [ONPE](https://www.gob.pe/61986-acceder-a-datos-abiertos) — datos electorales
 
-**Por qué encaja:** la audiencia se reconoce en los datos. Y tiene una ventaja
+**Por qué encaja:** son datos reales y locales. Y tiene una ventaja
 que ningún dataset curado tiene: **los datos abiertos del Estado vienen sucios de
 verdad**. Encoding inconsistente, nombres de columna con tildes y espacios,
 fechas en varios formatos, celdas vacías. No hay que inyectar nada: el problema
 ya está ahí.
 
 **Lo que hay que asumir:** precisamente por eso, la calibración desaparece. No
-sabes de antemano qué reglas van a fallar. Para una charla con tiempo medido eso
-es un riesgo; para un taller largo o para practicar en serio, es lo más honesto
-que puedes usar.
+sabes de antemano qué reglas van a fallar. Para un taller con tiempo medido eso
+es un riesgo; para practicar en serio, es lo más honesto que puedes usar.
 
 > **La "clasificación de riesgo" de OSINFOR es el encaje más limpio** si quieres
 > mantener el Lab 3: ya trae un concepto de riesgo, que es justo lo que el
@@ -174,7 +173,7 @@ minutos.
 - **[Registry of Open Data on AWS](https://registry.opendata.aws/)** — el
   catálogo general. Datasets de alto valor ya en S3, con el almacenamiento
   pagado por AWS. No encontré ningún dataset financiero transaccional que
-  encajara con la narrativa; casi todo es científico, geoespacial o genómico.
+  encajara con el caso; casi todo es científico, geoespacial o genómico.
 - **MoMTSim** — simulador multiagente de dinero móvil, más nuevo que PaySim.
   Interesante si quieres generar tu propio dataset con propiedades
   estadísticas controladas.

@@ -36,7 +36,7 @@ que esto dejara de ser un lab.
 | Concesión | Por qué | En producción |
 |-----------|---------|---------------|
 | Claves gestionadas por AWS, no CMK propias | Una CMK cuesta ~$1/mes y añade gestión de políticas al lab | KMS CMK con rotación y política explícita |
-| Streamlit abierto a `0.0.0.0/0` en el 8501 | Hay que poder abrirlo desde el proyector de la sala | ALB con WAF, autenticación, y el puerto cerrado |
+| Streamlit abierto a `0.0.0.0/0` en el 8501 | Se abre desde cualquier navegador sin VPN ni túnel | ALB con WAF, autenticación, y el puerto cerrado |
 | Egress `0.0.0.0/0` en el SG de la app | Necesita Bedrock, S3, DynamoDB y `yum` | VPC endpoints y egress solo a ellos |
 | Sin rotación automática de secretos | El lab vive dos horas | Rotación con Lambda |
 | Sin VPC Flow Logs | Cuestan ingesta y almacenamiento de CloudWatch | Activados, con retención y alarma |
@@ -105,7 +105,7 @@ que esto dejara de ser un lab.
 |-----------|---------|---------------|
 | Retención de logs de 7 días | Un lab no necesita más y CloudWatch cobra por GB | 30–400 días según el dato |
 | Sin alarmas ni dashboards | No hay nada que vigilar en dos horas | CloudWatch alarms, y presupuesto con alerta |
-| El Crawler se lanza a mano | En la demo interesa ver aparecer la tabla | `schedule` cron, o disparado por evento |
+| El Crawler se lanza a mano | `run_job.sh` lo ejecuta tras el job y muestra la tabla | `schedule` cron, o disparado por evento |
 | Sin pipeline de despliegue por entornos | Hay un solo entorno: `lab` | dev → staging → prod con aprobaciones |
 
 ---

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # =============================================================================
-# demo_cierre.sh — "el pago que hiciste hace 5 minutos está en la respuesta"
+# demo_cierre.sh — del pago a la respuesta del asistente
 # =============================================================================
-# El cierre de la charla, de punta a punta:
+# Lleva los pagos recientes hasta el RAG del Lab 3:
 #
-#   pagos de la sala ──▶ PostgreSQL del core ──DMS CDC──▶ raw/acquiring/   (solo, ~30 s)
+#   pagos ──▶ PostgreSQL del core ──DMS CDC──▶ raw/acquiring/   (solo, ~30 s)
 #                                                              │
 #   [1] Glue: aplica los cambios, une el legacy, valida  ──▶ curated/
 #   [2] los datos curados se convierten en hechos         ──▶ data/derived/   ┐ en el EC2
@@ -13,14 +13,11 @@
 # y entonces se le pregunta al asistente:
 #   "¿Cuántos pagos se procesaron hoy y con qué tasa de aprobación?"
 #
-# Mide cuánto tarda cada paso: es lo que hay que narrar mientras corre. Si algo
-# falla en vivo, el respaldo es la respuesta grabada en el ensayo (ver
-# docs/internal/demo-runbook.md), no reintentar delante del público.
+# Imprime cuánto tarda cada paso.
 #
 # Los pasos 2 y 3 corren en el EC2 del Lab 3, por SSM Run Command: Aurora esta
-# en una subnet privada y el EC2 la alcanza; este portatil no, y abrir un tunel
-# en mitad de la charla es una cosa mas que puede fallar. Aqui solo se
-# orquesta: no hace falta el .env del Lab 3 ni el session-manager-plugin.
+# en una subnet privada y el EC2 la alcanza; esta maquina no. Aqui solo se
+# orquesta: no hace falta el .env del Lab 3, ni tunel, ni session-manager-plugin.
 #
 # Requisitos: Labs 1, 2 y 3 desplegados (el 3 con deploy-app.sh hecho) y la
 # tarea DMS en running.
@@ -55,7 +52,7 @@ while true; do
   case "${ESTADO}" in
     SUCCEEDED) break ;;
     FAILED|ERROR|TIMEOUT|STOPPED)
-      echo -e "${RED}[✗]${NC} El job termino en ${ESTADO}: usa la respuesta de respaldo."; exit 1 ;;
+      echo -e "${RED}[✗]${NC} El job termino en ${ESTADO}. Log: /aws-glue/python-jobs/error (run ${RUN})"; exit 1 ;;
   esac
 done
 marca "curated/ actualizada"
@@ -78,7 +75,7 @@ while true; do
     *)
       aws ssm get-command-invocation --command-id "${CMD}" --instance-id "${EC2}" \
         --region "${REGION}" --query StandardErrorContent --output text | tail -5
-      echo -e "${RED}[✗]${NC} La ingesta termino en ${ESTADO}: usa la respuesta de respaldo."; exit 1 ;;
+      echo -e "${RED}[✗]${NC} La ingesta termino en ${ESTADO} (comando SSM ${CMD} en ${EC2})."; exit 1 ;;
   esac
 done
 marca "hechos generados e ingestados en pgvector"

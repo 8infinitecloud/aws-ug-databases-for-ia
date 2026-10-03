@@ -36,9 +36,8 @@ python scripts/provision_demo_keys.py --ssm     # incluye la de Mercado Andino
 El script lee la URL de la API de Terraform y la clave de `.demo_keys.json`, y
 arranca el contenedor. Para pararlo: `docker rm -f mercado-andino`.
 
-**Solo en local, por decisión.** Las compras online las hace el ponente con la
-tienda proyectada; la sala no puede abrirla desde sus móviles (haría falta
-publicarla, ver `docs/backlog.md`).
+**Solo en local, por decisión.** No se puede abrir desde otros dispositivos
+(haría falta publicarla, ver `docs/backlog.md`).
 
 ## El número de tarjeta nunca sale del navegador
 

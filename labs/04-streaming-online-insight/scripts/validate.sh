@@ -144,7 +144,7 @@ if [ "${FALLOS}" -eq 0 ]; then
     success "Lab 4 validado"
     echo
     info "Un ataque por la API real:  python scripts/generate_traffic.py --api \$API --card-testing"
-    info "Sin API (plan B):           ./run_demo.sh card-testing"
+    info "Sin API:                    ./run_demo.sh card-testing"
 else
     echo -e "${RED}[✗]${NC} ${FALLOS} comprobacion(es) fallaron"
     exit 1

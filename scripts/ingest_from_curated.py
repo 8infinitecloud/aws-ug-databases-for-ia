@@ -2,9 +2,8 @@
 """
 ingest_from_curated.py — conecta el Lab 2 con el Lab 3 de verdad.
 
-En el workshop la conexion entre labs es narrativa: el Lab 3 ingesta documentos
-de compliance y *se cuenta* que los datos curados del Lab 2 alimentan a la IA,
-pero tecnicamente no se tocan. Este script cierra ese hueco.
+Conecta el Lab 2 con el Lab 3: convierte los datos curados del Lab 2 en
+documentos que el vector store del Lab 3 ingesta.
 
 La parte interesante es COMO. Volcar 900 filas de transacciones a un vector store
 no sirve de nada: nadie pregunta "dame la transaccion TXN0000042", y un embedding
@@ -16,7 +15,7 @@ que un asistente puede citar:
      el 3% quedaron en estado FAILED."
 
 Esa es la leccion: los datos curados se vuelven utiles para la IA por
-**agregacion y narrativa**, no por volcado. El Lab 2 produce la tabla; este
+**agregacion y redaccion**, no por volcado. El Lab 2 produce la tabla; este
 script produce los hechos.
 
 Uso:
@@ -417,7 +416,7 @@ CHANNEL_NAMES = {
 }
 
 # La zona horaria de negocio. "Hoy" para un analista en Lima no es el dia UTC:
-# una charla por la tarde cruza la medianoche UTC.
+# desde las 19:00 de Lima ya es el dia siguiente en UTC.
 LOCAL_TZ = "America/Lima"
 
 
@@ -544,7 +543,7 @@ def doc_today(df: pd.DataFrame, now: datetime | None = None) -> str:
     """
     Lo que paso HOY, en hora de Lima.
 
-    Es el documento del cierre en vivo: los pagos que hace la audiencia llegan
+    Es el documento de demo_cierre.sh: los pagos recientes llegan
     por el CDC del Lab 1, Glue los cura, y este documento los convierte en una
     frase que el asistente puede citar.
     """
@@ -558,7 +557,7 @@ def doc_today(df: pd.DataFrame, now: datetime | None = None) -> str:
     # format="ISO8601", no la deteccion automatica: pandas 2 deduce UN formato
     # de la primera fila y convierte en NaT las que no encajan. Las fechas del
     # core traen microsegundos y las del legacy no, asi que segun que fuente
-    # saliera primero desaparecian los pagos del core, que son los de la sala.
+    # saliera primero desaparecian los pagos del core, los mas recientes.
     momento = pd.to_datetime(df.get("created_at"), errors="coerce", utc=True, format="ISO8601")
     df["fecha_local"] = momento.dt.tz_convert(tz).dt.date
     del_dia = df[df["fecha_local"] == hoy]

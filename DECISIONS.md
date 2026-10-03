@@ -177,7 +177,7 @@ Arquitectura de tres capas:
 
 ## ADR-005: Orquestador RAG — LangChain
 
-**Frase para la presentación:** *"LangChain porque su abstracción de chains hace el pipeline visible y educativo para la audiencia del lab."*
+**En una frase:** LangChain porque su abstracción de chains hace el pipeline visible y educativo.
 
 | Campo | Valor |
 |-------|-------|
@@ -810,11 +810,11 @@ candado huérfano.
 
 ## ADR-021: La página de pago del QR la sirve la API, no un bucket en S3
 
-**Fecha:** 2026-09-28 · **Estado:** Aceptada · **Supersede:** el diseño de `architecture-demo-proposal.md` §2
+**Fecha:** 2026-09-28 · **Estado:** Aceptada · **Supersede:** la propuesta inicial del POS físico (documento retirado)
 
 ### Contexto
 
-El POS muestra un QR con una URL. Alguien del público lo escanea, el móvil abre
+El POS muestra un QR con una URL. El comprador lo escanea, el móvil abre
 esa URL, y la página que se abre llama a la API para leer el importe y confirmar
 el pago.
 
@@ -920,8 +920,8 @@ par queda coherente.
 - El corpus de compliance del Lab 3 también cambió: el test del puente léxico
   (ADR-017) comprueba que el corpus mencione el nombre de la tabla, y un corpus
   que nombrara una tabla inexistente enviaría al analista a buscar lo que no hay.
-- Los registros históricos de `docs/internal/` conservan el nombre viejo:
-  describen la era CloudFormation y reescribirlos sería falsear el registro.
+- Los registros históricos conservan el nombre viejo: describen la era
+  CloudFormation y reescribirlos sería falsear el registro.
 
 ---
 
@@ -1147,7 +1147,7 @@ saltaba.
 ### Consecuencias
 
 - Athena cruza telemetría y cobros: «¿falló la red o el emisor?».
-- `run_demo.sh` (plan B, eventos falsos en IoT) ya no ensucia el lago.
+- `run_demo.sh` (eventos simulados directos en IoT) ya no ensucia el lago.
 - La telemetría del Core2 está compilada y no probada en el dispositivo.
 
 ---
@@ -1173,7 +1173,7 @@ actividad de hoy).
 
 El cierre en vivo va por la vía de los hechos: CDC → Glue → hechos → pgvector →
 pregunta. Es más lento que una herramienta sobre Athena, pero es la tesis del
-taller: el dato recorre la plataforma antes de llegar a la IA. La espera se narra.
+taller: el dato recorre la plataforma antes de llegar a la IA.
 
 ### Alternativas Consideradas
 
@@ -1185,5 +1185,5 @@ taller: el dato recorre la plataforma antes de llegar a la IA. La espera se narr
 ### Consecuencias
 
 - Reingestar un documento sustituye sus chunks: antes los duplicaba, y la cifra
-  de un ensayo habría convivido con la del día.
-- El agente queda como "siguiente paso" en la diapositiva de cierre.
+  de una ejecución anterior habría convivido con la nueva.
+- El agente queda documentado como siguiente paso.

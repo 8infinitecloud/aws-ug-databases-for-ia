@@ -1,10 +1,10 @@
 # Lab 2 — Transformation + Data Quality + Catalog
 
-> **Lab 2 de 3** · [← Lab 1](../01-ingestion-data-lake/README.md) · [Índice](../../README.md)
+> **Lab 2 de 4** · [← Lab 1](../01-ingestion-data-lake/README.md) · [Índice](../../README.md) · [Lab 3 →](../03-data-to-ai/README.md)
 
 | | |
 |---|---|
-| **Tiempo** | ~15 min (el job tarda ~3) |
+| **Tiempo** | ~15 min (el job tarda ~30 s; el crawler, ~2 min) |
 | **Coste** | ~$0.01 en total · **$0 en reposo** (Glue solo cobra cuando corre) |
 | **Qué despliegas** | Glue Job, Glue Crawler, Glue Data Catalog, DQ Ruleset |
 | **Requisitos** | **El Lab 1 desplegado** — este lab lee su bucket |
@@ -49,6 +49,11 @@ raw/legacy/  "CAPTURADA", "15/03/2025", NULL   rejected/ con su motivo
 ### ¿Por qué Glue Python Shell (no PySpark)?
 
 Para unos miles de filas, PySpark sería overkill. Python Shell inicia en ~20 segundos vs 3 minutos de Spark, y el código es pandas — la librería que todos conocen.
+
+Glue cobra por **DPU-hora** (1 DPU = 4 vCPU + 16 GB, ~$0.44/h, facturado por
+segundo). El job usa **0.0625 DPU** (`max_capacity` en `infra/lab2/glue.tf`):
+una ejecución de 30 s cuesta ~$0.0002. Un job de Spark arranca con un mínimo de
+2 DPU.
 
 En producción con millones de filas, migrar a PySpark Glue Job cambia solo el `command.name = "glueetl"` en `infra/lab2/glue.tf` y los DataFrames de pandas a Spark. La lógica de negocio queda igual.
 
@@ -244,10 +249,18 @@ El script:
 ```
 
 El script:
-1. Inicia el Glue job y hace polling (~90s)
+1. Inicia el Glue job y hace polling (~30 s)
 2. Descarga y muestra el quality report
-3. Inicia el Crawler y espera que complete
+3. Inicia el Crawler y espera que complete (~2 min)
 4. Muestra las tablas en el Glue Catalog
+
+**El crawler no se ejecuta solo.** No tiene horario ni evento: lo lanza
+`run_job.sh`. No mueve datos: actualiza el esquema y las particiones en el
+catálogo. Un pago nuevo que cae en una partición existente (`year=2026/month=10`)
+se ve en Athena sin volver a ejecutarlo; hace falta cuando aparece una partición
+nueva (un mes nuevo), cambia el esquema o llega la primera telemetría del Lab 4.
+
+Para incorporar pagos nuevos a `curated/`, vuelve a ejecutar `./run_job.sh`.
 
 ### Paso 3: Validar
 
@@ -276,9 +289,9 @@ aws glue get-table --database-name financial_platform \
 aws s3 cp "s3://$BUCKET/quality-reports/latest/quality_report.json" - | jq .
 ```
 
-**El reporte debe mostrar reglas que fallan.** Eso es correcto: el dataset trae
-problemas deliberados. Si todo saliera en verde, la validación no estaría
-mirando de verdad.
+Resultado esperado del reporte: las reglas **fallan en `raw`** y pasan en
+`curated` (10/10), con ~137 filas rechazadas, todas de `source = legacy`, y 0 del
+core. El dataset trae problemas deliberados: que fallen en origen es lo correcto.
 
 ### Consultarlo como SQL
 
@@ -287,8 +300,8 @@ convierte en SQL sobre el Parquet, sin mover los datos ni levantar un cluster.
 Eso es lo que hace que esto sea un *lakehouse* y no sólo un lago.
 
 El workgroup se crea con el lab, y trae **ocho consultas ya guardadas**. En la
-consola de Athena: *Query editor* → workgroup `fincorp-dev` → pestaña *Saved
-queries*.
+consola de Athena: *Query editor* → workgroup `fincorp-datalake-lab` → pestaña
+*Saved queries*.
 
 ```sql
 -- La vista del negocio del adquirente: quién mueve volumen y qué margen deja.
@@ -318,11 +331,17 @@ Las demás:
 | 7 | Abandono del QR por terminal | El embudo que la base no ve: cancelados frente a expirados |
 | 8 | Terminales que dejaron de latir | Último latido y batería |
 
-Las 6 a 8 necesitan el Lab 4 (la tabla `telemetry`).
+Las 6 a 8 necesitan el Lab 4 (la tabla `telemetry`): sin ella fallan con
+`TABLE_NOT_FOUND`.
 
-> **Esa última es la que conviene ejecutar.** Athena cobra por byte escaneado,
-> así que el particionado no es orden: es la factura. Ejecuta las dos variantes
-> y mira *Data scanned* en cada una.
+**La consulta 4, paso a paso.** Athena cobra por byte escaneado:
+
+1. Ejecútala tal cual y anota *Data scanned* (~11 KB: lee todas las particiones).
+2. Quita el `--` de la línea `WHERE year = '2024' AND month = '03'` y ejecútala
+   otra vez (~0,2 KB: lee un solo directorio).
+
+Athena ejecuta una sola sentencia por vez: no añadas un `;` seguido de otra
+consulta o de un comentario.
 
 El workgroup lleva un `bytes_scanned_cutoff_per_query` de 1 GB. No molesta a este
 dataset —son unos pocos MB— pero deja a la vista el freno de mano que en
@@ -383,60 +402,12 @@ Costo del Lab 2 en idle: **$0** (Glue no cobra en reposo). Solo cobra al ejecuta
 
 ## Conexión con Lab 3
 
-Los datos en `s3://bucket/curated/transactions/` son los "datos confiables" que el Lab 3 puede usar para:
-- Ingestar como contexto al vector store (como documentos adicionales)
-- Referenciar narrativamente: "la IA opera sobre datos que ya pasaron por este proceso"
+`curated/transactions/` es lo que el Lab 3 convierte en hechos citables:
+`scripts/demo_cierre.sh` ejecuta este job, genera los hechos agregados y los
+ingesta en el vector store (ver el
+[paso 5 del Lab 3](../03-data-to-ai/README.md#paso-5-del-pago-a-la-respuesta)).
 
-El mensaje central: **RAG no comienza en el vector database. Comienza aquí.**
-
-→ **Continúa en:** `labs/03-data-to-ai/README.md`
-
----
-
-## Casos reales que aplican este patrón
-
-### BMW Group — Data Quality + Catalog a escala
-
-BMW procesa datos de millones de vehículos conectados. Sin validación de calidad, un sensor con valor erróneo puede afectar los modelos de mantenimiento predictivo. La diferencia entre un dato raw y un dato curado es literalmente la diferencia entre una predicción correcta y un error de manufactura.
-
-```
-Fuentes raw (vehículos, sensores, ERP)
-    │
-    ▼ AWS Glue ETL
-Transformación + Normalización
-    │
-    ▼ AWS Glue Data Catalog
-Metadata centralizada: schema, owner, clasificación, calidad
-    │
-    ▼ AWS Lake Formation
-Governance: control de acceso por columna y fila
-    │
-    ▼ Amazon Redshift / SageMaker
-Analytics + ML sobre datos confiables
-```
-
-**Conexión con este lab:** Glue ETL para transformación + Glue Catalog para metadata es exactamente el stack del Lab 2.
-
-### United Airlines — Catalog Federation
-
-United tiene datos en múltiples plataformas (Redshift, Databricks, S3). Su solución al problema de duplicación de datos: **catalog federation** con AWS Glue Data Catalog.
-
-```
-Redshift (DW) ─────────┐
-Databricks ────────────┤──► AWS Glue Data Catalog (índice unificado)
-S3 (Data Lake) ────────┘         │
-                                  ▼
-                            Amazon Athena
-                        (query sobre cualquier fuente
-                          sin mover los datos)
-```
-
-El Glue Catalog no es solo un registro de tablas. Puede ser el índice unificado de toda una organización, permitiendo queries federadas sin duplicación. En el Lab 2 vemos la base de esa capacidad: la tabla `transactions` en el Catalog queda disponible para Athena en cuanto el Crawler termina.
-
-**Referencia:** United Airlines, AWS re:Invent 2023 (sesión ANT335)
-
-> *"La diferencia entre 'tengo datos' y 'confío en mis datos' es exactamente lo que construimos en este lab. BMW y United llegaron a esta conclusión a escala de petabytes. Nosotros lo demostramos con 1,000 transacciones de FinCorp."*
-
+→ **Continúa en:** [Lab 3 — Data to AI](../03-data-to-ai/README.md)
 
 ---
 
