@@ -1,0 +1,140 @@
+#!/bin/bash
+# =============================================================================
+# Arranque del PostgreSQL "on-premises" del core de FinCorp
+# =============================================================================
+# Plantilla de Terraform: lo que va entre $${...} lo rellena Terraform; las
+# variables de bash van sin llaves ($VAR) para no confundirse con ellas.
+#
+# Se ejecuta UNA vez, en el primer arranque. El log queda en
+# /var/log/fincorp-db-init.log (verlo: sudo tail -f ... por Session Manager).
+# =============================================================================
+set -euo pipefail
+exec > >(tee -a /var/log/fincorp-db-init.log) 2>&1
+echo "== $(date -Is) arranque del core =="
+
+PGDATA=/var/lib/pgsql/data
+
+# ── 1. PostgreSQL 16 ─────────────────────────────────────────────────────────
+# contrib NO es opcional: trae test_decoding, el plugin de decodificacion logica
+# con el que DMS lee el WAL. Sin el, la tarea de CDC muere al crear su slot con
+# 'could not access file "test_decoding"'. Encontrado ejecutando este script en
+# un contenedor de Amazon Linux 2023, no leyendolo.
+dnf install -y postgresql16-server postgresql16 postgresql16-contrib jq
+postgresql-setup --initdb
+
+# ── 2. Configuracion para el CDC de DMS ──────────────────────────────────────
+# Al final del fichero: en postgresql.conf gana la ultima aparicion.
+cat >> "$PGDATA/postgresql.conf" <<'CONF'
+
+# ---- FinCorp: core on-premises con CDC hacia AWS DMS (Lab 1) ----
+listen_addresses = '*'
+
+# El CDC lee el WAL decodificado. Sin 'logical' no hay replicacion logica.
+wal_level = logical
+# Un slot y un walsender por tarea de DMS, con holgura.
+max_replication_slots = 10
+max_wal_senders = 10
+# DMS documenta que el servidor no debe cortar por inactividad la conexion de
+# replicacion: entre pago y pago puede no haber nada que enviar.
+wal_sender_timeout = 0
+
+# Registrar las sentencias lentas: en pagos, una autorizacion que tarda es un
+# problema de negocio, no solo de rendimiento.
+log_min_duration_statement = 1000
+password_encryption = 'scram-sha-256'
+CONF
+# Fuera del heredoc literal porque lleva una variable de Terraform.
+# EL TOPE DEL SLOT. Si DMS se para y su slot sigue vivo, PostgreSQL guarda el
+# WAL para el indefinidamente: el disco se llena y la base cae. Con este tope,
+# pasado el limite el slot se invalida (DMS tendria que recargar) pero la base
+# sigue viva. Es preferible perder el CDC a perder el core.
+echo "max_slot_wal_keep_size = '${wal_keep_size}'" >> "$PGDATA/postgresql.conf"
+
+# Solo la VPC: el backend y DMS. Ni un rango publico.
+cat > "$PGDATA/pg_hba.conf" <<HBA
+local   all          postgres                    peer
+local   all          all                         scram-sha-256
+host    all          all          127.0.0.1/32   scram-sha-256
+host    all          all          ${vpc_cidr}    scram-sha-256
+# DMS abre una conexion de REPLICACION, que pg_hba trata aparte.
+host    replication  all          ${vpc_cidr}    scram-sha-256
+HBA
+
+systemctl enable --now postgresql
+
+# ── 3. El usuario y la base ──────────────────────────────────────────────────
+PASS=$(aws secretsmanager get-secret-value --region "${region}" \
+         --secret-id "${secret_arn}" --query SecretString --output text | jq -r .password)
+
+# SUPERUSER, como el usuario maestro de RDS. DMS sobre un PostgreSQL autogestionado
+# lo necesita para crear el slot y, por defecto, el event trigger con el que
+# captura los cambios de DDL. En produccion: un usuario solo con REPLICATION y
+# SELECT, y captureDDLs desactivado.
+sudo -u postgres psql -v ON_ERROR_STOP=1 -v pass="$PASS" <<'SQL'
+CREATE ROLE ${db_user} WITH LOGIN SUPERUSER PASSWORD :'pass';
+CREATE DATABASE ${db_name} OWNER ${db_user};
+SQL
+
+# ── 4. El esquema, el seed y la cartera ──────────────────────────────────────
+# El mismo script sirve para reaplicar despues (scripts/apply_schema.sh lo invoca
+# por SSM): por eso vive en un fichero y no solo aqui.
+cat > /usr/local/bin/fincorp-apply-schema <<SCRIPT
+#!/bin/bash
+set -euo pipefail
+DIR=/opt/fincorp/schema
+mkdir -p "\$DIR"
+aws s3 sync --region "${region}" --delete "s3://${schema_bucket}/schema/" "\$DIR/"
+PGPASSWORD=\$(aws secretsmanager get-secret-value --region "${region}" \\
+    --secret-id "${secret_arn}" --query SecretString --output text | jq -r .password)
+export PGPASSWORD
+# Los NOTICE de "ya existe, se omite" son el comportamiento esperado al
+# reaplicar; con ellos en pantalla no se ve un error de verdad.
+export PGOPTIONS='-c client_min_messages=warning'
+# En orden de nombre: 001, 002, 003... Todos son idempotentes.
+for f in \$(ls "\$DIR"/0*.sql | sort); do
+    echo "aplicando \$(basename "\$f")"
+    psql -h 127.0.0.1 -U "${db_user}" -d "${db_name}" -q -v ON_ERROR_STOP=1 -f "\$f"
+done
+echo "esquema aplicado"
+SCRIPT
+chmod 755 /usr/local/bin/fincorp-apply-schema
+/usr/local/bin/fincorp-apply-schema
+
+# ── 5. Vigilar el slot: metricas cada minuto ─────────────────────────────────
+# El WAL que retienen los slots y el disco usado. Son lo primero que se rompe en
+# un CDC sobre PostgreSQL, y EC2 no los publica solo.
+cat > /usr/local/bin/fincorp-wal-metrics <<'METRICS'
+#!/bin/bash
+set -euo pipefail
+RETENIDO=$(sudo -u postgres psql -tA -c \
+  "SELECT COALESCE(max(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)), 0)::bigint FROM pg_replication_slots")
+DISCO=$(df --output=pcent /var/lib/pgsql | tail -1 | tr -dc '0-9')
+METRICS
+cat >> /usr/local/bin/fincorp-wal-metrics <<METRICS
+aws cloudwatch put-metric-data --region "${region}" --namespace "${metrics_namespace}" \\
+  --dimensions Database=${db_name} \\
+  --metric-data "MetricName=RetainedWalBytes,Value=\$RETENIDO,Unit=Bytes" \\
+                "MetricName=DiskUsedPercent,Value=\$DISCO,Unit=Percent"
+METRICS
+chmod 755 /usr/local/bin/fincorp-wal-metrics
+
+cat > /etc/systemd/system/fincorp-wal-metrics.service <<'UNIT'
+[Unit]
+Description=FinCorp: WAL retenido por los slots y disco usado
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/fincorp-wal-metrics
+UNIT
+cat > /etc/systemd/system/fincorp-wal-metrics.timer <<'UNIT'
+[Unit]
+Description=FinCorp: metricas del core cada minuto
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+[Install]
+WantedBy=timers.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now fincorp-wal-metrics.timer
+
+echo "== $(date -Is) core listo =="

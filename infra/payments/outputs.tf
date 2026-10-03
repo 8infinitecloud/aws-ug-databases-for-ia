@@ -5,19 +5,29 @@ output "api_endpoint" {
   value       = aws_apigatewayv2_api.main.api_endpoint
 }
 
-output "aurora_endpoint" {
-  description = "Endpoint de escritura de Aurora"
-  value       = aws_rds_cluster.aurora.endpoint
+output "db_host" {
+  description = "IP privada del PostgreSQL del core (EC2). DMS replica desde aqui."
+  value       = local.db_private_ip
 }
 
-output "aurora_reader_endpoint" {
-  description = "Endpoint de lectura. DMS puede usar este para no cargar el de escritura."
-  value       = aws_rds_cluster.aurora.reader_endpoint
+output "db_secret_arn" {
+  description = "ARN del secreto con las credenciales de la base"
+  value       = aws_secretsmanager_secret.db.arn
 }
 
-output "aurora_secret_arn" {
-  description = "ARN del secreto con las credenciales de Aurora"
-  value       = aws_secretsmanager_secret.aurora.arn
+output "db_instance_id" {
+  description = "Instancia EC2 de la base, para Session Manager"
+  value       = aws_instance.db.id
+}
+
+output "db_tunnel_command" {
+  description = "Tunel a la base desde tu maquina (localhost:15432), sin abrir puertos"
+  value       = "aws ssm start-session --target ${aws_instance.db.id} --document-name AWS-StartPortForwardingSession --parameters 'portNumber=5432,localPortNumber=15432'"
+}
+
+output "artifacts_bucket" {
+  description = "Bucket con los ficheros del esquema que aplica la instancia"
+  value       = aws_s3_bucket.artifacts.id
 }
 
 output "db_name" {
@@ -26,7 +36,7 @@ output "db_name" {
 }
 
 output "vpc_id" {
-  description = "VPC del core. El Lab 1 despliega DMS aqui para alcanzar Aurora."
+  description = "VPC del core. El Lab 1 despliega DMS aqui para alcanzar la base."
   value       = aws_vpc.main.id
 }
 

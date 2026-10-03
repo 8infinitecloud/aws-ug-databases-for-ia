@@ -108,10 +108,10 @@ async def lifespan(app: FastAPI):
     """
     Abre el pool sin esperar a que la base responda.
 
-    `wait=False` es deliberado: si Aurora esta arrancando (Serverless v2 escala
-    desde cero), un pool que bloquea impide que el contenedor arranque, el
-    health check del ALB nunca pasa y ECS lo mata en bucle sin dejar rastro de
-    la causa. Asi el contenedor arranca, /health dice la verdad, y el log
+    `wait=False` es deliberado: si la base todavia esta arrancando (la
+    instancia instala PostgreSQL y aplica el esquema en su primer arranque), un
+    pool que bloquea impide que el contenedor arranque, el health check del ALB
+    nunca pasa y ECS lo mata en bucle sin dejar rastro de la causa. Asi el contenedor arranca, /health dice la verdad, y el log
     explica que falta.
     """
     global pool

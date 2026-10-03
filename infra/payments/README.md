@@ -4,28 +4,28 @@ La infraestructura del adquirente. Es el **sistema origen** de toda la plataform
 de datos: aquí nace el dato cuando alguien paga.
 
 ```
-POS / web QR  ──▶  API Gateway  ──▶  VPC Link  ──▶  ALB interno  ──▶  Fargate
-                                                                        │
-                                                          Aurora PostgreSQL
-                                                             Serverless v2
-                                                                        │
-                                                          (Lab 1) DMS ──▶ S3
+POS / web QR / tienda online ──▶ API Gateway ──▶ VPC Link ──▶ ALB interno ──▶ Fargate
+                                                                               │
+                                                        PostgreSQL 16 sobre EC2
+                                                        ("on-premises" simulado)
+                                                                               │ WAL
+                                                              (Lab 1) DMS CDC ──▶ S3
 ```
 
 ---
 
 ## Qué crea
 
-41 recursos. Los que importan:
-
 | Recurso | Por qué |
 |---|---|
-| **Aurora PostgreSQL Serverless v2** | La base transaccional. Serverless porque entre ensayos la demo está inactiva y baja a su capacidad mínima sola |
-| **Cluster parameter group con `rds.logical_replication = 1`** | Es lo que permite que DMS lea los cambios. El equivalente al binlog de MySQL |
+| **EC2 `t4g.small` con PostgreSQL 16** | El core "on-premises": lo que tiene la mayoría de bancos y adquirentes, y lo que justifica DMS con CDC en el Lab 1 |
+| **`wal_level = logical` + `postgresql16-contrib`** | El CDC lee el WAL decodificado con `test_decoding`, que viene en contrib |
+| **`max_slot_wal_keep_size`** y dos **alarmas** | Que un slot de DMS parado no llene el disco y tumbe el core |
+| **Bucket de artefactos** | Los `.sql` del esquema: la instancia los aplica sola al arrancar |
 | **ECS Fargate + ALB interno** | El backend de adquirencia |
 | **API Gateway HTTP API + VPC Link** | La única puerta de entrada |
 | **ECR** | La imagen del backend |
-| **Secrets Manager** | La contraseña de Aurora, nunca en el código |
+| **Secrets Manager** | La contraseña de la base, nunca en el código |
 
 ---
 
@@ -37,21 +37,38 @@ Con un ALB público, cualquiera podría llamarlo directamente y **saltarse el
 throttling y los logs de API Gateway**. Interno + VPC Link hace que API Gateway
 sea la única entrada.
 
-### Fargate va en subnets públicas
+### Fargate y la base van en subnets públicas, sin un puerto abierto
 
-Es una concesión deliberada. La alternativa correcta —Fargate en subnets
-privadas— necesita un **NAT Gateway** para bajar la imagen de ECR, y eso cuesta
-**~$1.08/día**: más que todo el resto de la demo junta.
+Es una concesión deliberada. La alternativa correcta —subnets privadas—
+necesita un **NAT Gateway** para bajar la imagen de ECR, instalar paquetes y
+hablar con SSM, y eso cuesta **~$1.08/día**: más que todo el resto de la demo
+junta.
 
-El riesgo se acota con el security group: la tarea **solo acepta tráfico desde el
-ALB**, nunca desde internet. En producción: subnets privadas con NAT, o VPC
-endpoints para ECR, S3 y CloudWatch Logs.
+El riesgo se acota con los security groups: la tarea **solo acepta tráfico desde
+el ALB**, y la base **solo el 5432 desde el backend y desde la VPC** (DMS). Ni
+siquiera SSH: a la instancia se entra por **Session Manager**. La IP pública es
+solo de salida. En producción: subnets privadas con NAT, o VPC endpoints.
+
+### Un slot de replicación puede tumbar la base
+
+Para el CDC, DMS crea un *replication slot*, y PostgreSQL **retiene el WAL**
+hasta que DMS lo consume. Si la tarea se para y nadie borra el slot, el WAL
+crece hasta llenar el disco y **la base de producción cae**. Es el fallo clásico
+del CDC sobre PostgreSQL.
+
+Tres defensas:
+
+1. `max_slot_wal_keep_size = 4GB` (disco de 20 GB): pasado el tope, PostgreSQL
+   invalida el slot en vez de llenar el disco. Mejor perder el CDC que el core.
+2. La instancia publica cada minuto `FinCorp/Postgres RetainedWalBytes` y
+   `DiskUsedPercent`, con alarmas a 1 GiB y al 80 %.
+3. El `cleanup` del Lab 1 borra el slot al destruir la tarea.
 
 ### Se puede aplicar sin tener la imagen
 
 `backend_image` vacío (el valor por defecto) crea el servicio ECS con **0 tareas**.
-Permite levantar Aurora y la red antes de que el backend exista, que es el orden
-natural de construcción.
+Permite levantar la base y la red antes de que el backend exista, que es el
+orden natural de construcción.
 
 ```bash
 # Primero la infraestructura
@@ -72,15 +89,22 @@ terraform init -backend-config=../backend.hcl
 terraform apply
 ```
 
-**~10 minutos**, casi todo Aurora.
+**~5 minutos.** La instancia arranca, instala PostgreSQL, aplica
+`payments/schema/0*.sql` (esquema, seed y cartera de comercios) y queda lista
+sin pasos manuales. Su log: `/var/log/fincorp-db-init.log`, por Session Manager.
 
-Después, aplicar el schema. Aurora está en subnets privadas, así que no es
-alcanzable desde tu portátil: hay que hacerlo desde dentro de la VPC o por un
-túnel SSM.
+Si cambias un `.sql` después:
 
 ```bash
-# Las tres migraciones, en orden
-for f in ../../payments/schema/00*.sql; do psql "$CONN" -f "$f"; done
+terraform apply                 # sube los ficheros nuevos al bucket
+../../scripts/apply_schema.sh   # la instancia los reaplica (SSM Run Command)
+```
+
+Para conectarte a la base desde tu máquina, sin abrir ningún puerto:
+
+```bash
+$(terraform output -raw db_tunnel_command)   # deja el túnel abierto
+psql "host=localhost port=15432 dbname=acquiring user=fincorpadmin"
 ```
 
 ---
@@ -89,14 +113,14 @@ for f in ../../payments/schema/00*.sql; do psql "$CONN" -f "$f"; done
 
 | Recurso | Coste |
 |---|---|
-| Aurora Serverless v2, 0.5 ACU mínimo | ~$0.06/hora |
+| EC2 `t4g.small` + 20 GB gp3 | ~$0.019/hora |
 | Fargate, 0.5 vCPU + 1 GB | ~$0.025/hora |
-| **ALB** | **~$0.0225/hora** — el segundo más caro, y no escala a cero |
+| **ALB** | **~$0.0225/hora** — no escala a cero |
 | API Gateway HTTP API | $1.00 por millón de peticiones (~$0 en la demo) |
-| ECR, Secrets Manager, CloudWatch | < $0.01 |
-| **Total** | **~$0.11/hora · ~$2.60/día si se olvida el cleanup** |
+| ECR, Secrets Manager, CloudWatch, S3 | < $0.01 |
+| **Total** | **~$0.07/hora · ~$1.60/día si se olvida el cleanup** |
 
-> Aurora y el ALB **no bajan a cero**. Si se deja encendido, corre.
+> Antes, con Aurora Serverless v2 (0,5 ACU mínimo, ~$0.06/h), eran ~$0.11/hora.
 
 ---
 
@@ -120,6 +144,7 @@ que el `destroy` no se queda a medias.
 |---|---|
 | `api_endpoint` | El firmware del POS y la web de pago QR |
 | `iot_endpoint` | El firmware del POS |
-| `aurora_endpoint`, `aurora_secret_arn` | El Lab 1, para el endpoint de DMS |
+| `db_host`, `db_secret_arn` | El Lab 1, para el endpoint de DMS |
+| `db_instance_id`, `db_tunnel_command` | `scripts/apply_schema.sh`, `provision_demo_keys.py` |
 | `vpc_id`, `private_subnet_ids`, `vpc_cidr` | El Lab 1, para desplegar DMS en esta VPC |
 | `ecr_repository_url`, `ecs_cluster_name`, `ecs_service_name` | El workflow de despliegue del backend |

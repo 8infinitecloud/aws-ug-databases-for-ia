@@ -82,7 +82,7 @@ resource "aws_iam_role_policy" "execution_secrets" {
     Statement = [{
       Effect   = "Allow"
       Action   = ["secretsmanager:GetSecretValue"]
-      Resource = aws_secretsmanager_secret.aurora.arn
+      Resource = aws_secretsmanager_secret.db.arn
     }]
   })
 }
@@ -111,7 +111,7 @@ resource "aws_iam_role_policy" "task" {
         Sid      = "ReadDbSecret"
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
-        Resource = aws_secretsmanager_secret.aurora.arn
+        Resource = aws_secretsmanager_secret.db.arn
       },
       {
         # Publicar el evento de pago. Acotado al topic del prefijo de la demo, no
@@ -184,15 +184,17 @@ resource "aws_ecs_task_definition" "backend" {
     }]
 
     environment = [
-      { name = "DB_HOST", value = aws_rds_cluster.aurora.endpoint },
+      { name = "DB_HOST", value = local.db_private_ip },
       { name = "DB_PORT", value = "5432" },
       { name = "DB_NAME", value = var.db_name },
       { name = "DB_USER", value = var.db_username },
-      { name = "DB_SECRET_ARN", value = aws_secretsmanager_secret.aurora.arn },
+      { name = "DB_SECRET_ARN", value = aws_secretsmanager_secret.db.arn },
       { name = "AWS_REGION", value = var.aws_region },
       { name = "IOT_ENDPOINT", value = data.aws_iot_endpoint.data.endpoint_address },
       { name = "DEMO_CVV", value = var.demo_cvv },
-      { name = "DEFAULT_MERCHANT_ID", value = "MID000000012345" },
+      # La URL con la que el comprador llega a la API: la redireccion de 3DS la
+      # necesita, porque detras del ALB el host de la peticion no es el publico.
+      { name = "PUBLIC_BASE_URL", value = aws_apigatewayv2_api.main.api_endpoint },
     ]
 
     logConfiguration = {

@@ -22,7 +22,7 @@ variable "environment" {
 }
 
 variable "db_password" {
-  description = "Contrasena maestra de Aurora (export TF_VAR_db_password=...)"
+  description = "Contrasena del usuario de la base (export TF_VAR_db_password=...)"
   type        = string
   sensitive   = true
 
@@ -39,27 +39,31 @@ variable "db_name" {
 }
 
 variable "db_username" {
-  description = "Usuario maestro de Aurora"
+  description = "Usuario de la base. Tambien lo usa DMS para replicar."
   type        = string
   default     = "fincorpadmin"
 }
 
-variable "aurora_engine_version" {
-  description = "Version de Aurora PostgreSQL. Las deprecadas no permiten crear clusters nuevos."
+variable "db_instance_type" {
+  description = "Instancia del PostgreSQL del core. ARM (Graviton): mas barata por lo mismo."
   type        = string
-  default     = "16.10"
+  default     = "t4g.small"
 }
 
-variable "aurora_min_acu" {
-  description = "Capacidad minima de Aurora Serverless v2. 0 permite pausar el cluster."
+variable "db_volume_gb" {
+  description = "Disco del PostgreSQL. Es donde se acumula el WAL si DMS se para."
   type        = number
-  default     = 0.5
+  default     = 20
 }
 
-variable "aurora_max_acu" {
-  description = "Capacidad maxima"
-  type        = number
-  default     = 4
+variable "db_max_slot_wal_keep_size" {
+  description = <<-DESC
+    Tope de WAL que un slot de replicacion puede retener. Pasado, PostgreSQL
+    invalida el slot (DMS tendria que recargar) en vez de llenar el disco y
+    tumbar el core. Muy por debajo de db_volume_gb a proposito.
+  DESC
+  type        = string
+  default     = "4GB"
 }
 
 variable "backend_image" {

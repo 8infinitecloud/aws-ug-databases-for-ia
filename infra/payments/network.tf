@@ -1,8 +1,8 @@
 # =============================================================================
 # Red del core de pagos
 # =============================================================================
-# Aurora en subnets privadas. Fargate en subnets PUBLICAS con IP publica, que es
-# una concesion deliberada: la alternativa correcta —Fargate privado— necesita un
+# La base del core en EC2, y Fargate, en subnets PUBLICAS con IP publica de
+# salida. Es una concesion deliberada: la alternativa correcta —Fargate privado— necesita un
 # NAT Gateway para bajar la imagen de ECR, y eso cuesta ~$1.08/dia, mas que todo
 # el resto de la demo junta.
 #
@@ -40,7 +40,7 @@ resource "aws_internet_gateway" "main" {
   tags   = { Name = "${local.name_prefix}-igw" }
 }
 
-# Dos AZ: requisito del subnet group de Aurora y del ALB.
+# Dos AZ: requisito del ALB, y del subnet group de DMS del Lab 1.
 resource "aws_subnet" "public" {
   count = 2
 
@@ -136,7 +136,7 @@ resource "aws_security_group" "backend" {
   vpc_id      = aws_vpc.main.id
 
   egress {
-    description = "Salida a Aurora, Secrets Manager, IoT Core y ECR"
+    description = "Salida a la base, Secrets Manager, IoT Core y ECR"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -159,10 +159,12 @@ resource "aws_security_group_rule" "backend_from_alb" {
   source_security_group_id = aws_security_group.alb.id
 }
 
-# Aurora: solo desde el backend y desde DMS.
-resource "aws_security_group" "aurora" {
-  name        = "${local.name_prefix}-aurora-sg"
-  description = "Aurora PostgreSQL Serverless v2"
+# La base del core: solo desde el backend y desde DMS. Ni un puerto a internet,
+# ni siquiera SSH (se entra por Session Manager), aunque la instancia tenga IP
+# publica para su trafico de salida.
+resource "aws_security_group" "db" {
+  name        = "${local.name_prefix}-db-sg"
+  description = "PostgreSQL del core, on-premises simulado en EC2"
   vpc_id      = aws_vpc.main.id
 
   ingress {
@@ -184,9 +186,17 @@ resource "aws_security_group" "aurora" {
     cidr_blocks = [aws_vpc.main.cidr_block]
   }
 
+  egress {
+    description = "Paquetes, Secrets Manager, S3, SSM y CloudWatch"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   lifecycle { create_before_destroy = true }
 
-  tags = { Name = "${local.name_prefix}-aurora-sg" }
+  tags = { Name = "${local.name_prefix}-db-sg" }
 }
 
 # El SG por defecto de la VPC permite todo entre sus miembros. No lo usamos, pero

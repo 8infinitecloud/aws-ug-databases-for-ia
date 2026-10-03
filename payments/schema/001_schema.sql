@@ -1,7 +1,8 @@
 -- =============================================================================
 -- FinCorp Payments — schema transaccional del ADQUIRENTE
 -- =============================================================================
--- Aurora PostgreSQL Serverless v2.
+-- PostgreSQL 16 sobre EC2: el core "on-premises" (infra/payments/db.tf). DMS lo
+-- replica con CDC al data lake del Lab 1.
 --
 -- POSICION EN LA CADENA DE PAGOS. Esto es importante y condiciona todo el
 -- modelo: NO somos el comercio. Somos el adquirente.
