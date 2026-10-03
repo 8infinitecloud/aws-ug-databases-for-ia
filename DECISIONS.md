@@ -11,6 +11,11 @@ Cada decisión de arquitectura relevante está documentada aquí en formato ADR.
 | 014–016 | Transversal | Terraform, state remoto, acoplamiento entre labs |
 | 017 | Lab 3 | El puente léxico entre los datos y el corpus |
 | 018 | Transversal | `payments` es el core; los labs orbitan |
+| 019–023 | Varios | Full load sin CDC, API de adquirencia, página del QR, Athena, el Lab 4 |
+| 024 | Lab 1 | **El core on-premises y DMS con CDC** (sustituye a 007 y 019) |
+| 025 | Core | El canal online, con el ciclo de vida de PaymentIntents de Stripe |
+| 026 | Lab 4 | Firehose lleva telemetría, no pagos (revisa 023) |
+| 027 | Lab 3 | Cadena RAG, no agente; y el cierre en vivo |
 
 Las decisiones que se apartan a propósito de lo que pediría producción están en
 [docs/well-architected.md](docs/well-architected.md).
@@ -250,7 +255,7 @@ Streamlit 1.40+ con layout de tres columnas y `st.expander` para mostrar/ocultar
 |-------|-------|
 | **Título** | Mecanismo de ingesta desde el sistema origen |
 | **Fecha** | 2026-09-20 |
-| **Estado** | Aceptado |
+| **Estado** | **Sustituido por ADR-024** (2026-10-02) |
 
 ### Contexto
 
@@ -678,7 +683,7 @@ El grafo queda: `bootstrap → payments → lab1 → lab2`, con `lab3` independi
 |-------|-------|
 | **Título** | Modo de replicación del Lab 1 |
 | **Fecha** | 2026-09-28 |
-| **Estado** | Aceptado |
+| **Estado** | **Sustituido por ADR-024** (2026-10-02) |
 
 ### Contexto
 
@@ -922,7 +927,7 @@ par queda coherente.
 
 ## ADR-023: El streaming es el Lab 4, y su columna vertebral no es Firehose
 
-**Fecha:** 2026-09-28 · **Estado:** Aceptada
+**Fecha:** 2026-09-28 · **Estado:** Aceptada; **revisada por ADR-026** (Firehose ya no lleva pagos)
 
 ### Contexto
 
@@ -978,3 +983,207 @@ podemos reaccionar ahora**.
 - Hizo falta añadir `mcc` y `risk_level` al evento. Sin ellos, una fila del
   stream llegaba al lago sin la señal de riesgo que Athena agrupa y el scoring
   necesita — el mismo hueco que tuvo `payment_method` (ADR-020).
+
+---
+
+## ADR-024: El core es "on-premises", y DMS replica con CDC sus tablas base
+
+**Frase para la presentación:** *"DMS no transforma: replica. Lee el log de la base de producción sin tocarla y nos entrega cada cambio —incluido el cobro que pasa de pendiente a aprobado—. La transformación es trabajo de Glue."*
+
+**Fecha:** 2026-10-02 · **Estado:** Aceptada · **Sustituye a:** ADR-007, ADR-019
+
+### Contexto
+
+ADR-007 eligió DMS por dos razones: CDC por el log y no cargar producción.
+ADR-019 tuvo que renunciar al CDC (DMS no lo hace sobre una vista), y el
+despliegue añadió que tampoco hace *full load* de una vista: hizo falta una
+tabla espejo que se refrescaba con `TRUNCATE` + `INSERT` **en producción**.
+
+Con eso, las dos razones de ADR-007 se habían caído. Un job de Glue con JDBC
+hacía lo mismo, más barato y sin la tabla espejo. DMS ya no se justificaba.
+
+Al mismo tiempo, la demo quería otra cosa: que **los pagos de la audiencia
+aparezcan en el lago mientras ocurren**.
+
+### Decisión Tomada
+
+**El core pasa a PostgreSQL 16 sobre EC2, simulando un servidor on-premises**, y
+**DMS replica con full load + CDC sus tablas base** hacia `raw/acquiring/`, en
+Parquet, una carpeta por tabla. Cada fila lleva `Op` (I/U/D) y `dms_timestamp`.
+
+Glue aplica los cambios —la última versión de cada fila, sin las borradas— y
+hace el JOIN que antes hacía la vista. Un test lo compara fila a fila con
+`v_transactions_for_ingestion`.
+
+### Por qué ahora DMS sí
+
+| | CDC por log (DMS) | Incremental por consulta (Glue JDBC + *bookmarks*) |
+|---|---|---|
+| Actualizaciones (captura, devolución, contracargo) | **Las ve** | No, salvo un `updated_at` fiable en todas las tablas |
+| Borrados | Llegan como `D` | Invisibles |
+| Carga sobre producción | Lee el WAL | `SELECT` en cada ejecución |
+| Latencia | ~30 s | La del job programado |
+
+En pagos el **cambio de estado es el dato**. Y sobre un PostgreSQL autogestionado
+no hay *zero-ETL*: las opciones reales son DMS o Debezium + Kafka (que ADR-007 ya
+descartó por operación).
+
+### Alternativas Consideradas
+
+| Alternativa | Por qué no |
+|-------------|-----------|
+| **Glue con JDBC** | No ve actualizaciones ni borrados: pierde justo las capturas y las devoluciones |
+| **DMS a un RDS PostgreSQL, y de ahí a S3** | Patrón de migración. El segundo salto pierde el delta salvo otra tarea DMS encadenada, con el doble de latencia y coste. Si algún día hace falta la réplica, va en abanico (dos tareas desde el origen), no en cadena |
+| **Mantener Aurora y hacer CDC sobre sus tablas** | Funciona, pero Aurora tiene *zero-ETL*: con Aurora, DMS seguiría sin justificarse |
+| **Migrar el core a la nube** | Es otra charla, y otro proyecto de meses |
+
+### Consecuencias
+
+- **El slot de replicación puede tumbar la base.** Si DMS se para y el slot
+  sigue, PostgreSQL retiene el WAL hasta llenar el disco. Defensas:
+  `max_slot_wal_keep_size = 4GB`, métricas propias del WAL retenido y del disco
+  con alarmas, y el *cleanup* del Lab 1 borra el slot.
+- `test_decoding` viene en `postgresql16-contrib`. Sin él DMS muere al crear el
+  slot; se encontró ejecutando el arranque en un contenedor de Amazon Linux 2023.
+- LOBs activados en la tarea: con `SupportLobs = false`, DMS descarta en silencio
+  `text` y `jsonb`, como ya pasó con tres columnas.
+- `REPLICA IDENTITY FULL` en las tablas replicadas: con el valor por defecto, un
+  `DELETE` solo trae la clave y un `UPDATE` pierde las columnas TOAST.
+- No se replican claves de API, secretos de webhooks ni tokens de pago; la
+  cuenta de liquidación del comercio se quita con una regla `remove-column`.
+- La cartera legacy (las 1000 filas sucias) llega aparte, como fichero en
+  `raw/legacy/`: tiene constraints que la base del core rechazaría. Glue une las
+  dos fuentes con una columna `source`.
+- La instancia de DMS está siempre encendida: `dms.t3.small` por defecto.
+
+---
+
+## ADR-025: El canal online sigue el ciclo de vida de PaymentIntents de Stripe
+
+**Frase para la presentación:** *"El esquema ya venía del modelo de Stripe; el canal online completa su ciclo de vida: intención, 3-D Secure, y reintento sobre la misma intención tras un rechazo."*
+
+**Fecha:** 2026-10-02 · **Estado:** Aceptada
+
+### Contexto
+
+El backend solo cobraba en mostrador: exigía un terminal, el comercio estaba
+cableado en la configuración y el emisor simulado decidía por CVV. Con un solo
+comercio y un solo canal, los labs no tenían nada que comparar.
+
+### Decisión Tomada
+
+Un canal `CARD_NOT_PRESENT` que sigue la API pública de PaymentIntents
+(docs.stripe.com/payments/paymentintents/lifecycle):
+
+- Una declinación **vuelve a `REQUIRES_PAYMENT_METHOD`**: el comprador reintenta
+  con otra tarjeta sobre la misma intención. Un cobro por intento
+  (`ch_<ref>_<n>`).
+- `REQUIRES_ACTION` con `next_action.redirect_to_url` para 3DS, y una página de
+  "banco" simulado. Un token de un solo uso impide que otro complete la
+  autenticación. Un 3DS fallido no crea cobro.
+- El emisor decide por **PaymentMethods de prueba** con los identificadores de
+  Stripe (`pm_card_visa`, `pm_card_visa_chargeDeclined`...): ningún número de
+  tarjeta en ninguna parte.
+- La tienda se identifica con una **clave de API** (`Bearer sk_demo_…`, guardada
+  como SHA-256). El POS sigue identificándose por su terminal: el firmware no
+  cambia.
+- Cada paso deja su evento en `webhook_events` en la misma transacción (outbox),
+  con los tipos de Stripe. **Sin worker de entrega**: llegan al lago por el CDC.
+
+Es **fuente de tráfico** para los labs, no un lab. `scripts/generate_traffic.py`
+lo mueve sobre una cartera de 11 comercios.
+
+### Alternativas Consideradas
+
+| Alternativa | Por qué no |
+|-------------|-----------|
+| **Checkout Sessions** (lo que Stripe recomienda hoy a quien integra) | Es una capa sobre PaymentIntents para quien *consume* la API; aquí la ofrecemos. La página `/pay/{ref}` ya cumple ese papel |
+| **Usar la API de Stripe de verdad** | El taller no procesa pagos reales, por diseño |
+| **El worker de webhooks con firma y reintentos** | No aporta datos nuevos a los labs; queda modelado y documentado |
+
+### Consecuencias
+
+- Tres bugs latentes que el volumen destapó: el RRN aleatorio colisionaba (ahora
+  sale de una secuencia), `failure_code` no cabía en `INSUFFICIENT_FUNDS`, y un
+  segundo rechazo chocaba con el primero.
+- Se usa el **diseño** de la API, no la marca: el sistema es FinCorp.
+
+---
+
+## ADR-026: Firehose lleva la telemetría de los terminales, no los pagos
+
+**Frase para la presentación:** *"La base dice QUÉ falló; la telemetría dice POR QUÉ."*
+
+**Fecha:** 2026-10-02 · **Estado:** Aceptada · **Revisa:** ADR-023
+
+### Contexto
+
+Con el CDC de ADR-024, el pago llega al lago por la base, y además con lo que el
+evento no tiene (cambios de estado, libro mayor). Los eventos de pago por
+Firehose eran un duplicado con otra forma.
+
+El POS cobra por HTTPS, como Stripe Terminal. Pero hay datos del dispositivo que
+ninguna base guarda: batería, señal, latencia, QR abandonados.
+
+### Decisión Tomada
+
+Dos reglas de IoT, cada una con un solo trabajo:
+
+```
+<serial>/events     (el backend, al cobrar)  ─► Lambda ─► DynamoDB     reaccionar
+<serial>/telemetry  (el terminal, cada 30 s) ─► Firehose ─► raw/telemetry/   recordar
+                                             └► DynamoDB terminal-state     vigilar
+```
+
+El firmware publica la telemetría con el certificado del ATECC608, conectando y
+desconectando en cada latido. Es opcional y está desactivada por defecto: el
+terminal validado no cambia. La flota virtual del generador publica el mismo
+contrato, y un test ata los dos.
+
+El scoring distingue la tienda online (por comercio, `M#`, con sus umbrales) del
+terminal (`T#`): con los umbrales de una cafetería, cada venta de electrónica
+saltaba.
+
+### Consecuencias
+
+- Athena cruza telemetría y cobros: «¿falló la red o el emisor?».
+- `run_demo.sh` (plan B, eventos falsos en IoT) ya no ensucia el lago.
+- La telemetría del Core2 está compilada y no probada en el dispositivo.
+
+---
+
+## ADR-027: El Lab 3 sigue siendo una cadena RAG, no un agente
+
+**Frase para la presentación:** *"Cuando las preguntas exigen elegir entre fuentes, la cadena se convierte en agente. Las de este taller no lo exigen."*
+
+**Fecha:** 2026-10-02 · **Estado:** Aceptada
+
+### Contexto
+
+Con datos nuevos (canal online, legacy, telemetría) cabía convertir el asistente
+en un agente con herramientas: Athena para las cifras, el corpus para las
+políticas.
+
+### Decisión Tomada
+
+**Cadena RAG, como hasta ahora.** Lo nuevo entra por el puente de ADR-013:
+documentos nuevos en el corpus (runbook de terminales, pagos online, cartera
+legacy) y hechos derivados nuevos (canales y emisor, salud de terminales,
+actividad de hoy).
+
+El cierre en vivo va por la vía de los hechos: CDC → Glue → hechos → pgvector →
+pregunta. Es más lento que una herramienta sobre Athena, pero es la tesis del
+taller: el dato recorre la plataforma antes de llegar a la IA. La espera se narra.
+
+### Alternativas Consideradas
+
+| Alternativa | Por qué no |
+|-------------|-----------|
+| **Agente (Bedrock Agents o tool use en bucle)** | Varias llamadas al modelo por pregunta, latencia y caminos distintos ante la misma pregunta en vivo, sin responder nada que la cadena no responda |
+| **Una sola herramienta de Athena para el cierre** | Más rápida, pero se salta la plataforma que el taller enseña |
+
+### Consecuencias
+
+- Reingestar un documento sustituye sus chunks: antes los duplicaba, y la cifra
+  de un ensayo habría convivido con la del día.
+- El agente queda como "siguiente paso" en la diapositiva de cierre.

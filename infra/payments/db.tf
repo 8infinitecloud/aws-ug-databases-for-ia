@@ -136,6 +136,9 @@ resource "aws_instance" "db" {
   private_ip             = local.db_private_ip
   vpc_security_group_ids = [aws_security_group.db.id]
   iam_instance_profile   = aws_iam_instance_profile.db.name
+  # Las t4g ya lo son por defecto y sin coste: declararlo cierra un hallazgo de
+  # checkov (CKV_AWS_135) que no era una concesion.
+  ebs_optimized = true
 
   # IMDSv2 obligatorio: el v1 deja leer las credenciales del rol a cualquiera
   # que consiga una SSRF en algo que corra aqui.

@@ -74,10 +74,20 @@ jobs:
           shellcheck -x --severity=warning labs/02-transformation-quality-catalog/scripts/validate.sh
           shellcheck -x --severity=warning labs/02-transformation-quality-catalog/scripts/cleanup.sh
 
+      - name: shellcheck — Lab 4 scripts
+        run: |
+          shellcheck -x --severity=warning labs/04-streaming-online-insight/scripts/setup.sh
+          shellcheck -x --severity=warning labs/04-streaming-online-insight/scripts/validate.sh
+          shellcheck -x --severity=warning labs/04-streaming-online-insight/scripts/cleanup.sh
+          shellcheck -x --severity=warning labs/04-streaming-online-insight/scripts/run_demo.sh
+
       - name: shellcheck — Lab 3 infrastructure scripts
         run: |
           shellcheck -x --severity=warning scripts/preflight.sh
           shellcheck -x --severity=warning scripts/lib/tf.sh
+          shellcheck -x --severity=warning scripts/lib/core.sh
+          shellcheck -x --severity=warning scripts/apply_schema.sh
+          shellcheck -x --severity=warning scripts/demo_cierre.sh
           shellcheck -x --severity=warning labs/03-data-to-ai/infrastructure/setup.sh
           shellcheck -x --severity=warning labs/03-data-to-ai/infrastructure/deploy-app.sh
           shellcheck -x --severity=warning labs/03-data-to-ai/infrastructure/cleanup.sh
@@ -205,50 +215,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verificar datasets Lab 1
+      # Estaba roto en tres sitios y nadie lo vio porque el repo nunca se habia
+      # subido: exigia customers.csv (ahora merchants.csv), el encabezado del
+      # modelo bancario (transaction_type, branch_id) y un seed.sql de MySQL que
+      # ya no existe. El contrato de columnas real es la vista del adquirente,
+      # y lo comprueba tambien tests/test_glue_job.py.
+      - name: Verificar datasets Lab 1 (la cartera legacy)
         run: |
-          required=(
-            "labs/01-ingestion-data-lake/dataset/transactions.csv"
-            "labs/01-ingestion-data-lake/dataset/customers.csv"
-            "labs/01-ingestion-data-lake/dataset/seed.sql"
-          )
-          for f in "${required[@]}"; do
+          D=labs/01-ingestion-data-lake/dataset
+          for f in "$D/transactions.csv" "$D/merchants.csv" "$D/generate_dataset.py"; do
             [ -f "$f" ] && echo "✓ $f" || { echo "❌ Missing: $f"; exit 1; }
           done
-
-      - name: Verificar columnas de transactions.csv
-        run: |
-          HEADER=$(head -1 labs/01-ingestion-data-lake/dataset/transactions.csv)
-          EXPECTED="transaction_id,customer_id,amount,currency,transaction_type,status,transaction_date,branch_id"
-          if [ "$HEADER" = "$EXPECTED" ]; then
-            echo "✓ transactions.csv header correcto"
-          else
-            echo "❌ Header inesperado: $HEADER"
-            echo "   Esperado: $EXPECTED"
-            exit 1
-          fi
-
-      - name: Verificar columnas de customers.csv
-        run: |
-          HEADER=$(head -1 labs/01-ingestion-data-lake/dataset/customers.csv)
-          EXPECTED="customer_id,name,email,country,risk_level,onboarding_date"
-          if [ "$HEADER" = "$EXPECTED" ]; then
-            echo "✓ customers.csv header correcto"
-          else
-            echo "❌ Header inesperado: $HEADER"
-            exit 1
-          fi
-
-      - name: Verificar conteo de filas en transactions.csv
-        run: |
-          ROWS=$(wc -l < labs/01-ingestion-data-lake/dataset/transactions.csv)
-          # ~1001 (1000 datos + 1 header), con tolerancia
-          if [ "$ROWS" -ge 900 ] && [ "$ROWS" -le 1100 ]; then
-            echo "✓ transactions.csv: $ROWS líneas (dentro del rango esperado)"
-          else
-            echo "❌ transactions.csv tiene $ROWS líneas (esperado: 901-1101)"
-            exit 1
-          fi
+          # tr: el CSV lo escribe el modulo csv de Python, con finales CRLF.
+          HEADER=$(head -1 "$D/transactions.csv" | tr -d "\r")
+          EXPECTED="transaction_id,customer_id,merchant_name,mcc,risk_level,terminal_id,device_serial,amount,currency,payment_method,status,response_code,rrn,auth_code,fee_amount,net_amount,transaction_date,created_at,captured_at"
+          [ "$HEADER" = "$EXPECTED" ] && echo "✓ transactions.csv tiene las columnas de la vista" \
+            || { echo "❌ Header inesperado: $HEADER"; exit 1; }
+          ROWS=$(($(wc -l < "$D/transactions.csv") - 1))
+          [ "$ROWS" -eq 1000 ] && echo "✓ transactions.csv: 1000 filas" \
+            || { echo "❌ transactions.csv tiene $ROWS filas (esperado: 1000)"; exit 1; }
 
       - name: Verificar ruleset DQDL Lab 2
         run: |
@@ -259,14 +244,19 @@ jobs:
 
       - name: Verificar corpus documentos Lab 3
         run: |
+          C=labs/03-data-to-ai/data
           required=(
-            "data/compliance/aml_policy.md"
-            "data/compliance/kyc_procedures.md"
-            "data/onboarding/client_onboarding.md"
-            "data/onboarding/employee_onboarding.md"
-            "data/policies/data_privacy.md"
-            "data/policies/risk_management.md"
-            "data/policies/acceptable_use.md"
+            "$C/compliance/aml_policy.md"
+            "$C/compliance/kyc_procedures.md"
+            "$C/compliance/monitoreo_operativo.md"
+            "$C/compliance/pagos_online.md"
+            "$C/compliance/cartera_legacy.md"
+            "$C/operations/runbook_terminales.md"
+            "$C/onboarding/client_onboarding.md"
+            "$C/onboarding/employee_onboarding.md"
+            "$C/policies/data_privacy.md"
+            "$C/policies/risk_management.md"
+            "$C/policies/acceptable_use.md"
           )
           for f in "${required[@]}"; do
             [ -f "$f" ] && echo "✓ $f" || { echo "❌ Missing: $f"; exit 1; }

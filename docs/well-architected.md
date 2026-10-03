@@ -42,6 +42,10 @@ que esto dejara de ser un lab.
 | Sin VPC Flow Logs | Cuestan ingesta y almacenamiento de CloudWatch | Activados, con retención y alarma |
 | Sin autenticación IAM en las bases de datos | Añade pasos al lab sin enseñar nada nuevo | IAM auth en vez de contraseña |
 | `ec2:Describe*` con `Resource = "*"` en el rol de DMS | Esas acciones no admiten ARN de recurso | Igual: es inevitable, se acota con condiciones |
+| La base del core en EC2 con IP pública de salida | En la subred privada haría falta un NAT (~1 USD/día) o tres endpoints de interfaz solo para SSM. El SG no abre **ningún** puerto a internet, ni el 22 | Subred privada con endpoints, o un *on-premises* de verdad tras VPN/Direct Connect |
+| Egress `0.0.0.0/0` en el SG de la base | Necesita `dnf`, Secrets Manager, S3, SSM y CloudWatch | VPC endpoints y egress solo a ellos |
+| El usuario de la base es `SUPERUSER` y DMS lo usa | DMS sobre un PostgreSQL autogestionado necesita crear el slot; es el equivalente al usuario maestro de RDS | Un usuario solo con `REPLICATION` y `SELECT` sobre las tablas replicadas |
+| Las claves de API de la demo van a `.demo_keys.json` | Las lee el generador de tráfico; el fichero está en `.gitignore` y con permisos 600 | Un gestor de secretos; y nunca en un portátil |
 
 ---
 
@@ -168,7 +172,8 @@ que esto dejara de ser un lab.
 
 ## Hallazgos de `checkov` que quedan abiertos
 
-94 hallazgos, todos revisados. Se agrupan en:
+Unos 100 hallazgos, todos revisados (el número exacto cambia con la versión de
+`checkov`). Se agrupan en:
 
 | Grupo | Nº aprox. | Decisión |
 |-------|-----------|----------|
@@ -183,17 +188,21 @@ que esto dejara de ser un lab.
 | Lambda fuera de VPC (Lab 4) | 1 | Concedido: sólo habla con DynamoDB, y meterla en la VPC exige un endpoint o NAT, coste y arranque en frío |
 | Lambda sin DLQ (Lab 4) | 1 | Concedido **por diseño**: el scorer traga sus errores a propósito, porque reintentar un scoring ya contado inflaría los contadores y dispararía alertas falsas. Una DLQ contradiría esa decisión |
 | Firma de código en Lambda | 1 | Concedido: el binario lo construye el propio `terraform apply` desde el repo |
+| El bucket de artefactos de `payments` sin versionado, logging, ciclo de vida ni replicación | 6 | Concedido: guarda los `.sql` del esquema, que viven en el repo; se reconstruye con cada `apply` |
+| EC2 de la base sin *detailed monitoring* (`CKV_AWS_126`) | 1 | Concedido: ~2 USD/mes por métricas cada minuto que el lab no mira. Las que importan —WAL retenido y disco— las publica la propia instancia |
+| La tabla `terminal-state` del Lab 4 sin PITR ni CMK | 2 | Concedido: es el último latido de cada terminal y se reconstruye con el siguiente, en 30 s |
 | Otros de endurecimiento avanzado | resto | Concedido |
 
-### Lo que sí se corrigió en el Lab 4, y por qué
+### Lo que sí se corrigió, y por qué
 
-Tres hallazgos no eran concesiones razonables y se arreglaron:
+Estos hallazgos no eran concesiones razonables y se arreglaron:
 
 | Hallazgo | Qué se hizo | Por qué merecía la pena |
 |---|---|---|
 | `CKV_AWS_115` — sin límite de concurrencia | `reserved_concurrent_executions = 10` | Un POS con un bucle o una regla de IoT mal filtrada puede invocar miles de veces por minuto, y **cada invocación escribe en DynamoDB**. Un accidente cuesta céntimos en vez de una sorpresa |
 | `CKV_AWS_50` — sin X-Ray | `tracing_config` en modo `Active` | En un lab *sobre latencia* no es burocracia: es lo que permite enseñar cuánto tarda de verdad el camino de reaccionar frente al de recordar |
 | `CKV_AWS_240` — Firehose sin cifrar | `server_side_encryption` | Con clave gestionada por AWS es gratis. No había razón para no tenerlo |
+| `CKV_AWS_135` — EC2 sin `ebs_optimized` (core) | `ebs_optimized = true` | Las `t4g` ya lo son, sin coste: no había nada que conceder |
 
 Para reproducir el escaneo:
 
@@ -227,15 +236,18 @@ recurso que sobrevive al `destroy` es una factura que alguien descubre semanas
 después.
 
 Verificado el 2026-09-28 inspeccionando el plan en JSON, no el HCL — leer la
-configuración con `grep` daba falsos positivos y falsos negativos.
+configuración con `grep` daba falsos positivos y falsos negativos. Revisado el
+2026-10-02 al sustituir Aurora por PostgreSQL sobre EC2 en el core.
 
 | Riesgo | Dónde aparecería | Estado |
 |---|---|---|
 | `prevent_destroy` | cualquier recurso | Sólo en el bucket de state de `bootstrap`, **a propósito** |
 | `deletion_protection` | Aurora, ALB, DynamoDB | `false` en todos |
-| `skip_final_snapshot = false` | Aurora | `true` en los dos clusters: no deja snapshots que cuesten |
+| `skip_final_snapshot = false` | Aurora (Lab 3) | `true`: no deja snapshots que cuesten |
+| Disco que sobrevive a la instancia | EC2 del core | `delete_on_termination = true` en el volumen raíz |
+| **Slot de replicación sin consumidor** | PostgreSQL del core | **No es un recurso de AWS y `destroy` no lo ve.** El `cleanup.sh` del Lab 1 lo borra por SSM tras destruir DMS. Si se olvida, el slot retiene WAL hasta llenar el disco del core; el tope `max_slot_wal_keep_size` lo invalida antes de llegar |
 | `recovery_window_in_days` | Secrets Manager | **`0`** en los dos secretos — sin esto, un secreto queda 30 días en ventana de recuperación e **impide recrear el lab con el mismo nombre** |
-| Bucket no vaciable | S3 | `force_destroy = true` en el lago (lab1) y en los documentos (lab3) |
+| Bucket no vaciable | S3 | `force_destroy = true` en el lago (lab1), los documentos (lab3) y los artefactos del esquema (payments) |
 | Repositorio con imágenes | ECR | `force_delete = true`: sin él, `destroy` falla en cuanto se sube la imagen del backend |
 | Workgroup con resultados | Athena | `force_destroy = true` |
 | EIP o NAT huérfanos | red | **No existen**: la concesión de `assign_public_ip` en Fargate evita el NAT Gateway, y de paso este problema |
@@ -283,7 +295,9 @@ No es arbitrario:
 lab4 → lab2 → lab1 → lab3 → payments
 ```
 
-- **lab4 primero**: su Firehose escribe en el bucket del lab1
+- **lab4 primero**: su Firehose escribe la telemetría en el bucket del lab1
 - **lab2 antes que lab1**: escribe en su bucket
-- **lab1 antes que payments**: las ENIs de DMS bloquean el borrado de las subnets
+- **lab1 antes que payments**: las ENIs de DMS bloquean el borrado de las
+  subnets, y su `cleanup.sh` necesita el core vivo para borrar el slot de
+  replicación
 - **lab3 en cualquier momento**: es independiente
