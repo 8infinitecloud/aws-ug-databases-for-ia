@@ -38,6 +38,15 @@ max_wal_senders = 10
 # replicacion: entre pago y pago puede no haber nada que enviar.
 wal_sender_timeout = 0
 
+# Keepalives cada 60 s. Sin ellos, un router o NAT entre el cliente y la base
+# borra en silencio la conexion tras unos minutos sin trafico, y ninguno de los
+# dos extremos se entera: pgAdmin decia "connection to the server has been
+# lost" y el servidor acumulaba conexiones huerfanas. Con trafico periodico, el
+# equipo intermedio no la borra.
+tcp_keepalives_idle = 60
+tcp_keepalives_interval = 10
+tcp_keepalives_count = 6
+
 # Registrar las sentencias lentas: en pagos, una autorizacion que tarda es un
 # problema de negocio, no solo de rendimiento.
 log_min_duration_statement = 1000
