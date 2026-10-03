@@ -18,23 +18,23 @@ data "terraform_remote_state" "payments" {
 }
 
 locals {
-  # La VPC del core: DMS tiene que vivir aqui para alcanzar Aurora.
+  # La VPC del core: DMS tiene que vivir aqui para alcanzar la base.
   vpc_id             = data.terraform_remote_state.payments.outputs.vpc_id
   vpc_cidr           = data.terraform_remote_state.payments.outputs.vpc_cidr
   private_subnet_ids = data.terraform_remote_state.payments.outputs.private_subnet_ids
 
-  # El origen de la replicacion.
-  aurora_endpoint = data.terraform_remote_state.payments.outputs.aurora_endpoint
-  aurora_secret   = data.terraform_remote_state.payments.outputs.aurora_secret_arn
-  db_name         = data.terraform_remote_state.payments.outputs.db_name
+  # El origen de la replicacion: el PostgreSQL del core en EC2.
+  db_host   = data.terraform_remote_state.payments.outputs.db_host
+  db_secret = data.terraform_remote_state.payments.outputs.db_secret_arn
+  db_name   = data.terraform_remote_state.payments.outputs.db_name
 }
 
-# Las credenciales de Aurora, leidas del secreto que creo payments. Asi no hay que
-# pasar la contrasena a este modulo.
-data "aws_secretsmanager_secret_version" "aurora" {
-  secret_id = local.aurora_secret
+# Las credenciales de la base, leidas del secreto que creo payments. Asi no hay
+# que pasar la contrasena a este modulo.
+data "aws_secretsmanager_secret_version" "db" {
+  secret_id = local.db_secret
 }
 
 locals {
-  aurora_creds = jsondecode(data.aws_secretsmanager_secret_version.aurora.secret_string)
+  db_creds = jsondecode(data.aws_secretsmanager_secret_version.db.secret_string)
 }

@@ -1,29 +1,25 @@
 # =============================================================================
-# AWS DMS — del core transaccional al data lake
+# AWS DMS — del core "on-premises" al data lake, con CDC
 # =============================================================================
-# Replica desde Aurora PostgreSQL (infra/payments) hacia la zona raw/ de S3.
+# Replica el PostgreSQL del core (EC2, infra/payments) hacia raw/acquiring/ en
+# S3: primero una foto completa (full load) y despues CADA CAMBIO, leyendo el
+# WAL (CDC). Es lo que hace que un pago de la audiencia aparezca en el lago
+# segundos despues, y que el mismo cobro llegue dos veces: como I (insert) al
+# crearse y como U (update) al capturarse.
 #
-# POR QUE FULL LOAD Y NO CDC, que es la decision importante de este modulo:
+# DMS NO TRANSFORMA: replica. Las tablas llegan a raw/ tal como estan en el
+# origen, una carpeta por tabla, con dos columnas mas: Op (I/U/D) y
+# dms_timestamp. El JOIN que las convierte en una fila por transaccion es
+# trabajo de Glue (Lab 2). Raw es lo que llego; curated es lo que hicimos.
 #
-# DMS **no puede hacer CDC sobre una vista**. El CDC lee el WAL, y una vista no
-# tiene WAL propio: no es una tabla, es una consulta. El full load si puede
-# seleccionar de una vista, porque es un SELECT normal.
+# Por que DMS y no Glue con JDBC: Glue incremental pregunta "que hay nuevo" con
+# una consulta, y asi no ve ni las actualizaciones ni los borrados. En pagos el
+# cambio de estado ES el dato: la captura, la devolucion, el contracargo. Y
+# sobre un PostgreSQL autogestionado no hay zero-ETL. Ver ADR-024.
 #
-# Y la vista es lo que queremos replicar: entrega el dato aplanado y aisla el
-# schema interno del consumidor. Renunciar a ella para tener CDC significaria
-# replicar charges, merchants, terminals y balance_transactions por separado y
-# rehacer el JOIN en Glue.
-#
-# La salida es que la plataforma tiene DOS velocidades de ingesta, y cada una usa
-# el mecanismo que le corresponde:
-#
-#   HISTORICO      Aurora ──DMS full load──▶ S3 raw/       (este modulo)
-#   TIEMPO REAL    Terminal ──IoT Core──▶ Firehose ──▶ S3  (ver la propuesta
-#                                                            del Smart Coffee)
-#
-# No es una limitacion disfrazada de virtud: es como funcionan las plataformas de
-# datos de verdad. El batch carga la historia; el streaming lleva lo que pasa
-# ahora. Intentar que un solo mecanismo haga las dos cosas es el error comun.
+# Antes este modulo hacia full load de una tabla espejo de una vista, porque DMS
+# no puede leer vistas (ADR-019). Con CDC sobre las tablas base, la vista sigue
+# existiendo como contrato legible, pero DMS ya no la necesita.
 
 resource "aws_iam_role" "dms" {
   name = "${var.project_name}-${var.environment}-dms-role"
@@ -61,7 +57,7 @@ resource "aws_iam_role_policy" "dms_s3" {
   })
 }
 
-# DMS crea y destruye ENIs en las subnets para alcanzar Aurora.
+# DMS crea y destruye ENIs en las subnets para alcanzar la base del core.
 resource "aws_iam_role_policy" "dms_vpc" {
   name = "DMSVPCManagement"
   role = aws_iam_role.dms.id
@@ -81,15 +77,15 @@ resource "aws_iam_role_policy" "dms_vpc" {
 }
 
 # ── Red: dentro de la VPC del core ────────────────────────────────────────────
-# DMS vive en las subnets privadas de payments, que es la unica forma de alcanzar
-# Aurora sin exponerla.
+# DMS vive en las subnets privadas de payments: alcanza la base del core por la
+# red interna de la VPC, sin exponerla, y S3 por el gateway endpoint.
 resource "aws_security_group" "dms" {
   name        = "${var.project_name}-${var.environment}-dms-sg"
-  description = "DMS - salida a Aurora del core y a S3"
+  description = "DMS - salida a la base del core y a S3"
   vpc_id      = local.vpc_id
 
   egress {
-    description = "PostgreSQL hacia Aurora, dentro de la VPC"
+    description = "PostgreSQL hacia el core, dentro de la VPC"
     from_port   = 5432
     to_port     = 5432
     protocol    = "tcp"
@@ -129,7 +125,7 @@ resource "aws_dms_replication_subnet_group" "main" {
 
 resource "aws_dms_replication_instance" "main" {
   replication_instance_id    = "${var.project_name}-${var.environment}-ri"
-  replication_instance_class = "dms.t3.medium"
+  replication_instance_class = var.dms_instance_class
   allocated_storage          = 50
   multi_az                   = false
   publicly_accessible        = false
@@ -145,21 +141,35 @@ resource "aws_dms_replication_instance" "main" {
   ]
 }
 
-# ── Origen: Aurora PostgreSQL del core ────────────────────────────────────────
-resource "aws_dms_endpoint" "source_aurora" {
-  endpoint_id   = "${var.project_name}-${var.environment}-source-aurora"
+# ── Origen: el PostgreSQL del core ───────────────────────────────────────────
+resource "aws_dms_endpoint" "source_core" {
+  endpoint_id   = "${var.project_name}-${var.environment}-source-core"
   endpoint_type = "source"
   engine_name   = "postgres"
-
-  server_name   = local.aurora_endpoint
+  server_name   = local.db_host
   port          = 5432
   database_name = local.db_name
+
   # Las credenciales salen del secreto que creo payments: este modulo no recibe
   # ninguna contrasena como variable.
-  username = local.aurora_creds["username"]
-  password = local.aurora_creds["password"]
+  username = local.db_creds["username"]
+  password = local.db_creds["password"]
 
-  tags = { Name = "${var.project_name}-${var.environment}-source-aurora" }
+  postgres_settings {
+    # El plugin de decodificacion logica. Viene en postgresql16-contrib, que el
+    # arranque de la instancia instala por esto.
+    plugin_name = "test_decoding"
+    # Sin capturar DDL: DMS no crea su event trigger en el core. El esquema lo
+    # cambia payments/schema/, no la replicacion.
+    capture_ddls = false
+    # El latido: DMS escribe en una tabla propia cada minuto para que el slot
+    # avance aunque no haya pagos. Sin el, en una base con poca actividad en las
+    # tablas replicadas el slot se queda quieto y retiene WAL de todo lo demas.
+    heartbeat_enable    = true
+    heartbeat_frequency = 1
+  }
+
+  tags = { Name = "${var.project_name}-${var.environment}-source-core" }
 }
 
 # ── Destino: la zona raw del data lake ────────────────────────────────────────
@@ -173,23 +183,32 @@ resource "aws_dms_endpoint" "target_s3" {
     bucket_folder           = "raw"
     service_access_role_arn = aws_iam_role.dms.arn
 
-    data_format = "csv"
+    # Parquet y no CSV. Con CSV ya pasaron dos cosas: el fichero salia sin
+    # cabecera (Glue tomaba la primera fila como encabezado) y todo llegaba como
+    # texto. Parquet lleva su esquema: enteros, timestamps y decimales llegan
+    # como tales, y Athena puede consultar raw/ directamente en la demo.
+    data_format                      = "parquet"
+    parquet_version                  = "parquet-2-0"
+    enable_statistics                = true
+    parquet_timestamp_in_millisecond = true
+    compression_type                 = "GZIP"
 
-    # Sin esto DMS escribe el CSV SIN CABECERA, y el job del Lab 2 —que lee por
-    # nombre de columna— muere con KeyError('amount') tratando la primera fila de
-    # datos como si fuera el encabezado. El valor por defecto es false, asi que
-    # hay que pedirlo explicitamente.
-    add_column_name  = true
-    encoding_type    = "plain"
-    compression_type = "NONE"
-
-    # Sin columna de operacion: en un full load no hay inserts/updates que
-    # distinguir, y el Lab 2 lee el CSV como una tabla normal.
-    include_op_for_full_load = false
+    # La columna Op TAMBIEN en el full load (como I). Si no, la foto inicial y
+    # los deltas tendrian esquemas distintos en la misma carpeta, y Glue tendria
+    # que tratar dos formatos.
+    include_op_for_full_load = true
     timestamp_column_name    = "dms_timestamp"
 
-    csv_row_delimiter = "\\n"
-    csv_delimiter     = ","
+    # Los deltas en carpetas por dia: raw/acquiring/charges/2026/10/02/. Sin
+    # esto, una demo de una hora deja cientos de ficheros en una sola carpeta.
+    date_partition_enabled  = true
+    date_partition_sequence = "YYYYMMDD"
+
+    # Un fichero de cambios cada 30 s como mucho: es lo que tarda un pago de la
+    # sala en aparecer en el lago. El tamano minimo es alto a proposito: con el
+    # volumen de una demo nunca se alcanza, y manda el intervalo.
+    cdc_max_batch_interval = 30
+    cdc_min_file_size      = 32000
   }
 
   tags = { Name = "${var.project_name}-${var.environment}-target-s3" }
@@ -197,55 +216,90 @@ resource "aws_dms_endpoint" "target_s3" {
   depends_on = [aws_s3_bucket_policy.datalake]
 }
 
+locals {
+  # Lo que SI se replica: el negocio del adquirente.
+  replicated_tables = [
+    "merchants", "terminals", "payment_intents", "charges",
+    "balance_transactions", "refunds", "disputes", "payouts", "webhook_events",
+  ]
+  # Lo que NO, y por que. Un data lake es un sitio donde mucha gente lee: lo que
+  # no debe leer nadie no puede llegar ahi.
+  #   merchant_api_keys     hashes de credenciales
+  #   webhook_endpoints     el secreto con el que firmamos los webhooks
+  #   payment_methods       tokens de instrumentos de pago: alcance PCI
+  #   idempotency_keys      cuerpos de respuesta completos, operacion pura
+  #   webhook_deliveries    reintentos de entrega, operacion pura
+  #   demo_catalog          no es del adquirente
+}
+
 resource "aws_dms_replication_task" "main" {
   replication_task_id      = "${var.project_name}-${var.environment}-task"
   replication_instance_arn = aws_dms_replication_instance.main.replication_instance_arn
-  source_endpoint_arn      = aws_dms_endpoint.source_aurora.endpoint_arn
+  source_endpoint_arn      = aws_dms_endpoint.source_core.endpoint_arn
   target_endpoint_arn      = aws_dms_endpoint.target_s3.endpoint_arn
 
-  # full-load y no full-load-and-cdc: ver la explicacion al principio del fichero.
-  migration_type = "full-load"
+  migration_type = "full-load-and-cdc"
 
   table_mappings = jsonencode({
-    rules = [{
-      rule-type = "selection"
-      rule-id   = "1"
-      rule-name = "include-transactions-view"
-      object-locator = {
-        schema-name = var.source_schema
-        table-name  = var.source_object
-      }
-      rule-action = "include"
-    }]
+    rules = concat(
+      [for i, t in local.replicated_tables : {
+        rule-type      = "selection"
+        rule-id        = tostring(i + 1)
+        rule-name      = "incluir-${t}"
+        object-locator = { schema-name = var.source_schema, table-name = t }
+        rule-action    = "include"
+      }],
+      [{
+        # La cuenta bancaria del comercio se queda en el core. El lago no
+        # necesita saber a donde se liquida para analizar cuanto se liquida.
+        rule-type   = "transformation"
+        rule-id     = "100"
+        rule-name   = "sin-cuenta-de-liquidacion"
+        rule-target = "column"
+        object-locator = {
+          schema-name = var.source_schema
+          table-name  = "merchants"
+          column-name = "settlement_account"
+        }
+        rule-action = "remove-column"
+      }],
+    )
   })
 
   replication_task_settings = jsonencode({
     TargetMetadata = {
-      TargetSchema       = ""
-      SupportLobs        = false
+      TargetSchema = ""
+      # LOBs ACTIVADOS, y es la otra leccion del despliegue anterior. Para DMS,
+      # el text y el jsonb de PostgreSQL son LOBs; con SupportLobs = false los
+      # DESCARTA sin avisar. Asi se perdieron risk_level, payment_method y
+      # status la primera vez. Aqui line_items, metadata o el payload de los
+      # eventos desaparecerian igual. Modo limitado a 32 KB: ningun campo de
+      # este modelo se acerca, y es mucho mas rapido que el modo completo.
+      SupportLobs        = true
       FullLobMode        = false
-      LobChunkSize       = 64
       LimitedSizeLobMode = true
       LobMaxSize         = 32
     }
     FullLoadSettings = {
-      TargetTablePrepMode           = "DROP_AND_CREATE"
-      CreatePkAfterFullLoad         = false
-      MaxFullLoadSubTasks           = 8
-      TransactionConsistencyTimeout = 600
-      CommitRate                    = 50000
+      TargetTablePrepMode = "DROP_AND_CREATE"
+      MaxFullLoadSubTasks = 8
+      CommitRate          = 50000
     }
     Logging = {
       EnableLogging = true
       LogComponents = [
         { Id = "SOURCE_UNLOAD", Severity = "LOGGER_SEVERITY_DEFAULT" },
+        { Id = "SOURCE_CAPTURE", Severity = "LOGGER_SEVERITY_DEFAULT" },
         { Id = "TARGET_LOAD", Severity = "LOGGER_SEVERITY_DEFAULT" },
+        { Id = "TARGET_APPLY", Severity = "LOGGER_SEVERITY_DEFAULT" },
         { Id = "TASK_MANAGER", Severity = "LOGGER_SEVERITY_DEFAULT" },
       ]
     }
   })
 
-  # Se arranca a mano durante la preparacion del demo, para controlar el momento.
+  # Se arranca durante la preparacion de la demo (labs/01/scripts/setup.sh):
+  # desde ese momento el slot existe y retiene WAL, asi que no conviene que
+  # arranque solo con el apply y se quede corriendo sin nadie mirando.
   start_replication_task = false
 
   tags = { Name = "${var.project_name}-${var.environment}-task" }

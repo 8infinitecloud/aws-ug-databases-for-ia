@@ -30,24 +30,19 @@ variable "state_bucket" {
 }
 
 variable "source_schema" {
-  description = "Schema de Aurora del que replica DMS"
+  description = "Schema del core que replica DMS"
   type        = string
   default     = "acquiring"
 }
 
-variable "source_object" {
+variable "dms_instance_class" {
   description = <<-DESC
-    Objeto que replica DMS.
-
-    Es una TABLA y no la vista a proposito: DMS full-load no puede replicar
-    vistas de PostgreSQL —falla con "No tables were found at task
-    initialization" antes de consultar nada— ni tampoco vistas materializadas.
-    `payments/schema/004_ingestion_snapshot.sql` crea esta tabla como
-    materializacion de `v_transactions_for_ingestion`, y hay que refrescarla con
-    `SELECT acquiring.refresh_ingestion_snapshot()` antes de cada carga.
+    Instancia de replicacion. El volumen de una demo es minimo: t3.small cuesta
+    la mitad que t3.medium. Con CDC esta encendida todo el tiempo, asi que el
+    tamano si se nota en la factura.
   DESC
   type        = string
-  default     = "tbl_transactions_for_ingestion"
+  default     = "dms.t3.small"
 }
 
 variable "create_dms_vpc_role" {

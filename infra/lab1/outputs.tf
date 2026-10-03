@@ -13,7 +13,7 @@ output "s3_bucket_arn" {
 }
 
 output "dms_task_arn" {
-  description = "ARN de la tarea DMS. Se arranca a mano: aws dms start-replication-task"
+  description = "ARN de la tarea DMS (full load + CDC). La arranca labs/01/scripts/setup.sh"
   value       = aws_dms_replication_task.main.replication_task_arn
 }
 
@@ -27,12 +27,17 @@ output "dms_role_arn" {
   value       = aws_iam_role.dms.arn
 }
 
-output "source_aurora_endpoint" {
-  description = "Endpoint de Aurora del que replica. Viene de infra/payments."
-  value       = local.aurora_endpoint
+output "source_db_host" {
+  description = "IP privada del PostgreSQL del core del que replica. Viene de infra/payments."
+  value       = local.db_host
 }
 
-output "source_object" {
-  description = "Objeto replicado: schema.vista"
-  value       = "${var.source_schema}.${var.source_object}"
+output "replicated_tables" {
+  description = "Tablas que DMS replica a raw/acquiring/<tabla>/"
+  value       = local.replicated_tables
+}
+
+output "raw_acquiring_path" {
+  description = "Donde caen la foto inicial y los deltas del CDC"
+  value       = "s3://${aws_s3_bucket.datalake.id}/raw/acquiring/"
 }

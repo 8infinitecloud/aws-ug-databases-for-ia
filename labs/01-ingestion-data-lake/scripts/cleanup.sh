@@ -3,13 +3,15 @@
 # cleanup.sh — Lab 1: Eliminar todos los recursos AWS
 # =============================================================================
 # EJECUTAR AL TERMINAR EL LAB.
-# Costo estimado si se deja corriendo: ~$0.068/hr (la instancia de DMS)
+# Costo estimado si se deja corriendo: ~$0.04/hr (la instancia de DMS)
 #
 # Acciones:
 #   1. Para la tarea DMS si está corriendo
 #   2. Vacía el bucket S3 (objetos versioned)
 #   3. Destruye el modulo: DMS, S3 e IAM. NO toca el core (infra/payments).
-#   4. Confirma que no quedan recursos
+#   4. BORRA EL SLOT DE REPLICACION DEL CORE. DMS no lo hace al destruirse, y un
+#      slot sin consumidor retiene WAL hasta llenar el disco de la base.
+#   5. Confirma que no quedan recursos
 #
 # Uso: ./cleanup.sh
 # =============================================================================
@@ -35,6 +37,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 # shellcheck source=../../../scripts/lib/tf.sh
 source "${REPO_ROOT}/scripts/lib/tf.sh"
+# shellcheck source=../../../scripts/lib/core.sh
+source "${REPO_ROOT}/scripts/lib/core.sh"
 
 echo "============================================================"
 echo -e "${RED}  ⚠️  CLEANUP — Lab 1: Eliminar recursos AWS${NC}"
@@ -43,10 +47,11 @@ echo ""
 echo "  Esto eliminará PERMANENTEMENTE:"
 echo "  - Todo el modulo Terraform infra/lab1"
 echo "  - DMS Replication Instance + Endpoints + Task"
-echo "  - S3 Bucket del data lake + todos los objetos (raw/, curated/, staging/)"
+echo "  - S3 Bucket del data lake + todos los objetos (raw/, curated/, rejected/...)"
 echo "  - Security Group e IAM Role de DMS"
 echo ""
-echo "  NO toca el core (infra/payments): ni Aurora, ni la VPC, ni el backend."
+echo "  NO toca el core (infra/payments): ni la base, ni la VPC, ni el backend."
+echo "  SI borra el slot de replicacion que DMS dejo en la base del core."
 echo "  Para eso: cd infra/payments && terraform destroy"
 echo ""
 read -r -p "  ¿Confirmar? (escribe 'si' para continuar): " CONFIRM
@@ -70,9 +75,9 @@ fi
 DMS_TASK_ARN=$(tf_output lab1 dms_task_arn)
 S3_BUCKET=$(tf_output lab1 s3_bucket_name)
 
-# ── [1/4] Detener DMS Task ────────────────────────────────────────────────────
+# ── [1/5] Detener DMS Task ────────────────────────────────────────────────────
 echo ""
-info "[1/4] Deteniendo tarea DMS si está en ejecución..."
+info "[1/5] Deteniendo tarea DMS si está en ejecución..."
 
 if [ -n "${DMS_TASK_ARN}" ] && [ "${DMS_TASK_ARN}" != "None" ]; then
   TASK_STATUS=$(aws dms describe-replication-tasks \
@@ -108,9 +113,9 @@ else
   warn "ARN de tarea DMS no encontrado en los outputs de Terraform"
 fi
 
-# ── [2/4] Vaciar bucket S3 (incluyendo versiones) ────────────────────────────
+# ── [2/5] Vaciar bucket S3 (incluyendo versiones) ────────────────────────────
 echo ""
-info "[2/4] Vaciando bucket S3: ${S3_BUCKET}..."
+info "[2/5] Vaciando bucket S3: ${S3_BUCKET}..."
 
 if [ -n "${S3_BUCKET}" ] && [ "${S3_BUCKET}" != "None" ]; then
   # Eliminar todos los objetos
@@ -143,9 +148,9 @@ else
   warn "Nombre del bucket no encontrado en outputs de Terraform"
 fi
 
-# ── [3/4] Destruir la infraestructura ─────────────────────────────────────────
+# ── [3/5] Destruir la infraestructura ─────────────────────────────────────────
 echo ""
-info "[3/4] Ejecutando terraform destroy (DMS, S3, IAM)..."
+info "[3/5] Ejecutando terraform destroy (DMS, S3, IAM)..."
 info "      Tiempo estimado: ~5-10 minutos"
 
 # destroy necesita las variables sin default para poder planificar. state_bucket
@@ -160,9 +165,26 @@ tf_destroy lab1 || warn "terraform destroy devolvio error — revisa la consola 
 
 success "Infraestructura del Lab 1 destruida"
 
-# ── [4/4] Verificación final ──────────────────────────────────────────────────
+# ── [4/5] El slot del core ────────────────────────────────────────────────────
+# Despues del destroy: con la tarea borrada el slot queda inactivo, y solo se
+# borran los inactivos. Si el core ya no existe, no hay nada que borrar.
 echo ""
-info "[4/4] Verificación final..."
+info "[4/5] Borrando los slots de replicacion inactivos del core..."
+tf_init payments >/dev/null 2>&1 || true
+if tf_deployed payments; then
+  if BORRADOS=$(core_drop_inactive_slots); then
+    success "Slots borrados: ${BORRADOS:-ninguno pendiente}"
+  else
+    warn "No se pudo borrar el slot por SSM. Hazlo a mano antes de irte:"
+    warn "  SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE NOT active;"
+  fi
+else
+  success "El core no esta desplegado: no hay slots que borrar"
+fi
+
+# ── [5/5] Verificación final ──────────────────────────────────────────────────
+echo ""
+info "[5/5] Verificación final..."
 
 if tf_deployed lab1; then
   warn "Quedan recursos en el state de infra/lab1:"
@@ -182,6 +204,7 @@ echo "  ✓ Modulo Terraform infra/lab1"
 echo "  ✓ DMS Replication Instance + Task"
 echo "  ✓ S3 Bucket + objetos"
 echo "  ✓ IAM Role DMS"
+echo "  ✓ Slot de replicacion del core"
 echo ""
 echo "  Verifica en la consola AWS que no queden recursos:"
 echo "  - https://console.aws.amazon.com/dms"

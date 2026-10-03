@@ -1,172 +1,134 @@
 #!/usr/bin/env bash
 # =============================================================================
-# validate.sh — Lab 1: Verificar que DMS completó y los datos están en S3
+# validate.sh — Lab 1: la replicacion funciona de punta a punta
 # =============================================================================
-# Verifica:
-#   1. Estado de la tarea DMS (debe ser load-complete o running)
-#   2. Archivos CSV en s3://bucket/raw/transactions/
-#   3. Archivos CSV en s3://bucket/raw/customers/
-#   4. Muestra las primeras 5 líneas de cada archivo
+# Comprueba, en este orden:
+#   1. La tarea DMS esta en `running` con la foto inicial al 100%
+#   2. Cada tabla replicada tiene su foto inicial en raw/acquiring/<tabla>/
+#   3. EL CDC FUNCIONA: hace un pago de verdad por la API y espera a que ese
+#      cambio aparezca en raw/ como un fichero nuevo. Es la prueba que importa:
+#      que la foto inicial exista solo dice que DMS sabe leer, no que escucha.
+#   4. El slot de replicacion del core esta activo (alguien consume su WAL)
+#   5. La cartera legacy esta en raw/legacy/
 #
-# Uso: ./validate.sh
+# Uso: ./validate.sh            (con el pago de prueba)
+#      ./validate.sh --sin-pago (sin tocar el core)
 # =============================================================================
-
 set -euo pipefail
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
+RED='\033[0;31m'; GREEN='\033[0;32m'; BLUE='\033[0;34m'; NC='\033[0m'
 pass() { echo -e "${GREEN}[PASS]${NC} $*"; }
 fail() { echo -e "${RED}[FAIL]${NC} $*"; FAILURES=$((FAILURES + 1)); }
 info() { echo -e "${BLUE}[INFO]${NC} $*"; }
-
 FAILURES=0
-PROJECT_NAME="${PROJECT_NAME:-fincorp-datalake}"
-ENVIRONMENT="${ENVIRONMENT:-lab}"
-REGION="${AWS_REGION:-us-east-1}"
 
+REGION="${AWS_REGION:-us-east-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 # shellcheck source=../../../scripts/lib/tf.sh
 source "${REPO_ROOT}/scripts/lib/tf.sh"
+# shellcheck source=../../../scripts/lib/core.sh
+source "${REPO_ROOT}/scripts/lib/core.sh"
 
 echo "============================================================"
-echo "  Lab 1 — Validación post-DMS"
+echo "  Lab 1 — Validacion de la replicacion (full load + CDC)"
 echo "============================================================"
-echo ""
 
-# ── [1] Verificar que el modulo esta desplegado ───────────────────────────────
-info "[1/5] Verificando infraestructura (infra/lab1)..."
-
-if tf_deployed lab1; then
-  pass "Modulo infra/lab1 desplegado"
-else
-  fail "Modulo infra/lab1 sin recursos. Ejecuta setup.sh primero."
-fi
+tf_init lab1 >/dev/null 2>&1 || true
+tf_deployed lab1 || { fail "infra/lab1 sin recursos. Ejecuta setup.sh primero."; exit 1; }
 
 S3_BUCKET=$(tf_output lab1 s3_bucket_name)
 DMS_TASK_ARN=$(tf_output lab1 dms_task_arn)
+TABLAS=$(terraform -chdir="${TF_INFRA_DIR}/lab1" output -json replicated_tables | jq -r '.[]')
 
-# ── [2] Verificar estado DMS Task ─────────────────────────────────────────────
+# ── [1] La tarea ─────────────────────────────────────────────────────────────
 echo ""
-info "[2/5] Verificando tarea DMS..."
-
-if [ -n "${DMS_TASK_ARN}" ] && [ "${DMS_TASK_ARN}" != "None" ]; then
-  TASK_STATUS=$(aws dms describe-replication-tasks \
-    --filters "Name=replication-task-arn,Values=${DMS_TASK_ARN}" \
-    --region  "${REGION}" \
-    --query   "ReplicationTasks[0].Status" \
-    --output  text 2>/dev/null || echo "unknown")
-
-  TASK_PROGRESS=$(aws dms describe-replication-tasks \
-    --filters "Name=replication-task-arn,Values=${DMS_TASK_ARN}" \
-    --region  "${REGION}" \
-    --query   "ReplicationTasks[0].ReplicationTaskStats.FullLoadProgressPercent" \
-    --output  text 2>/dev/null || echo "0")
-
-  case "${TASK_STATUS}" in
-    load-complete|running|stopped)
-      pass "DMS Task status: ${TASK_STATUS} | Full Load: ${TASK_PROGRESS}%"
-      ;;
-    ready|creating)
-      fail "DMS Task status: ${TASK_STATUS} — La tarea no ha sido iniciada."
-      echo "       Inicia con: aws dms start-replication-task --replication-task-arn ${DMS_TASK_ARN} --start-replication-task-type start-replication"
-      ;;
-    failed)
-      fail "DMS Task status: FAILED — Revisa los logs en CloudWatch."
-      ;;
-    *)
-      fail "DMS Task status: ${TASK_STATUS}"
-      ;;
-  esac
+info "[1/5] Tarea DMS..."
+read -r ESTADO PCT < <(aws dms describe-replication-tasks \
+  --filters "Name=replication-task-arn,Values=${DMS_TASK_ARN}" --region "${REGION}" \
+  --query "ReplicationTasks[0].[Status, ReplicationTaskStats.FullLoadProgressPercent]" \
+  --output text 2>/dev/null || echo "desconocido 0")
+if [ "${ESTADO}" = "running" ] && [ "${PCT}" = "100" ]; then
+  pass "running, foto inicial al 100% y CDC escuchando"
 else
-  fail "No se pudo obtener el ARN de la tarea DMS del stack"
+  fail "estado ${ESTADO}, foto inicial al ${PCT}%. Arranca la tarea con ./setup.sh"
 fi
 
-# ── [3] Verificar archivos transactions en S3 ─────────────────────────────────
+# ── [2] La foto inicial de cada tabla ────────────────────────────────────────
 echo ""
-info "[3/5] Verificando s3://${S3_BUCKET}/raw/transactions/..."
-
-TXN_COUNT=$(aws s3 ls "s3://${S3_BUCKET}/raw/transactions/" \
-  --region "${REGION}" 2>/dev/null | grep -c "\.csv" || echo "0")
-
-if [ "${TXN_COUNT}" -gt 0 ]; then
-  pass "Archivos transactions encontrados: ${TXN_COUNT} CSV(s)"
-  # Mostrar las primeras 5 líneas del primer archivo
-  FIRST_TXN_FILE=$(aws s3 ls "s3://${S3_BUCKET}/raw/transactions/" \
-    --region "${REGION}" 2>/dev/null | grep "\.csv" | head -1 | awk '{print $4}')
-  if [ -n "${FIRST_TXN_FILE}" ]; then
-    echo ""
-    echo "  Preview (primeras 5 líneas de ${FIRST_TXN_FILE}):"
-    aws s3 cp "s3://${S3_BUCKET}/raw/transactions/${FIRST_TXN_FILE}" - \
-      --region "${REGION}" 2>/dev/null | head -5 | sed 's/^/  | /'
-    echo ""
-  fi
-else
-  fail "No se encontraron archivos CSV en s3://${S3_BUCKET}/raw/transactions/"
-  echo "       El Full Load de DMS puede no haber completado aún."
-fi
-
-# ── [4] Verificar archivos customers en S3 ────────────────────────────────────
-echo ""
-info "[4/5] Verificando s3://${S3_BUCKET}/raw/customers/..."
-
-CUST_COUNT=$(aws s3 ls "s3://${S3_BUCKET}/raw/customers/" \
-  --region "${REGION}" 2>/dev/null | grep -c "\.csv" || echo "0")
-
-if [ "${CUST_COUNT}" -gt 0 ]; then
-  pass "Archivos customers encontrados: ${CUST_COUNT} CSV(s)"
-  FIRST_CUST_FILE=$(aws s3 ls "s3://${S3_BUCKET}/raw/customers/" \
-    --region "${REGION}" 2>/dev/null | grep "\.csv" | head -1 | awk '{print $4}')
-  if [ -n "${FIRST_CUST_FILE}" ]; then
-    echo ""
-    echo "  Preview (primeras 5 líneas de ${FIRST_CUST_FILE}):"
-    aws s3 cp "s3://${S3_BUCKET}/raw/customers/${FIRST_CUST_FILE}" - \
-      --region "${REGION}" 2>/dev/null | head -5 | sed 's/^/  | /'
-    echo ""
-  fi
-else
-  fail "No se encontraron archivos CSV en s3://${S3_BUCKET}/raw/customers/"
-fi
-
-# ── [5] Conteo de filas ────────────────────────────────────────────────────────
-echo ""
-info "[5/5] Contando filas en los archivos raw..."
-
-if [ "${TXN_COUNT}" -gt 0 ] && [ -n "${FIRST_TXN_FILE}" ]; then
-  TXN_ROWS=$(aws s3 cp "s3://${S3_BUCKET}/raw/transactions/${FIRST_TXN_FILE}" - \
-    --region "${REGION}" 2>/dev/null | wc -l || echo "0")
-  # Restar encabezado si existe
-  TXN_DATA_ROWS=$((TXN_ROWS - 1))
-  pass "transactions: ~${TXN_DATA_ROWS} filas (esperado: ~1000)"
-
-  if [ "${TXN_DATA_ROWS}" -ge 900 ]; then
-    pass "Conteo de transacciones dentro del rango esperado (900-1100)"
+info "[2/5] Foto inicial en raw/acquiring/..."
+for t in ${TABLAS}; do
+  if aws s3 ls "s3://${S3_BUCKET}/raw/acquiring/${t}/" --region "${REGION}" 2>/dev/null \
+       | grep -q "LOAD.*\.parquet"; then
+    pass "${t}"
   else
-    fail "Conteo de transacciones inesperado: ${TXN_DATA_ROWS} (esperado: ~1000)"
+    fail "${t}: sin LOAD*.parquet"
+  fi
+done
+
+# ── [3] El CDC, con un pago de verdad ────────────────────────────────────────
+echo ""
+info "[3/5] CDC: un pago real y su delta en raw/..."
+contar_deltas() {
+  # Los ficheros de cambios van en carpetas por fecha; la foto inicial, no.
+  aws s3 ls "s3://${S3_BUCKET}/raw/acquiring/payment_intents/" --recursive --region "${REGION}" \
+    2>/dev/null | grep -v "LOAD" | grep -c "\.parquet" || true
+}
+if [ "${1:-}" = "--sin-pago" ]; then
+  info "     omitido (--sin-pago)"
+else
+  API=$(tf_output payments api_endpoint)
+  ANTES=$(contar_deltas)
+  REF="PIVAL$(date +%s)"
+  # Un QR de 1 sol en un terminal virtual: no toca el Core2 ni sus contadores.
+  curl -fsS -X POST "${API}/v1/intents" -H "Content-Type: application/json" \
+    -H "Idempotency-Key: val-c-${REF}" \
+    -d "{\"intent_reference\":\"${REF}\",\"terminal_id\":\"TID00002\",\"amount_minor\":100}" >/dev/null \
+  && curl -fsS -X POST "${API}/v1/intents/${REF}/confirm" -H "Content-Type: application/json" \
+    -H "Idempotency-Key: val-q-${REF}" -d '{"channel":"QR"}' >/dev/null \
+  || fail "no se pudo hacer el pago de prueba contra ${API}"
+
+  # DMS escribe un fichero de cambios cada ~30 s (cdc_max_batch_interval).
+  DESPUES=${ANTES}
+  for _ in $(seq 1 12); do
+    sleep 10
+    DESPUES=$(contar_deltas)
+    [ "${DESPUES}" -gt "${ANTES}" ] && break
+    echo -n "."
+  done
+  echo ""
+  if [ "${DESPUES}" -gt "${ANTES}" ]; then
+    pass "el pago ${REF} llego a raw/ como delta (${ANTES} -> ${DESPUES} ficheros de cambios)"
+  else
+    fail "en 2 minutos no aparecio ningun delta: revisa el log de la tarea DMS"
   fi
 fi
 
-# ── Resumen ────────────────────────────────────────────────────────────────────
+# ── [4] El slot del core ─────────────────────────────────────────────────────
+echo ""
+info "[4/5] Slot de replicacion en el core..."
+SLOTS=$(core_sql "SELECT slot_name || ' activo=' || active || ' retenido=' || pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) FROM pg_replication_slots" || true)
+if echo "${SLOTS}" | grep -q "activo=t"; then
+  pass "$(echo "${SLOTS}" | head -1)"
+else
+  fail "ningun slot activo: ${SLOTS:-ninguno}. Un slot inactivo retiene WAL sin que nadie lo lea."
+fi
+
+# ── [5] La cartera legacy ────────────────────────────────────────────────────
+echo ""
+info "[5/5] Cartera legacy..."
+if aws s3 ls "s3://${S3_BUCKET}/raw/legacy/transactions/transactions.csv" --region "${REGION}" >/dev/null 2>&1; then
+  pass "raw/legacy/transactions/transactions.csv"
+else
+  fail "falta raw/legacy/transactions/transactions.csv: vuelve a ejecutar ./setup.sh"
+fi
+
 echo ""
 echo "============================================================"
 if [ "${FAILURES}" -eq 0 ]; then
-  echo -e "${GREEN}  ✅ Validación: PASS (0 fallos)${NC}"
-  echo ""
-  echo "  Los datos están en S3 raw zone. Próximo paso:"
-  echo "  → cd ../../../labs/02-transformation-quality-catalog/scripts"
-  echo "  → ./setup.sh"
+  echo -e "${GREEN}  ✅ Lab 1 validado${NC}  →  siguiente: labs/02-transformation-quality-catalog"
 else
-  echo -e "${RED}  ❌ Validación: FAIL (${FAILURES} fallos)${NC}"
-  echo ""
-  echo "  Revisa los errores arriba. Causas comunes:"
-  echo "  - DMS task no iniciada: inicia manualmente desde la consola"
-  echo "  - DMS task en progreso: espera a que complete el Full Load (~2 min)"
-  echo "  - La vista del core esta vacia: aplica payments/schema/ sobre Aurora"
+  echo -e "${RED}  ❌ ${FAILURES} comprobacion(es) fallaron${NC}"
 fi
 echo "============================================================"
-echo ""
-
 exit ${FAILURES}

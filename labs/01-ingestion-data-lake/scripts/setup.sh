@@ -2,11 +2,12 @@
 # =============================================================================
 # setup.sh — Lab 1: Ingestion + Data Lake
 # =============================================================================
-# Despliega el data lake (S3) y la replicacion (DMS) desde el core transaccional.
-# El sistema origen es infra/payments: este modulo NO crea base de datos.
+# Despliega el data lake (S3) y la replicacion (DMS con CDC) desde el core
+# transaccional, y la arranca. El sistema origen es el PostgreSQL de
+# infra/payments: este modulo NO crea base de datos.
 #
 # Tiempo estimado: ~15 minutos (DMS Replication Instance tarda ~10 min)
-# Costo estimado:  ~$0.09/hr mientras los recursos están activos
+# Costo estimado:  ~$0.04/hr mientras la replicacion esta activa (dms.t3.small)
 #
 # Uso:
 #   ./setup.sh
@@ -58,7 +59,7 @@ command -v aws >/dev/null 2>&1 || error "AWS CLI no encontrado. Instala: https:/
 command -v jq  >/dev/null 2>&1 || error "jq no encontrado. Instala: brew install jq (macOS) / apt install jq (Linux)"
 tf_require || error "Terraform no esta listo. Ver infra/README.md."
 
-# El sistema origen tiene que existir primero. Sin payments no hay Aurora de la
+# El sistema origen tiene que existir primero. Sin payments no hay base de la
 # que replicar, y el apply fallaria a mitad leyendo su state.
 tf_init payments >/dev/null 2>&1 || true
 if ! tf_deployed payments; then
@@ -106,69 +107,81 @@ info "[3/5] Leyendo outputs de Terraform..."
 
 S3_BUCKET=$(tf_output lab1 s3_bucket_name)
 DMS_TASK_ARN=$(tf_output lab1 dms_task_arn)
-SOURCE_ENDPOINT=$(tf_output lab1 source_aurora_endpoint)
-SOURCE_OBJECT=$(tf_output lab1 source_object)
+SOURCE_HOST=$(tf_output lab1 source_db_host)
 
 [ -n "${S3_BUCKET}" ] || error "No se pudo leer s3_bucket_name. ¿El apply termino bien?"
 
-success "Origen  : ${SOURCE_ENDPOINT}"
-success "Objeto  : ${SOURCE_OBJECT}"
+success "Origen   : PostgreSQL del core en ${SOURCE_HOST} (EC2, infra/payments)"
 success "Data lake: s3://${S3_BUCKET}/raw/"
 
-# ── [4/5] Subir dataset a S3 (zona staging) ──────────────────────────────────
+# ── [4/5] La cartera legacy, como fichero ────────────────────────────────────
+# El sistema del adquirente absorbido no tiene DMS: su historia llega como un
+# volcado, sucia, y se deja tal cual en raw/legacy/. El Lab 2 la une a la del
+# core y es donde la calidad tiene algo que encontrar.
 echo ""
-info "[4/5] Subiendo dataset al bucket S3 (zona staging/)..."
+info "[4/5] Subiendo la cartera legacy a raw/legacy/..."
 
 aws s3 cp "${DATASET_DIR}/transactions.csv" \
-  "s3://${S3_BUCKET}/staging/transactions/transactions.csv" \
-  --region "${REGION}"
-
+  "s3://${S3_BUCKET}/raw/legacy/transactions/transactions.csv" --region "${REGION}"
 aws s3 cp "${DATASET_DIR}/merchants.csv" \
-  "s3://${S3_BUCKET}/staging/merchants/merchants.csv" \
-  --region "${REGION}"
+  "s3://${S3_BUCKET}/raw/legacy/merchants/merchants.csv" --region "${REGION}"
 
-success "Dataset subido a s3://${S3_BUCKET}/staging/"
+success "Legacy en s3://${S3_BUCKET}/raw/legacy/"
 
-# ── [5/5] Recordatorio del schema del core ────────────────────────────────────
+# ── [5/5] Arrancar la replicacion ────────────────────────────────────────────
+# Desde aqui el core tiene un slot de replicacion que retiene WAL hasta que DMS
+# lo consume. Por eso no arranca solo con el apply, y por eso cleanup.sh borra
+# el slot al terminar.
 echo ""
-info "[5/5] Schema del sistema origen"
+info "[5/5] Arrancando la tarea DMS (full load + CDC)..."
 
-# El schema ya NO se aplica aqui: vive en payments/schema/ y se aplica sobre
-# Aurora, que es el sistema transaccional. Este modulo solo replica lo que ya
-# esta ahi.
-cat <<NOTA
+estado_tarea() {
+  aws dms describe-replication-tasks \
+    --filters "Name=replication-task-arn,Values=${DMS_TASK_ARN}" \
+    --region "${REGION}" --query "ReplicationTasks[0].Status" --output text 2>/dev/null
+}
 
-  El origen de la replicacion es ${SOURCE_OBJECT} en Aurora.
-  Si aun no has aplicado el schema del core:
+ESTADO=$(estado_tarea)
+case "${ESTADO}" in
+  ready)   TIPO="start-replication" ;;
+  stopped) TIPO="resume-processing" ;;   # retoma el CDC donde lo dejo
+  running) TIPO="" ;;
+  *)       error "La tarea esta en estado ${ESTADO}: revisala en la consola de DMS." ;;
+esac
 
-    cd ../../../payments/schema
-    # Aurora esta en subnets privadas: hace falta un tunel SSM o ejecutarlo
-    # desde dentro de la VPC.
-    for f in 00*.sql; do psql "\$CONN" -f "\$f"; done
-
-  Sin datos en esa vista, la tarea DMS completara con 0 filas.
-
-NOTA
+if [ -n "${TIPO}" ]; then
+  aws dms start-replication-task --replication-task-arn "${DMS_TASK_ARN}" \
+    --start-replication-task-type "${TIPO}" --region "${REGION}" >/dev/null
+  info "     Esperando la foto inicial (full load)..."
+  for _ in $(seq 1 60); do
+    sleep 10
+    ESTADO=$(estado_tarea)
+    PCT=$(aws dms describe-replication-tasks \
+      --filters "Name=replication-task-arn,Values=${DMS_TASK_ARN}" --region "${REGION}" \
+      --query "ReplicationTasks[0].ReplicationTaskStats.FullLoadProgressPercent" --output text)
+    echo -n " ${PCT}%"
+    [ "${ESTADO}" = "running" ] && [ "${PCT}" = "100" ] && break
+    [ "${ESTADO}" = "failed" ] && { echo; error "La tarea fallo. Log: /aws/dms/tasks/<id> en CloudWatch."; }
+  done
+  echo ""
+fi
+success "Replicando: foto inicial completa y CDC escuchando el WAL"
 
 # ── Resumen final ─────────────────────────────────────────────────────────────
 echo ""
 echo "============================================================"
-echo -e "${GREEN}  ✅ Lab 1 — Infraestructura lista${NC}"
+echo -e "${GREEN}  ✅ Lab 1 — Replicacion en marcha${NC}"
 echo "============================================================"
 echo ""
-echo "  Origen      : ${SOURCE_ENDPOINT}"
-echo "                ${SOURCE_OBJECT}  (vista del core, infra/payments)"
-echo "  S3 Data Lake: s3://${S3_BUCKET}/"
-echo "    ├── raw/          ← DMS escribe aquí (full load)"
-echo "    ├── staging/      ← CSV subidos para carga manual"
-echo "    └── curated/      ← Output del Lab 2 (Glue)"
+echo "  s3://${S3_BUCKET}/"
+echo "    raw/acquiring/<tabla>/LOAD*.parquet          la foto inicial"
+echo "    raw/acquiring/<tabla>/AAAA/MM/DD/*.parquet   cada cambio, cada ~30 s"
+echo "    raw/legacy/                                  la cartera absorbida"
 echo ""
-echo "  Próximos pasos:"
-echo "  1. Aplica el schema del core si no lo has hecho (payments/schema/)"
-echo "  2. Inicia la tarea DMS desde la consola AWS o con:"
-echo "     aws dms start-replication-task --replication-task-arn ${DMS_TASK_ARN} --start-replication-task-type start-replication"
-echo "  3. Valida el resultado con: ./validate.sh"
+echo "  Haz un pago (el POS, la web del QR o el generador) y mira como llega:"
+echo "     python scripts/generate_traffic.py --api \$(terraform -chdir=infra/payments output -raw api_endpoint) --count 20"
+echo "     ./validate.sh"
 echo ""
-echo "  Al terminar el lab:"
+echo "  Al terminar el lab (borra tambien el slot del core):"
 echo "     ./cleanup.sh"
 echo ""
