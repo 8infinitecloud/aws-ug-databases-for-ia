@@ -14,6 +14,7 @@ Las rutas siguen el ciclo de vida de un PaymentIntent de Stripe:
     GET  /v1/intents/{ref}                la web del QR lee que se va a cobrar
     POST /v1/intents/{ref}/confirm        se autoriza, captura y asienta
     POST /v1/intents/{ref}/cancel         se abandona sin cobrar
+    POST /v1/refunds                      se devuelve lo cobrado (con clave)
     GET  /3ds/{ref}                       el banco simulado autentica (online)
     POST /v1/intents/{ref}/authenticate   resultado de esa autenticacion
 
@@ -49,6 +50,8 @@ from .models import (
     CreateIntentRequest,
     HealthResponse,
     IntentResponse,
+    RefundRequest,
+    RefundResponse,
 )
 
 logging.basicConfig(
@@ -361,6 +364,40 @@ def cancel_intent(
         )
 
 
+# ── Devoluciones ─────────────────────────────────────────────────────────────
+@app.post("/v1/refunds", response_model=RefundResponse, status_code=201, tags=["cobros"])
+def create_refund(
+    body: RefundRequest,
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+    authorization: Annotated[str | None, Header()] = None,
+):
+    """
+    Devuelve lo cobrado en una intencion, total o parcialmente.
+
+    Siempre con la clave del comercio, tambien para ventas de mostrador: una
+    devolucion la decide el comercio desde su sistema, no el terminal, y es
+    dinero que sale. Idempotente: un reintento con la misma clave no devuelve
+    dos veces.
+    """
+    merchant_code = _merchant_from_key(authorization)
+    if merchant_code is None:
+        raise acquiring.AcquiringError("una devolucion exige la clave de API del comercio", 401)
+    with pool.connection() as conn:
+        merchant_pk = acquiring.get_merchant(conn, merchant_code)["id"]
+
+    def operacion():
+        with pool.connection() as conn:
+            result = acquiring.refund(conn, merchant_code, body.payment_intent,
+                                      body.amount_minor, body.reason)
+        return 201, RefundResponse(**result).model_dump(mode="json")
+
+    status_code, saved = _with_idempotency(
+        merchant_pk, idempotency_key, "POST", "/v1/refunds", body.model_dump(mode="json"),
+        operacion, resource_type="refund",
+    )
+    return JSONResponse(saved, status_code)
+
+
 # ── Autenticacion 3DS simulada ───────────────────────────────────────────────
 @app.get("/3ds/{intent_reference}", response_class=HTMLResponse, tags=["online"])
 def pagina_3ds(intent_reference: str):
@@ -563,6 +600,7 @@ def _with_idempotency(
         idempotency.complete(
             conn, merchant_pk, key, status_code, body,
             resource_type=resource_type,
-            resource_id=resource_id or body.get("charge_reference"),
+            resource_id=(resource_id or body.get("refund_reference")
+                         or body.get("charge_reference")),
         )
     return status_code, body

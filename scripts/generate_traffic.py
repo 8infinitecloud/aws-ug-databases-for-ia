@@ -21,7 +21,8 @@ Que genera, y por que cada cosa:
     PaymentMethods de prueba al estilo Stripe: pm_card_visa la mayoria de veces,
     declinaciones 05/51/54, y 3DS (pm_card_threeDSecure2Required) que el
     comprador supera o no. Tras una declinacion, a veces reintenta con otra
-    tarjeta sobre la MISMA intencion, como en Stripe.
+    tarjeta sobre la MISMA intencion, como en Stripe. Y de vez en cuando la
+    tienda devuelve, entera o a medias, una venta anterior.
 
   KYC
     De vez en cuando la tienda sin KYC intenta cobrar. La base se lo impide
@@ -129,6 +130,8 @@ P_3DS_OK = 0.85            # comprador que supera la autenticacion
 P_REINTENTO = 0.5          # tras declinar, prueba con otra tarjeta
 P_SIN_KYC = 0.01           # la tienda sin KYC intenta cobrar
 P_ATIPICO = 0.01           # importe x20 en comercios de riesgo alto
+P_DEVOLUCION = 0.04        # un paso de cada 25: una tienda devuelve una venta anterior
+P_DEVOLUCION_PARCIAL = 0.3  # de esas, una parte se devuelve solo a medias
 
 
 # ── Telemetria de la flota virtual ───────────────────────────────────────────
@@ -268,6 +271,8 @@ class Generador:
         self.rng = rng
         self.publish = publish
         self.resultado: Counter[str] = Counter()
+        # Ventas online cobradas, para devolver alguna despues: (mid, ref, importe).
+        self.cobradas: list[tuple[str, str, int]] = []
         self.flota = {
             tid: EstadoTerminal(tid, serial_virtual(tid), PERFILES.get(tid, Perfil()),
                                 arranque=time.monotonic())
@@ -408,8 +413,9 @@ class Generador:
             return
         auth = {"Authorization": f"Bearer {clave}"}
         ref = self._ref()
+        importe = self._importe(c)
         status, _ = self.send("POST", "/v1/intents", {
-            "intent_reference": ref, "amount_minor": self._importe(c),
+            "intent_reference": ref, "amount_minor": importe,
             "currency_code": c.moneda, "return_url": "https://tienda.example/gracias",
         }, {**auth, "Idempotency-Key": f"gen-c-{ref}"})
         if status != 201:
@@ -431,10 +437,14 @@ class Generador:
             if body.get("status") == "REQUIRES_ACTION":
                 body = self._autenticar(ref, body)
                 if body.get("status") == "CAPTURED":
+                    self.cobradas.append((c.mid, ref, importe))
                     return
             else:
                 self._anotar(f"online_{body.get('response_code', s)}", s)
-                if body.get("status") == "CAPTURED" or s != 200:
+                if body.get("status") == "CAPTURED":
+                    self.cobradas.append((c.mid, ref, importe))
+                    return
+                if s != 200:
                     return
 
             # Declinada o 3DS fallido: a veces el comprador prueba otra tarjeta.
@@ -492,6 +502,29 @@ class Generador:
             if pausa:
                 time.sleep(pausa)
 
+    def devolucion(self) -> None:
+        """
+        Una tienda devuelve una venta ANTERIOR, no la que acaba de hacer.
+
+        Es el caso que justifica el CDC: el cobro ya esta en el lago, y ahora
+        cambia. Un incremental que pregunta "que hay nuevo" no lo veria.
+        """
+        if not self.cobradas:
+            return
+        mid, ref, importe = self.cobradas.pop(self.rng.randrange(len(self.cobradas)))
+        body = {"payment_intent": ref,
+                "reason": self.rng.choice(["requested_by_customer", "requested_by_customer",
+                                           "duplicate", "fraudulent"])}
+        if self.rng.random() < P_DEVOLUCION_PARCIAL and importe > 200:
+            body["amount_minor"] = max(100, importe // 3)
+        s, _ = self.send("POST", "/v1/refunds", body, {
+            "Authorization": f"Bearer {self.claves[mid]}",
+            "Idempotency-Key": f"gen-r-{ref}",
+        })
+        self._anotar("devolucion_parcial" if "amount_minor" in body else "devolucion_total", s)
+        if s != 201:
+            self._anotar(f"devolucion_{s}", s)
+
     def intento_sin_kyc(self) -> None:
         clave = self.claves.get(SIN_KYC)
         if clave is None:
@@ -506,6 +539,9 @@ class Generador:
     def paso(self, pos: bool = True, online: bool = True) -> None:
         if online and self.rng.random() < P_SIN_KYC:
             self.intento_sin_kyc()
+            return
+        if online and self.cobradas and self.rng.random() < P_DEVOLUCION:
+            self.devolucion()
             return
         candidatos = [c for c in CARTERA
                       if (pos and c.terminales) or (online and c.online)]

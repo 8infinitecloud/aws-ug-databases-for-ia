@@ -254,6 +254,20 @@ def _ts_to_text(serie: pd.Series) -> pd.Series:
     return ts.map(lambda v: v.isoformat() if pd.notna(v) else pd.NA)
 
 
+def _business_status(x: pd.DataFrame) -> pd.Series:
+    """
+    El estado de negocio del cobro, como lo expone la vista del core.
+
+    En el core un cobro devuelto sigue CAPTURED, con amount_refunded igual a lo
+    capturado (asi lo modela Stripe). Para el lago es REFUNDED, que es lo que ya
+    escribia la cartera legacy. Una devolucion parcial deja CAPTURED.
+    """
+    capturado = pd.to_numeric(x.get("amount_captured_minor"), errors="coerce")
+    devuelto = pd.to_numeric(x.get("amount_refunded_minor"), errors="coerce")
+    entero = (x["status"].astype(str) == "CAPTURED") & (capturado > 0) & (devuelto == capturado)
+    return x["status"].where(~entero, "REFUNDED")
+
+
 def build_transactions(t: dict[str, pd.DataFrame]) -> pd.DataFrame:
     """
     El JOIN de v_transactions_for_ingestion (payments/schema/001_schema.sql),
@@ -304,7 +318,7 @@ def build_transactions(t: dict[str, pd.DataFrame]) -> pd.DataFrame:
         "amount":         _minor_to_text(x["amount_minor"]),
         "currency":       x["currency_code"],
         "payment_method": x["channel"],
-        "status":         x["status"],
+        "status":         _business_status(x),
         "response_code":  x["response_code"],
         "rrn":            x["rrn"],
         "auth_code":      x["auth_code"],

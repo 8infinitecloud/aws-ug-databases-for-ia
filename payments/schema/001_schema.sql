@@ -527,7 +527,14 @@ SELECT
     (c.amount_minor / 100.0)::NUMERIC(14,2)    AS amount,
     c.currency_code                            AS currency,
     c.channel::varchar(16)                     AS payment_method,
-    c.status::varchar(16)                      AS status,
+    -- Un cobro devuelto del todo se ve como REFUNDED. En el core sigue
+    -- CAPTURED con amount_refunded = amount_captured, como en Stripe (el cobro
+    -- no cambia de estado: se le asocian devoluciones). Para el lago, y para
+    -- la cartera legacy que ya escribia REFUNDED, el estado de negocio es este.
+    -- Una devolucion parcial deja CAPTURED.
+    (CASE WHEN c.status = 'CAPTURED' AND c.amount_captured_minor > 0
+               AND c.amount_refunded_minor = c.amount_captured_minor
+          THEN 'REFUNDED' ELSE c.status::text END)::varchar(16) AS status,
     c.response_code,
     c.rrn,
     c.auth_code,

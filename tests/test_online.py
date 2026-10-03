@@ -422,3 +422,111 @@ def test_el_javascript_de_la_pagina_3ds_es_valido():
 def test_la_pagina_3ds_llama_a_la_ruta_que_la_api_expone():
     html = (REPO_ROOT / "payments/web/3ds.html").read_text(encoding="utf-8")
     assert '"/v1/intents/" + encodeURIComponent(referencia) + "/authenticate"' in html
+
+
+# ── Devoluciones ─────────────────────────────────────────────────────────────
+def _devolver(client, ref, clave, amount=None, idem=None, reason="requested_by_customer"):
+    body = {"payment_intent": ref, "reason": reason}
+    if amount is not None:
+        body["amount_minor"] = amount
+    return client.post("/v1/refunds", json=body, headers=_h(clave, idem or f"r-{uuid.uuid4().hex[:8]}"))
+
+
+def _estado_en_la_vista(ref):
+    return _query(
+        "SELECT status FROM acquiring.v_transactions_for_ingestion WHERE transaction_id = %s",
+        (f"ch_{ref}_1",),
+    )[0]["status"]
+
+
+def test_una_devolucion_total_deja_el_cobro_como_refunded_en_la_vista(client, ref, claves):
+    _crear(client, ref, claves["smart"], amount=5000)
+    _pagar(client, ref, claves["smart"])
+    r = _devolver(client, ref, claves["smart"])
+
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["amount_minor"] == 5000 and body["charge_fully_refunded"] is True
+    # En el core el cobro sigue CAPTURED (como en Stripe); para el lago, REFUNDED.
+    cobro = _query("SELECT status::text, amount_refunded_minor FROM acquiring.charges "
+                   "WHERE charge_reference = %s", (f"ch_{ref}_1",))[0]
+    assert cobro == {"status": "CAPTURED", "amount_refunded_minor": 5000}
+    assert _estado_en_la_vista(ref) == "REFUNDED"
+    assert _intent(ref)["status"] == "SUCCEEDED"
+
+
+def test_el_libro_registra_la_salida_y_la_comision_no_se_devuelve(client, ref, claves):
+    _crear(client, ref, claves["smart"], amount=10000)
+    cobro = _pagar(client, ref, claves["smart"]).json()
+    _devolver(client, ref, claves["smart"])
+
+    asientos = _query(
+        """
+        SELECT bt.source_type::text, bt.gross_minor, bt.fee_minor, bt.net_minor
+        FROM acquiring.balance_transactions bt
+        LEFT JOIN acquiring.charges c ON c.id = bt.charge_id
+        LEFT JOIN acquiring.refunds r ON r.id = bt.refund_id
+        LEFT JOIN acquiring.charges c2 ON c2.id = r.charge_id
+        WHERE c.charge_reference = %s OR c2.charge_reference = %s
+        ORDER BY bt.id
+        """, (f"ch_{ref}_1", f"ch_{ref}_1"))
+    assert [a["source_type"] for a in asientos] == ["CHARGE", "REFUND"]
+    assert asientos[1]["gross_minor"] == -10000 and asientos[1]["fee_minor"] == 0
+    # Lo que le queda al comercio: menos la comision que no se devuelve.
+    assert sum(a["net_minor"] for a in asientos) == -cobro["fee_minor"]
+
+
+def test_dos_parciales_completan_la_devolucion(client, ref, claves):
+    _crear(client, ref, claves["smart"], amount=3000)
+    _pagar(client, ref, claves["smart"])
+
+    r1 = _devolver(client, ref, claves["smart"], amount=1000)
+    assert r1.json()["charge_fully_refunded"] is False
+    assert _estado_en_la_vista(ref) == "CAPTURED"   # parcial: sigue capturado
+
+    r2 = _devolver(client, ref, claves["smart"])     # sin importe: lo que queda
+    assert r2.json()["amount_minor"] == 2000
+    assert r2.json()["refund_reference"] != r1.json()["refund_reference"]
+    assert _estado_en_la_vista(ref) == "REFUNDED"
+
+
+def test_no_se_devuelve_mas_de_lo_capturado(client, ref, claves):
+    _crear(client, ref, claves["smart"], amount=1000)
+    _pagar(client, ref, claves["smart"])
+    assert _devolver(client, ref, claves["smart"], amount=1001).status_code == 409
+    _devolver(client, ref, claves["smart"])
+    assert _devolver(client, ref, claves["smart"]).status_code == 409   # ya devuelto
+
+
+def test_un_rechazo_no_se_puede_devolver(client, ref, claves):
+    _crear(client, ref, claves["smart"])
+    _pagar(client, ref, claves["smart"], pm="pm_card_visa_chargeDeclined")
+    assert _devolver(client, ref, claves["smart"]).status_code == 409
+
+
+def test_la_devolucion_exige_la_clave_del_duenio(client, ref, claves):
+    _crear(client, ref, claves["smart"])
+    _pagar(client, ref, claves["smart"])
+    r = client.post("/v1/refunds", json={"payment_intent": ref})
+    assert r.status_code == 401
+    assert _devolver(client, ref, claves["otro"]).status_code == 404
+
+
+def test_una_devolucion_reintentada_no_devuelve_dos_veces(client, ref, claves):
+    _crear(client, ref, claves["smart"], amount=4000)
+    _pagar(client, ref, claves["smart"])
+    a = _devolver(client, ref, claves["smart"], amount=1000, idem=f"r-{ref}")
+    b = _devolver(client, ref, claves["smart"], amount=1000, idem=f"r-{ref}")
+    assert a.json() == b.json()
+    total = _query("SELECT amount_refunded_minor FROM acquiring.charges WHERE charge_reference = %s",
+                   (f"ch_{ref}_1",))[0]["amount_refunded_minor"]
+    assert total == 1000
+
+
+def test_la_devolucion_deja_su_evento(client, ref, claves):
+    _crear(client, ref, claves["smart"])
+    _pagar(client, ref, claves["smart"])
+    _devolver(client, ref, claves["smart"])
+    eventos = _query("SELECT event_type, object_type FROM acquiring.webhook_events "
+                     "WHERE object_id = %s", (f"ch_{ref}_1",))
+    assert eventos == [{"event_type": "charge.refunded", "object_type": "charge"}]

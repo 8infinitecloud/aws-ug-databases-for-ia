@@ -175,6 +175,28 @@ def test_glue_reconstruye_exactamente_la_vista_del_core_tras_el_cdc(tmp_path):
         foto1 = dms.snapshot_from_db(CONNINFO)
         client.post("/v1/intents/PIDMSU0001/confirm", json={"channel": "QR"})
         gt.run(send, {}, count=40, seed=4, online=False)
+
+        # Dos cobros que YA estaban en la foto 1 se devuelven despues: uno entero
+        # y otro a medias. Es el U sobre una fila antigua que un incremental por
+        # fecha de creacion no veria nunca.
+        from app import auth
+        with psycopg.connect(CONNINFO) as conn:
+            pk = conn.execute("SELECT id FROM acquiring.merchants WHERE merchant_id = %s",
+                              ("MID000000020001",)).fetchone()[0]
+            clave = auth.create_api_key(conn, pk, "test-refund")
+            capturados = [r[0] for r in conn.execute(
+                """SELECT pi.intent_reference FROM acquiring.payment_intents pi
+                   JOIN acquiring.charges c ON c.payment_intent_id = pi.id
+                   WHERE pi.merchant_id = %s AND c.status = 'CAPTURED'
+                     AND c.amount_refunded_minor = 0 AND c.amount_captured_minor > 200
+                   ORDER BY c.id LIMIT 2""", (pk,)).fetchall()]
+        assert len(capturados) == 2, "sin cobros que devolver en la foto 1"
+        h = {"Authorization": f"Bearer {clave}"}
+        assert client.post("/v1/refunds", json={"payment_intent": capturados[0]},
+                           headers=h).status_code == 201
+        assert client.post("/v1/refunds", json={"payment_intent": capturados[1],
+                                                "amount_minor": 100},
+                           headers=h).status_code == 201
     foto2 = dms.snapshot_from_db(CONNINFO)
 
     ahora = datetime.now(timezone.utc)
@@ -205,3 +227,11 @@ def test_glue_reconstruye_exactamente_la_vista_del_core_tras_el_cdc(tmp_path):
 
     # Y el U llego: el QR pagado despues de la foto 1 esta, capturado.
     assert glue.loc["ch_PIDMSU0001_1", "status"] == "CAPTURED"
+
+    # Las devoluciones de cobros de la foto 1: la entera es REFUNDED, la parcial
+    # sigue CAPTURED. Y en la foto 1 los dos estaban CAPTURED.
+    devuelto = glue.loc[glue.index.str.startswith(f"ch_{capturados[0]}")]
+    parcial = glue.loc[glue.index.str.startswith(f"ch_{capturados[1]}")]
+    assert devuelto["status"].tolist() == ["REFUNDED"]
+    assert parcial["status"].tolist() == ["CAPTURED"]
+    assert "REFUNDED" not in set(foto1["charges"]["status"])

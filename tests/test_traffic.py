@@ -111,7 +111,8 @@ def test_hay_declinaciones_con_cada_codigo(corrida):
 
 def test_hay_3ds_abandonos_reintentos_y_el_rechazo_por_kyc(corrida):
     resultado, _ = corrida
-    for clave in ("online_3ds_ok", "online_abandonado", "qr_abandonado", "online_reintento"):
+    for clave in ("online_3ds_ok", "online_abandonado", "qr_abandonado", "online_reintento",
+                  "devolucion_total"):
         assert resultado.get(clave, 0) > 0, (clave, resultado)
     # P_SIN_KYC es 1%: en 400 pasos con esta semilla aparece. Si cambia la
     # semilla puede no hacerlo, y por eso solo se comprueba el codigo.
@@ -224,3 +225,10 @@ def test_la_flota_virtual_late_con_el_contrato_del_firmware():
     # El de la bateria agotada deja de latir: los demas siguen.
     assert len(de("TID00007")) < len(de("TID00004"))
     assert de("TID00007")[-1]["battery_pct"] <= 5
+
+
+def test_las_devoluciones_del_generador_salen_bien(corrida):
+    """Ninguna devolucion falla: el generador solo devuelve ventas que cobro."""
+    resultado, _ = corrida
+    assert resultado.get("devolucion_total", 0) + resultado.get("devolucion_parcial", 0) > 0
+    assert not [k for k in resultado if k.startswith("devolucion_") and k[-3:].isdigit()], resultado

@@ -144,7 +144,7 @@ def _next_rrn(conn: Connection) -> str:
 # ── Eventos para el comercio ─────────────────────────────────────────────────
 def _record_event(
     conn: Connection, merchant_pk: int, event_type: str,
-    intent_reference: str, payload: dict,
+    intent_reference: str, payload: dict, object_type: str = "payment_intent",
 ) -> None:
     """
     Guarda el evento en webhook_events, en la MISMA transaccion que el cambio.
@@ -164,10 +164,10 @@ def _record_event(
             """
             INSERT INTO acquiring.webhook_events
                 (merchant_id, event_reference, event_type, object_type, object_id, payload)
-            VALUES (%s, %s, %s, 'payment_intent', %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s)
             """,
             (
-                merchant_pk, f"evt_{uuid.uuid4().hex[:24]}", event_type,
+                merchant_pk, f"evt_{uuid.uuid4().hex[:24]}", event_type, object_type,
                 intent_reference, json.dumps(payload, default=str),
             ),
         )
@@ -499,6 +499,106 @@ def cancel_intent(conn: Connection, intent_reference: str, reason: str) -> dict:
     _record_event(conn, intent["merchant_id"], "payment_intent.canceled",
                   intent_reference, {"cancellation_reason": reason})
     return get_intent(conn, intent_reference)
+
+
+def refund(
+    conn: Connection, merchant_id: str, intent_reference: str,
+    amount_minor: int | None, reason: str,
+) -> dict:
+    """
+    Devuelve, total o parcialmente, lo cobrado en una intencion.
+
+    Como en Stripe: el cobro NO cambia de estado, se le asocia una devolucion y
+    acumula amount_refunded. La base garantiza que nunca se devuelva mas de lo
+    capturado (charges_refund_within_capture). La comision no se devuelve: el
+    asiento negativo del libro es el bruto, y el MDR ya cobrado se queda.
+
+    Para el lago es la operacion mas interesante del sistema: un UPDATE sobre un
+    cobro que puede tener dias. Un incremental que pregunta "que hay nuevo desde
+    ayer" no la ve; el CDC si.
+    """
+    intent = get_intent(conn, intent_reference)
+    if intent["merchant_code"] != merchant_id:
+        raise AcquiringError(f"intencion {intent_reference} no existe", 404)
+
+    with conn.cursor(row_factory=dict_row) as cur:
+        # FOR UPDATE: dos devoluciones simultaneas del mismo cobro no pueden
+        # leer el mismo saldo y devolver dos veces lo mismo.
+        cur.execute(
+            """
+            SELECT id, charge_reference, amount_captured_minor, amount_refunded_minor,
+                   currency_code
+            FROM acquiring.charges
+            WHERE payment_intent_id = %s AND status = 'CAPTURED'
+            ORDER BY id DESC LIMIT 1
+            FOR UPDATE
+            """,
+            (intent["id"],),
+        )
+        charge = cur.fetchone()
+    if charge is None:
+        raise AcquiringError(f"la intencion {intent_reference} no tiene un cobro capturado", 409)
+
+    disponible = charge["amount_captured_minor"] - charge["amount_refunded_minor"]
+    importe = disponible if amount_minor is None else amount_minor
+    if disponible <= 0:
+        raise AcquiringError(f"el cobro {charge['charge_reference']} ya esta devuelto", 409)
+    if importe > disponible:
+        raise AcquiringError(
+            f"no se puede devolver {importe}: quedan {disponible} por devolver", 409
+        )
+
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute("SELECT count(*) AS n FROM acquiring.refunds WHERE charge_id = %s",
+                    (charge["id"],))
+        n = cur.fetchone()["n"] + 1
+        referencia = f"re_{intent_reference.removeprefix('pi_')}_{n}"
+        cur.execute(
+            """
+            INSERT INTO acquiring.refunds
+                (refund_reference, charge_id, merchant_id, amount_minor, currency_code,
+                 reason, status)
+            VALUES (%s, %s, %s, %s, %s, %s, 'SUCCEEDED')
+            RETURNING id, refund_reference, created_at
+            """,
+            (referencia, charge["id"], intent["merchant_id"], importe,
+             charge["currency_code"], reason),
+        )
+        devolucion = cur.fetchone()
+        cur.execute(
+            "UPDATE acquiring.charges SET amount_refunded_minor = amount_refunded_minor + %s "
+            "WHERE id = %s RETURNING amount_refunded_minor",
+            (importe, charge["id"]),
+        )
+        total_devuelto = cur.fetchone()["amount_refunded_minor"]
+        # El asiento: sale dinero del comercio. Sin comision (fee 0): la del
+        # cobro original no se devuelve.
+        cur.execute(
+            """
+            INSERT INTO acquiring.balance_transactions
+                (merchant_id, source_type, refund_id, gross_minor, fee_minor, net_minor,
+                 currency_code, status, available_on)
+            VALUES (%s, 'REFUND', %s, %s, 0, %s, %s, 'PENDING', CURRENT_DATE)
+            """,
+            (intent["merchant_id"], devolucion["id"], -importe, -importe, charge["currency_code"]),
+        )
+    _record_event(conn, intent["merchant_id"], "charge.refunded", charge["charge_reference"], {
+        "refund_reference": devolucion["refund_reference"], "amount_minor": importe,
+        "amount_refunded_minor": total_devuelto, "reason": reason,
+    }, object_type="charge")
+
+    return {
+        "refund_reference": devolucion["refund_reference"],
+        "intent_reference": intent_reference,
+        "charge_reference": charge["charge_reference"],
+        "amount_minor": importe,
+        "currency_code": charge["currency_code"],
+        "status": "SUCCEEDED",
+        "reason": reason,
+        "charge_amount_refunded_minor": total_devuelto,
+        "charge_fully_refunded": total_devuelto == charge["amount_captured_minor"],
+        "created_at": devolucion["created_at"],
+    }
 
 
 def _resolve_payment_method(conn: Connection, card_token: str) -> int | None:

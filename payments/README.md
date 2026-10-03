@@ -100,6 +100,7 @@ online por su clave de API** (`Authorization: Bearer sk_demo_…`).
 | `GET /v1/intents/{ref}` | la web del QR | lee importe y comercio antes de confirmar |
 | `POST /v1/intents/{ref}/confirm` | POS, web del QR o tienda | autoriza, captura y asienta en el libro mayor |
 | `POST /v1/intents/{ref}/cancel` | POS o tienda | abandona sin cobrar |
+| `POST /v1/refunds` | el comercio, con su clave | devuelve lo cobrado, entero o en parte |
 | `GET /pay/{ref}` | el móvil que escanea | la página de pago del QR |
 | `GET /3ds/{ref}` | el navegador del comprador | el banco simulado que autentica (3-D Secure) |
 | `POST /v1/intents/{ref}/authenticate` | esa página | el resultado de la autenticación |
@@ -130,6 +131,12 @@ parte:
 | `pm_card_visa_chargeDeclinedInsufficientFunds` | `51` |
 | `pm_card_chargeDeclinedExpiredCard` | `54` |
 | `pm_card_threeDSecure2Required` | `REQUIRES_ACTION`, y `00` si el comprador se autentica |
+
+Una **devolución** no cambia el estado del cobro, como en Stripe: el cobro sigue
+capturado y acumula `amount_refunded`, y el libro mayor recibe un asiento
+negativo por el bruto (la comisión no se devuelve). Para el lago, un cobro
+devuelto del todo se ve como `status = REFUNDED` en la vista. Es el mejor ejemplo
+de por qué el Lab 1 usa CDC: un cambio sobre un cobro que puede tener días.
 
 Cada paso deja su evento en `webhook_events`, en la misma transacción
 (`payment_intent.created`, `.requires_action`, `.payment_failed`, `.succeeded`,

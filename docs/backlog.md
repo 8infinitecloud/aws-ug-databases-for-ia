@@ -17,7 +17,7 @@ explicarla y ensayarla; una pieza sin ensayar es un riesgo en vivo.
 
 | Mejora | Prioridad | Por qué |
 |---|---|---|
-| **Devoluciones** (`POST /v1/refunds`) | **Ahora** | Es el mejor ejemplo de por qué CDC y no un incremental: un cobro de ayer que hoy pasa a devuelto es un `U` sobre una fila antigua que una consulta por fecha de creación nunca vería. `REFUNDED` ya está en las reglas de calidad y el corpus habla del ratio de devoluciones, pero hoy nada genera una |
+| **Devoluciones** (`POST /v1/refunds`) | ✅ **Hecho** | Es el mejor ejemplo de por qué CDC y no un incremental: un cobro de ayer que hoy pasa a devuelto es un `U` sobre una fila antigua que una consulta por fecha de creación nunca vería. `REFUNDED` ya está en las reglas de calidad y el corpus habla del ratio de devoluciones, pero hoy nada genera una |
 | Captura manual (`capture_method = manual` + `/capture`) | Después | La preautorización del hotel. Correcta, pero el QR pendiente → pagado ya enseña el `U` |
 | Antifraude síncrono antes de autorizar (al estilo Radar) | Mencionar | Toca el camino del cobro y se solapa con el Lab 4. En la charla: *"antes de esto hay un Radar que bloquea en el propio cobro; el Lab 4 ve patrones entre operaciones"*. `charges.risk_score` ya existe para cuando se haga |
 | Contracargos (`/v1/disputes`, evidencia) | Después | El corpus los menciona; el flujo es largo (días) y no cabe en una demo |

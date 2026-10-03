@@ -105,6 +105,31 @@ class CancelRequest(BaseModel):
     ] = "requested_by_customer"
 
 
+class RefundRequest(BaseModel):
+    """
+    Una devolucion, como POST /v1/refunds en Stripe.
+
+    Sin importe, se devuelve todo lo que queda. Los motivos son los de Stripe.
+    """
+
+    payment_intent: str = Field(min_length=4, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
+    amount_minor: int | None = Field(default=None, gt=0, le=99_999_999)
+    reason: Literal["requested_by_customer", "duplicate", "fraudulent"] = "requested_by_customer"
+
+
+class RefundResponse(BaseModel):
+    refund_reference: str
+    intent_reference: str
+    charge_reference: str
+    amount_minor: int
+    currency_code: str
+    status: str
+    reason: str
+    charge_amount_refunded_minor: int
+    charge_fully_refunded: bool
+    created_at: datetime
+
+
 class AuthenticationResult(BaseModel):
     """Lo que devuelve la pagina del banco simulada."""
 
