@@ -355,6 +355,7 @@ También desde GitHub Actions: `Actions → Cleanup → Run workflow → ELIMINA
 | [docs/well-architected.md](docs/well-architected.md) | Qué cumple, qué se concede a propósito, y qué cambiar en producción |
 | [docs/architecture.md](docs/architecture.md) | Diagramas de arquitectura completos |
 | [DECISIONS.md](DECISIONS.md) | Por qué Glue Python Shell y no PySpark, etc. |
+| [docs/backlog.md](docs/backlog.md) | Mejoras posibles, y cuáles merecen la pena antes de la charla |
 | [docs/github-actions-setup.md](docs/github-actions-setup.md) | Desplegar desde CI con OIDC |
 
 ---
